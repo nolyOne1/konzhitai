@@ -24,9 +24,22 @@ type Credentials struct {
 	ControlURL string `json:"control_url"`
 }
 
+func ParseAllowedScriptRoots(value string) []string {
+	seen := map[string]bool{}
+	roots := make([]string, 0)
+	for _, root := range filepath.SplitList(value) {
+		root = strings.TrimSpace(root)
+		if root != "" && !seen[root] {
+			seen[root] = true
+			roots = append(roots, root)
+		}
+	}
+	return roots
+}
+
 func Enroll(ctx context.Context, controlURL, token string) (Credentials, error) {
 	endpoint, err := url.Parse(controlURL)
-	if err != nil || endpoint.Host == "" {
+	if err != nil || endpoint.Host == "" || (endpoint.Scheme != "https" && !(endpoint.Scheme == "http" && isLoopbackHostname(endpoint.Hostname()))) {
 		return Credentials{}, fmt.Errorf("中央服务地址无效")
 	}
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/api/agent/enroll"

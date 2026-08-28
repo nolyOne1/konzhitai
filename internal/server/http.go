@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -23,12 +24,31 @@ type HandlerOption func(*handlerOptions)
 
 type handlerOptions struct {
 	connections *AgentConnectionHub
+	sync        SyncCoordinator
+	artifacts   AgentArtifactProvider
+}
+
+type SyncCoordinator interface {
+	NextCommand(context.Context, string) (agentprotocol.SyncCommand, bool, error)
+	RecordResult(context.Context, string, agentprotocol.SyncResult) error
+}
+
+type AgentArtifactProvider interface {
+	OpenVersionArtifact(context.Context, string, string) (io.ReadCloser, string, error)
 }
 
 func WithConnectionHub(connections *AgentConnectionHub) HandlerOption {
 	return func(options *handlerOptions) {
 		options.connections = connections
 	}
+}
+
+func WithSyncCoordinator(coordinator SyncCoordinator) HandlerOption {
+	return func(options *handlerOptions) { options.sync = coordinator }
+}
+
+func WithAgentArtifactProvider(provider AgentArtifactProvider) HandlerOption {
+	return func(options *handlerOptions) { options.artifacts = provider }
 }
 
 func Handler(registry *Registry, enrollment EnrollmentManager, options ...HandlerOption) http.Handler {
@@ -42,8 +62,37 @@ func Handler(registry *Registry, enrollment EnrollmentManager, options ...Handle
 		auth.Require(auth.PermissionAdmin)(createEnrollmentTokenHandler(enrollment)),
 	)
 	router.HandleFunc("POST /api/agent/enroll", enrollAgentHandler(enrollment))
-	router.HandleFunc("GET /api/agent/connect", agentConnectHandler(registry, enrollment, configuration.connections))
+	if configuration.artifacts != nil {
+		router.HandleFunc("GET /api/agent/scripts/{versionID}/artifact", agentArtifactHandler(enrollment, configuration.artifacts))
+	}
+	router.HandleFunc("GET /api/agent/connect", agentConnectHandler(registry, enrollment, configuration.connections, configuration.sync))
 	return router
+}
+
+func agentArtifactHandler(enrollment EnrollmentManager, provider AgentArtifactProvider) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		credential, ok := bearerCredential(r.Header.Get("Authorization"))
+		if !ok {
+			writeServerError(w, http.StatusUnauthorized, "缺少代理凭据")
+			return
+		}
+		serverID, err := enrollment.Authenticate(r.Context(), credential)
+		if err != nil {
+			writeServerError(w, http.StatusUnauthorized, "代理凭据无效或已撤销")
+			return
+		}
+		body, checksum, err := provider.OpenVersionArtifact(r.Context(), serverID, r.PathValue("versionID"))
+		if err != nil {
+			writeServerError(w, http.StatusNotFound, "脚本包不存在")
+			return
+		}
+		defer body.Close()
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Header().Set("X-Content-SHA256", checksum)
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, body)
+	}
 }
 
 func ManagementHandler(query ManagementQuery) http.Handler {
@@ -171,6 +220,7 @@ func agentConnectHandler(
 	registry *Registry,
 	enrollment EnrollmentManager,
 	connections *AgentConnectionHub,
+	coordinator SyncCoordinator,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		credential, ok := bearerCredential(r.Header.Get("Authorization"))
@@ -194,14 +244,50 @@ func agentConnectHandler(
 		connection.SetReadLimit(64 << 10)
 		ctx := context.Background()
 		for {
-			var heartbeat agentprotocol.Heartbeat
-			if err := wsjson.Read(ctx, connection, &heartbeat); err != nil {
+			var payload json.RawMessage
+			if err := wsjson.Read(ctx, connection, &payload); err != nil {
 				return
 			}
-			heartbeat.ServerID = serverID
-			if err := registry.AcceptHeartbeat(ctx, heartbeat); err != nil {
-				_ = connection.Close(websocket.StatusPolicyViolation, "心跳内容无效")
+			var messageType struct {
+				State agentprotocol.SyncState `json:"state"`
+			}
+			if err := json.Unmarshal(payload, &messageType); err != nil {
+				_ = connection.Close(websocket.StatusUnsupportedData, "代理消息格式无效")
 				return
+			}
+			if messageType.State != "" {
+				if coordinator == nil {
+					_ = connection.Close(websocket.StatusPolicyViolation, "同步服务尚未启用")
+					return
+				}
+				var result agentprotocol.SyncResult
+				if err := json.Unmarshal(payload, &result); err != nil || coordinator.RecordResult(ctx, serverID, result) != nil {
+					_ = connection.Close(websocket.StatusPolicyViolation, "脚本同步结果无效")
+					return
+				}
+			} else {
+				var heartbeat agentprotocol.Heartbeat
+				if err := json.Unmarshal(payload, &heartbeat); err != nil {
+					_ = connection.Close(websocket.StatusUnsupportedData, "心跳格式无效")
+					return
+				}
+				heartbeat.ServerID = serverID
+				if err := registry.AcceptHeartbeat(ctx, heartbeat); err != nil {
+					_ = connection.Close(websocket.StatusPolicyViolation, "心跳内容无效")
+					return
+				}
+			}
+			if coordinator != nil {
+				command, ok, err := coordinator.NextCommand(ctx, serverID)
+				if err != nil {
+					_ = connection.Close(websocket.StatusInternalError, "同步调度暂时不可用")
+					return
+				}
+				if ok {
+					if err := wsjson.Write(ctx, connection, command); err != nil {
+						return
+					}
+				}
 			}
 		}
 	}

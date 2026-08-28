@@ -53,7 +53,6 @@ func main() {
 		enrollment := server.NewEnrollmentService(serverRepository, time.Now)
 		connections := server.NewAgentConnectionHub()
 		serverHandler = server.Handler(registry, enrollment, server.WithConnectionHub(connections))
-		protectedServerHandler = auth.Authenticate(authService)(serverHandler)
 		management := server.NewManagementService(serverRepository, connections)
 		managementHandler = auth.Authenticate(authService)(server.ManagementHandler(management))
 
@@ -69,8 +68,15 @@ func main() {
 			log.Printf("脚本对象存储尚未配置，脚本接口将返回暂不可用：%v", err)
 		} else {
 			scriptService := script.NewService(pool, objectStore, time.Now)
-			scriptHandler = auth.Authenticate(authService)(script.Handler(scriptService))
+			syncService := script.NewSyncService(pool, publicBaseURL(address), time.Now)
+			serverHandler = server.Handler(
+				registry, enrollment, server.WithConnectionHub(connections),
+				server.WithSyncCoordinator(syncService),
+				server.WithAgentArtifactProvider(script.NewVersionArtifactProvider(pool, objectStore)),
+			)
+			scriptHandler = auth.Authenticate(authService)(script.Handler(scriptService, script.WithSyncManager(syncService)))
 		}
+		protectedServerHandler = auth.Authenticate(authService)(serverHandler)
 		go func() {
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()
@@ -99,4 +105,14 @@ func main() {
 	if err := http.ListenAndServe(address, router); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func publicBaseURL(address string) string {
+	if configured := os.Getenv("YUNLING_PUBLIC_URL"); configured != "" {
+		return configured
+	}
+	if address == "" || address[0] == ':' {
+		return "http://127.0.0.1" + address
+	}
+	return "http://" + address
 }

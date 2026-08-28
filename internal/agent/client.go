@@ -3,9 +3,11 @@ package agent
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -101,6 +103,7 @@ func (t realTicker) C() <-chan time.Time {
 
 type WebSocketSender struct {
 	connection *websocket.Conn
+	writeMu    sync.Mutex
 }
 
 func DialHeartbeatSender(ctx context.Context, controlURL, credential string) (*WebSocketSender, error) {
@@ -118,12 +121,27 @@ func DialHeartbeatSender(ctx context.Context, controlURL, credential string) (*W
 		}
 		return nil, fmt.Errorf("连接中央服务 WebSocket（状态码 %d）：%w", status, err)
 	}
-	connection.CloseRead(context.Background())
 	return &WebSocketSender{connection: connection}, nil
 }
 
 func (s *WebSocketSender) SendHeartbeat(ctx context.Context, heartbeat agentprotocol.Heartbeat) error {
-	return wsjson.Write(ctx, s.connection, heartbeat)
+	return s.write(ctx, heartbeat)
+}
+
+func (s *WebSocketSender) ReceiveSyncCommand(ctx context.Context) (agentprotocol.SyncCommand, error) {
+	var command agentprotocol.SyncCommand
+	err := wsjson.Read(ctx, s.connection, &command)
+	return command, err
+}
+
+func (s *WebSocketSender) SendSyncResult(ctx context.Context, result agentprotocol.SyncResult) error {
+	return s.write(ctx, result)
+}
+
+func (s *WebSocketSender) write(ctx context.Context, value any) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return wsjson.Write(ctx, s.connection, value)
 }
 
 func (s *WebSocketSender) Close() error {
@@ -139,6 +157,9 @@ func agentConnectURL(controlURL string) (string, error) {
 	case "https":
 		parsed.Scheme = "wss"
 	case "http":
+		if !isLoopbackHostname(parsed.Hostname()) {
+			return "", fmt.Errorf("中央服务地址必须使用 HTTPS")
+		}
 		parsed.Scheme = "ws"
 	case "ws", "wss":
 	default:
@@ -151,4 +172,12 @@ func agentConnectURL(controlURL string) (string, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
+}
+
+func isLoopbackHostname(hostname string) bool {
+	if strings.EqualFold(hostname, "localhost") {
+		return true
+	}
+	address := net.ParseIP(hostname)
+	return address != nil && address.IsLoopback()
 }

@@ -540,7 +540,7 @@ git commit -m "feat: 添加脚本版本发布和回滚"
 - Produces: `executor.Discovery.List(ctx, allowedRoots []string) ([]executor.DiscoveredScript, error)`，结果只包含允许目录内的普通文件。
 - Produces: 同步状态 `pending`、`downloading`、`ready`、`failed`、`drifted`。
 
-- [ ] **Step 1: 写校验失败不替换旧版本的测试**
+- [x] **Step 1: 写校验失败不替换旧版本的测试**
 
 ```go
 func TestEnsureKeepsCurrentVersionWhenChecksumFails(t *testing.T) {
@@ -563,29 +563,29 @@ func TestDiscoveryRejectsSymlinkOutsideAllowedRoot(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: `go test ./internal/executor ./internal/script -run 'TestEnsure|TestSync' -v`  
 Expected: FAIL，缺少 Cache 与同步服务。
 
-- [ ] **Step 3: 实现临时下载、校验和原子切换**
+- [x] **Step 3: 实现临时下载、校验和原子切换**
 
 代理写入 `<cache>/.staging/{versionID}`，校验 SHA-256 后以原子重命名切换 `<cache>/scripts/{scriptID}/{versionID}`，最后更新只包含版本号和校验值的 `manifest.json`。失败时删除 staging 内容，当前版本保持不变。
 
-- [ ] **Step 4: 实现允许目录扫描与首次导入**
+- [x] **Step 4: 实现允许目录扫描与首次导入**
 
 代理配置显式列出 `allowed_script_roots`。Discovery 使用解析后的绝对路径检查每个候选文件仍位于允许根目录，拒绝符号链接越界、设备文件和超过上限的文件。控制台可查看发现结果并选择导入，导入内容进入中央草稿，发布后才成为纳管版本。
 
-- [ ] **Step 5: 实现漂移扫描和服务器隔离**
+- [x] **Step 5: 实现漂移扫描和服务器隔离**
 
 代理每 60 秒校验当前清单。发现漂移后发送 `SyncResult{State:"drifted"}`；中央服务禁止该服务器接收对应脚本的新任务，自动重新同步，成功后解除该脚本级隔离。
 
-- [ ] **Step 6: 运行同步、目录边界和漂移测试**
+- [x] **Step 6: 运行同步、目录边界和漂移测试**
 
 Run: `go test ./internal/executor ./internal/script -v`  
 Expected: PASS。
 
-- [ ] **Step 7: 提交脚本同步能力**
+- [x] **Step 7: 提交脚本同步能力**
 
 ```bash
 git add internal/agentprotocol internal/script internal/executor apps/web/src/features/scripts/SyncStatusPanel.tsx

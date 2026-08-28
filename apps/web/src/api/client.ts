@@ -118,6 +118,24 @@ export interface ScriptDetail {
   versions: ScriptVersion[]
 }
 
+export type ScriptSyncState = 'pending' | 'downloading' | 'ready' | 'failed' | 'drifted'
+
+export interface ScriptSyncView {
+  id: string
+  serverId: string
+  serverName: string
+  scriptId: string
+  versionId: string
+  versionNumber: number
+  state: ScriptSyncState
+  artifactSha256: string
+  errorCode: string
+  errorMessage: string
+  blocked: boolean
+  syncedAt: string | null
+  updatedAt: string
+}
+
 export interface CreateScriptInput {
   name: string
   description: string
@@ -211,6 +229,22 @@ export async function rollbackScript(id: string, versionId: string, releaseNotes
 export async function getScriptVersionContent(id: string, versionId: string): Promise<string> {
   const response = await request<{ content: string }>(`/api/scripts/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}/content`)
   return response.content
+}
+
+export async function getScriptSyncs(id: string): Promise<ScriptSyncView[]> {
+  const response = await request<{ syncs: ScriptSyncView[] }>(`/api/scripts/${encodeURIComponent(id)}/syncs`)
+  return response.syncs
+}
+
+export async function retryScriptSync(scriptId: string, syncId: string): Promise<void> {
+  const response = await fetch(`/api/scripts/${encodeURIComponent(scriptId)}/syncs/${encodeURIComponent(syncId)}/retry`, {
+    method: 'POST',
+    credentials: 'same-origin',
+  })
+  if (!response.ok) {
+    const failure = await response.json().catch(() => ({ message: '重试同步失败' })) as { message?: string }
+    throw new Error(failure.message || '重试同步失败')
+  }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

@@ -1,15 +1,19 @@
 package script
 
-import "time"
+import (
+	"time"
 
-type SyncState string
+	"yunling.local/platform/internal/agentprotocol"
+)
+
+type SyncState = agentprotocol.SyncState
 
 const (
-	SyncPending SyncState = "pending"
-	Syncing     SyncState = "syncing"
-	Synced      SyncState = "synced"
-	SyncFailed  SyncState = "failed"
-	SyncDrifted SyncState = "drifted"
+	SyncPending     = agentprotocol.SyncPending
+	SyncDownloading = agentprotocol.SyncDownloading
+	SyncReady       = agentprotocol.SyncReady
+	SyncFailed      = agentprotocol.SyncFailed
+	SyncDrifted     = agentprotocol.SyncDrifted
 )
 
 type Script struct {
@@ -83,4 +87,20 @@ type Draft struct {
 	Content       string    `json:"content"`
 	Manifest      Manifest  `json:"manifest"`
 	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+type SyncView struct {
+	ID             string                  `json:"id"`
+	ServerID       string                  `json:"serverId"`
+	ServerName     string                  `json:"serverName"`
+	ScriptID       string                  `json:"scriptId"`
+	VersionID      string                  `json:"versionId"`
+	VersionNumber  int                     `json:"versionNumber"`
+	State          agentprotocol.SyncState `json:"state"`
+	ArtifactSHA256 string                  `json:"artifactSha256"`
+	ErrorCode      string                  `json:"errorCode"`
+	ErrorMessage   string                  `json:"errorMessage"`
+	Blocked        bool                    `json:"blocked"`
+	SyncedAt       *time.Time              `json:"syncedAt"`
+	UpdatedAt      time.Time               `json:"updatedAt"`
 }

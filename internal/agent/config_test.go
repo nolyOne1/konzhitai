@@ -8,8 +8,17 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
+
+func TestParseAllowedScriptRootsUsesPlatformPathSeparator(t *testing.T) {
+	value := strings.Join([]string{" /srv/jobs ", "/opt/team-jobs", "/srv/jobs"}, string(os.PathListSeparator))
+	got := ParseAllowedScriptRoots(value)
+	if len(got) != 2 || got[0] != "/srv/jobs" || got[1] != "/opt/team-jobs" {
+		t.Fatalf("允许目录应去空白并去重：%+v", got)
+	}
+}
 
 func TestCredentialsRoundTripWithoutBroadFilePermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config", "credentials.json")

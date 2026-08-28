@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,6 +62,61 @@ func TestAgentConnectAuthenticatesAndOverridesClaimedServerID(t *testing.T) {
 	}
 	if repository.snapshot.CPUUsedMilli != 1800 {
 		t.Fatalf("中央服务未保存心跳资源值：%+v", repository.snapshot)
+	}
+}
+
+func TestAgentConnectDispatchesSyncCommandAndRecordsResult(t *testing.T) {
+	repository := newMemoryServerRepository()
+	repository.saved = make(chan struct{}, 1)
+	registry := NewRegistry(repository, time.Now)
+	enrollment := &fakeEnrollmentManager{serverID: "server-sync"}
+	coordinator := &fakeSyncCoordinator{command: agentprotocol.SyncCommand{
+		ScriptID: "script-1", VersionID: "version-1", ArtifactURL: "https://control.example/artifact", SHA256: strings.Repeat("a", 64),
+	}}
+	server := httptest.NewServer(Handler(registry, enrollment, WithSyncCoordinator(coordinator)))
+	defer server.Close()
+
+	header := http.Header{}
+	header.Set("Authorization", "Bearer valid-agent-credential")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	connection, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/agent/connect", &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatalf("建立代理 WebSocket 连接：%v", err)
+	}
+	defer connection.CloseNow()
+	if err := wsjson.Write(ctx, connection, agentprotocol.Heartbeat{Sequence: 1}); err != nil {
+		t.Fatalf("发送触发同步的心跳：%v", err)
+	}
+	var command agentprotocol.SyncCommand
+	if err := wsjson.Read(ctx, connection, &command); err != nil || command.VersionID != "version-1" {
+		t.Fatalf("中央服务应向连接下发同步命令：command=%+v err=%v", command, err)
+	}
+	result := agentprotocol.SyncResult{ScriptID: command.ScriptID, VersionID: command.VersionID, State: agentprotocol.SyncReady, SHA256: command.SHA256}
+	if err := wsjson.Write(ctx, connection, result); err != nil {
+		t.Fatalf("发送同步结果：%v", err)
+	}
+	select {
+	case recorded := <-coordinator.results:
+		if coordinator.serverID != "server-sync" || recorded.State != agentprotocol.SyncReady {
+			t.Fatalf("中央服务记录的同步结果不正确：server=%s result=%+v", coordinator.serverID, recorded)
+		}
+	case <-ctx.Done():
+		t.Fatal("中央服务未记录代理同步结果")
+	}
+}
+
+func TestAgentArtifactDownloadUsesAuthenticatedServerScope(t *testing.T) {
+	provider := &fakeAgentArtifactProvider{}
+	handler := Handler(NewRegistry(newMemoryServerRepository(), time.Now), &fakeEnrollmentManager{serverID: "server-artifact"}, WithAgentArtifactProvider(provider))
+	request := httptest.NewRequest(http.MethodGet, "/api/agent/scripts/version-1/artifact", nil)
+	request.Header.Set("Authorization", "Bearer valid-agent-credential")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "archive" || provider.serverID != "server-artifact" || provider.versionID != "version-1" {
+		t.Fatalf("脚本包下载必须绑定认证服务器：code=%d body=%q server=%s version=%s", recorder.Code, recorder.Body.String(), provider.serverID, provider.versionID)
 	}
 }
 
@@ -179,6 +235,41 @@ func TestUpdateServerAllowsOperatorToRequestDrain(t *testing.T) {
 type fakeEnrollmentManager struct {
 	serverID string
 	issued   EnrollmentToken
+}
+
+type fakeSyncCoordinator struct {
+	command    agentprotocol.SyncCommand
+	dispatched bool
+	serverID   string
+	results    chan agentprotocol.SyncResult
+}
+
+type fakeAgentArtifactProvider struct {
+	serverID  string
+	versionID string
+}
+
+func (p *fakeAgentArtifactProvider) OpenVersionArtifact(_ context.Context, serverID, versionID string) (io.ReadCloser, string, error) {
+	p.serverID = serverID
+	p.versionID = versionID
+	return io.NopCloser(strings.NewReader("archive")), strings.Repeat("a", 64), nil
+}
+
+func (c *fakeSyncCoordinator) NextCommand(context.Context, string) (agentprotocol.SyncCommand, bool, error) {
+	if c.dispatched {
+		return agentprotocol.SyncCommand{}, false, nil
+	}
+	c.dispatched = true
+	if c.results == nil {
+		c.results = make(chan agentprotocol.SyncResult, 1)
+	}
+	return c.command, true, nil
+}
+
+func (c *fakeSyncCoordinator) RecordResult(_ context.Context, serverID string, result agentprotocol.SyncResult) error {
+	c.serverID = serverID
+	c.results <- result
+	return nil
 }
 
 type fakeManagementQuery struct {

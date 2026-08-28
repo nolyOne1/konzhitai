@@ -26,17 +26,39 @@ type Manager interface {
 	VersionContent(context.Context, string, string) (string, error)
 }
 
-func Handler(manager Manager) http.Handler {
+type SyncManager interface {
+	PrepareVersion(context.Context, string) (int64, error)
+	List(context.Context, string) ([]SyncView, error)
+	Retry(context.Context, string) error
+}
+
+type HandlerOption func(*handlerOptions)
+
+type handlerOptions struct{ sync SyncManager }
+
+func WithSyncManager(sync SyncManager) HandlerOption {
+	return func(options *handlerOptions) { options.sync = sync }
+}
+
+func Handler(manager Manager, options ...HandlerOption) http.Handler {
+	configuration := handlerOptions{}
+	for _, option := range options {
+		option(&configuration)
+	}
 	router := http.NewServeMux()
 	router.Handle("GET /api/scripts", auth.Require(auth.PermissionRead)(listHandler(manager)))
 	router.Handle("POST /api/scripts", auth.Require(auth.PermissionPublishScript)(createHandler(manager)))
 	router.Handle("POST /api/scripts/import", auth.Require(auth.PermissionPublishScript)(importHandler(manager)))
 	router.Handle("GET /api/scripts/{id}", auth.Require(auth.PermissionRead)(detailHandler(manager)))
 	router.Handle("PUT /api/scripts/{id}/draft", auth.Require(auth.PermissionPublishScript)(draftHandler(manager)))
-	router.Handle("POST /api/scripts/{id}/publish", auth.Require(auth.PermissionPublishScript)(publishHandler(manager)))
+	router.Handle("POST /api/scripts/{id}/publish", auth.Require(auth.PermissionPublishScript)(publishHandler(manager, configuration.sync)))
 	router.Handle("GET /api/scripts/{id}/versions", auth.Require(auth.PermissionRead)(versionsHandler(manager)))
 	router.Handle("GET /api/scripts/{id}/versions/{versionID}/content", auth.Require(auth.PermissionRead)(versionContentHandler(manager)))
-	router.Handle("POST /api/scripts/{id}/rollback", auth.Require(auth.PermissionPublishScript)(rollbackHandler(manager)))
+	router.Handle("POST /api/scripts/{id}/rollback", auth.Require(auth.PermissionPublishScript)(rollbackHandler(manager, configuration.sync)))
+	if configuration.sync != nil {
+		router.Handle("GET /api/scripts/{id}/syncs", auth.Require(auth.PermissionRead)(syncListHandler(configuration.sync)))
+		router.Handle("POST /api/scripts/{id}/syncs/{syncID}/retry", auth.Require(auth.PermissionExecute)(syncRetryHandler(configuration.sync)))
+	}
 	return router
 }
 
@@ -171,7 +193,7 @@ func draftHandler(manager Manager) http.Handler {
 	})
 }
 
-func publishHandler(manager Manager) http.Handler {
+func publishHandler(manager Manager, sync SyncManager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request publishRequest
 		if err := decodeScriptJSON(w, r, &request); err != nil {
@@ -192,6 +214,11 @@ func publishHandler(manager Manager) http.Handler {
 		if err != nil {
 			writeScriptError(w, http.StatusInternalServerError, "发布脚本失败")
 			return
+		}
+		if sync != nil {
+			if _, err := sync.PrepareVersion(r.Context(), version.ID); err != nil {
+				w.Header().Set("Warning", `199 yunling "版本已发布，但同步记录创建失败，请稍后重试"`)
+			}
 		}
 		writeScriptJSON(w, http.StatusCreated, version)
 	})
@@ -225,7 +252,7 @@ func versionContentHandler(manager Manager) http.Handler {
 	})
 }
 
-func rollbackHandler(manager Manager) http.Handler {
+func rollbackHandler(manager Manager, sync SyncManager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			VersionID    string `json:"versionId"`
@@ -247,7 +274,40 @@ func rollbackHandler(manager Manager) http.Handler {
 			writeScriptError(w, http.StatusInternalServerError, "回滚脚本失败")
 			return
 		}
+		if sync != nil {
+			if _, err := sync.PrepareVersion(r.Context(), version.ID); err != nil {
+				w.Header().Set("Warning", `199 yunling "回滚版本已创建，但同步记录创建失败，请稍后重试"`)
+			}
+		}
 		writeScriptJSON(w, http.StatusCreated, version)
+	})
+}
+
+func syncListHandler(sync SyncManager) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		items, err := sync.List(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeScriptError(w, http.StatusInternalServerError, "读取脚本同步状态失败")
+			return
+		}
+		if items == nil {
+			items = []SyncView{}
+		}
+		writeScriptJSON(w, http.StatusOK, map[string]any{"syncs": items})
+	})
+}
+
+func syncRetryHandler(sync SyncManager) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := sync.Retry(r.Context(), r.PathValue("syncID")); err != nil {
+			if errors.Is(err, ErrSyncNotFound) {
+				writeScriptError(w, http.StatusNotFound, err.Error())
+				return
+			}
+			writeScriptError(w, http.StatusInternalServerError, "重试脚本同步失败")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 }
 

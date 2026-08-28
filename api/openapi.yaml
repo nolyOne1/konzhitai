@@ -438,6 +438,52 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/scripts/{id}/syncs:
+    get:
+      operationId: listScriptSyncs
+      summary: 获取脚本版本在各服务器的同步状态
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ScriptID"
+      responses:
+        "200":
+          description: 同步状态列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [syncs]
+                properties:
+                  syncs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ScriptSync"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/scripts/{id}/syncs/{syncID}/retry:
+    post:
+      operationId: retryScriptSync
+      summary: 重新同步失败或漂移的服务器脚本
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ScriptID"
+        - name: syncID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: 已重新进入等待下载状态
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /api/agent/enroll:
     post:
       operationId: enrollAgent
@@ -483,6 +529,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/agent/scripts/{versionID}/artifact:
+    get:
+      operationId: downloadAgentScriptArtifact
+      summary: 下载待同步的不可变脚本包
+      security:
+        - agentBearer: []
+      parameters:
+        - name: versionID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: gzip 压缩的 tar 脚本包，代理会在原子切换前校验 SHA-256
+          headers:
+            X-Content-SHA256:
+              schema:
+                type: string
+                pattern: ^[0-9a-f]{64}$
+          content:
+            application/gzip:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
 components:
   securitySchemes:
     sessionCookie:
@@ -879,6 +955,45 @@ components:
         createdBy:
           type: string
         createdAt:
+          type: string
+          format: date-time
+    ScriptSync:
+      type: object
+      required: [id, serverId, serverName, scriptId, versionId, versionNumber, state, artifactSha256, errorCode, errorMessage, blocked, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        serverId:
+          type: string
+          format: uuid
+        serverName:
+          type: string
+        scriptId:
+          type: string
+          format: uuid
+        versionId:
+          type: string
+          format: uuid
+        versionNumber:
+          type: integer
+          minimum: 1
+        state:
+          type: string
+          enum: [pending, downloading, ready, failed, drifted]
+        artifactSha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        blocked:
+          type: boolean
+        syncedAt:
+          type: [string, "null"]
+          format: date-time
+        updatedAt:
           type: string
           format: date-time
     ScriptDetail:

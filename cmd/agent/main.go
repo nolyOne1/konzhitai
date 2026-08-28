@@ -6,10 +6,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
 	"yunling.local/platform/internal/agent"
+	"yunling.local/platform/internal/executor"
 )
 
 const agentVersion = "0.1.0"
@@ -61,6 +63,14 @@ func main() {
 		}
 	}
 	collector := agent.NewCollector(stats, runtimes)
+	allowedRoots := agent.ParseAllowedScriptRoots(os.Getenv("YUNLING_ALLOWED_SCRIPT_ROOTS"))
+	if len(allowedRoots) > 0 {
+		discovered, err := executor.NewDiscovery().List(context.Background(), allowedRoots)
+		if err != nil {
+			log.Fatalf("扫描允许脚本目录失败：%v", err)
+		}
+		log.Printf("已从允许目录发现 %d 个可导入脚本", len(discovered))
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -70,9 +80,20 @@ func main() {
 	}
 	defer sender.Close()
 
-	client := agent.NewClient(credentials.ServerID, agentVersion, collector, sender)
+	heartbeatClient := agent.NewClient(credentials.ServerID, agentVersion, collector, sender)
+	cacheRoot := filepath.Join(diskPath, "script-cache")
+	cache := executor.NewCache(cacheRoot, agent.NewCredentialDownloader(credentials.Credential, nil))
+	syncClient := agent.NewSyncClient(cache, executor.NewDriftScanner(cacheRoot), sender)
 	log.Printf("云令代理已连接，服务器编号：%s", credentials.ServerID)
-	if err := client.Run(ctx); err != nil {
-		log.Fatalf("云令代理停止：%v", err)
+	errors := make(chan error, 2)
+	go func() { errors <- heartbeatClient.Run(ctx) }()
+	go func() { errors <- syncClient.Run(ctx) }()
+	select {
+	case <-ctx.Done():
+		return
+	case err := <-errors:
+		if err != nil {
+			log.Fatalf("云令代理停止：%v", err)
+		}
 	}
 }

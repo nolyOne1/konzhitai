@@ -13,6 +13,7 @@ import {
   type ScriptEditorInput,
   type ScriptVersion,
 } from '../../api/client'
+import { SyncStatusPanel } from './SyncStatusPanel'
 
 type EditorState = {
   content: string
@@ -263,6 +264,8 @@ export function ScriptEditorPage() {
           </SettingsSection>
         </aside>
       </div>
+
+      <SyncStatusPanel scriptId={id} refreshKey={detail.script.currentVersionId} />
 
       <section className="panel version-panel" aria-labelledby="version-title">
         <header className="panel-header"><div><h2 id="version-title">版本历史</h2><p>版本只追加，不覆盖；回滚也会生成一个新的发布版本。</p></div><span>{detail.versions.length} 个版本</span></header>
