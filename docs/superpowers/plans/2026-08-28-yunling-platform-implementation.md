@@ -91,7 +91,7 @@
 - Produces: `GET /api/health` 返回 `{"status":"ok"}`。
 - Produces: Web 根布局显示“云令”和“脚本调度中心”。
 
-- [ ] **Step 1: 先写 API 健康检查失败测试**
+- [x] **Step 1: 先写 API 健康检查失败测试**
 
 ```go
 func TestHandlerReturnsOK(t *testing.T) {
@@ -103,12 +103,12 @@ func TestHandlerReturnsOK(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: `go test ./internal/health -run TestHandlerReturnsOK -v`  
 Expected: FAIL，提示 `internal/health` 或 `health.Handler` 不存在。
 
-- [ ] **Step 3: 写最小 API 实现和入口**
+- [x] **Step 3: 写最小 API 实现和入口**
 
 `go.mod` 使用 `module yunling.local/platform` 和 `go 1.27.0`。运行 `go get github.com/stretchr/testify@latest` 安装测试断言库，再运行 `go mod tidy` 生成锁定依赖的 `go.sum`。
 
@@ -123,7 +123,7 @@ func Handler() http.Handler {
 
 `cmd/api/main.go` 将该处理器挂载到 `/api/health`，监听地址从 `YUNLING_HTTP_ADDR` 读取，默认 `:8080`。
 
-- [ ] **Step 4: 先写中文应用壳失败测试**
+- [x] **Step 4: 先写中文应用壳失败测试**
 
 ```tsx
 it('显示云令中文控制台框架', () => {
@@ -134,13 +134,13 @@ it('显示云令中文控制台框架', () => {
 })
 ```
 
-- [ ] **Step 5: 初始化 React/Vite 并实现最小应用壳**
+- [x] **Step 5: 初始化 React/Vite 并实现最小应用壳**
 
 根 `package.json` 声明 `apps/web` workspace。运行 `npm install --workspace apps/web react react-dom react-router-dom @tanstack/react-query`，再运行 `npm install --workspace apps/web --save-dev vite typescript @vitejs/plugin-react vitest jsdom @testing-library/react @testing-library/jest-dom @testing-library/user-event`，生成并提交 `package-lock.json`。
 
 `App.tsx` 使用语义化侧栏和主内容区，主导航先包含：运行总览、脚本中心、任务调度、执行记录、服务器、脚本同步、参数与密钥、团队与权限、系统设置。`styles.css` 定义已确认的深绿色侧栏、浅色数据区、中文字体栈、44px 触控目标、清晰焦点和 560/820px 响应式断点。
 
-- [ ] **Step 6: 运行基础测试和构建**
+- [x] **Step 6: 运行基础测试和构建**
 
 Run: `go test ./internal/health -v`  
 Expected: PASS。
@@ -151,7 +151,7 @@ Expected: PASS。
 Run: `npm --workspace apps/web run build`  
 Expected: PASS，并生成 `apps/web/dist`。
 
-- [ ] **Step 7: 提交骨架**
+- [x] **Step 7: 提交骨架**
 
 ```bash
 git add go.mod go.sum package.json package-lock.json apps/web api/openapi.yaml cmd/api internal/health .gitignore Makefile
@@ -179,7 +179,7 @@ git commit -m "chore: 建立云令单仓库骨架"
 - Produces: `postgres.Open(ctx context.Context, dsn string) (*pgxpool.Pool, error)`。
 - Produces: PostgreSQL 表 `users`、`roles`、`user_roles`、`servers`、`server_snapshots`、`scripts`、`script_drafts`、`script_versions`、`script_syncs`、`secrets`、`task_definitions`、`task_schedules`、`task_runs`、`resource_leases`、`run_events`、`log_chunks`、`audit_logs`。
 
-- [ ] **Step 1: 写状态机和迁移失败测试**
+- [x] **Step 1: 写状态机和迁移失败测试**
 
 ```go
 func TestRunStateTerminal(t *testing.T) {
@@ -201,12 +201,12 @@ func TestInitialMigrationCreatesCoreTables(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行目标测试并确认失败**
+- [x] **Step 2: 运行目标测试并确认失败**
 
 Run: `go test ./internal/task ./internal/store/postgres -run 'TestRunStateTerminal|TestInitialMigrationCreatesCoreTables' -v`  
 Expected: FAIL，缺少领域类型与迁移文件。
 
-- [ ] **Step 3: 实现领域类型和初始迁移**
+- [x] **Step 3: 实现领域类型和初始迁移**
 
 ```go
 type RunState string
@@ -228,12 +228,14 @@ const (
 
 迁移为每个实体使用 UUID 主键和 `created_at`；版本、运行事件、日志块、审计日志禁止更新历史内容；`task_runs` 对 `(task_definition_id, scheduled_for)` 建唯一索引避免定时任务重复创建。
 
-- [ ] **Step 4: 运行领域和迁移测试**
+测试运行时使用 `github.com/fergusstrange/embedded-postgres@v1.34.0` 启动工作区本地 PostgreSQL 18.3，缓存、运行时和数据目录均放在 `.tools/embedded-postgres/`。生产部署仍使用 Docker Compose 管理独立 PostgreSQL 服务。
+
+- [x] **Step 4: 运行领域和迁移测试**
 
 Run: `go test ./internal/task ./internal/store/postgres -v`  
 Expected: PASS。
 
-- [ ] **Step 5: 提交领域与迁移**
+- [x] **Step 5: 提交领域与迁移**
 
 ```bash
 git add internal/server internal/script internal/task internal/auth internal/audit internal/store/postgres migrations
