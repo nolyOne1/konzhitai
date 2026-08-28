@@ -161,6 +161,69 @@ export interface PublishScriptInput extends ScriptEditorInput {
   releaseNotes: string
 }
 
+export type TaskVersionPolicy = 'latest' | 'pinned'
+
+export interface TaskResources {
+  cpuMillicores: number
+  memoryBytes: number
+  diskBytes: number
+}
+
+export interface TaskRetryPolicy {
+  maxRetries: number
+  backoffSeconds: number
+}
+
+export interface TaskDefinition {
+  id: string
+  name: string
+  description: string
+  scriptId: string
+  scriptName: string
+  versionPolicy: TaskVersionPolicy
+  pinnedVersionId?: string
+  parameters: Record<string, unknown>
+  secretRefs: Record<string, string>
+  priority: number
+  requiredLabels: Record<string, string>
+  requiredRuntime: string
+  resources: TaskResources
+  maxConcurrency: number
+  timeoutSeconds: number
+  maxWaitSeconds: number
+  retryPolicy: TaskRetryPolicy
+  idempotent: boolean
+  enabled: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export type TaskInput = Omit<TaskDefinition, 'id' | 'scriptName' | 'createdAt' | 'updatedAt'>
+
+export interface TaskRun {
+  id: string
+  definitionId: string
+  scriptVersionId: string
+  triggerType: 'manual' | 'schedule' | 'retry'
+  state: string
+  queuedAt: string
+}
+
+export interface TaskSchedule {
+  id: string
+  definitionId: string
+  cronExpression: string
+  timezone: string
+  enabled: boolean
+  nextRunAt?: string
+}
+
+export interface TaskScheduleInput {
+  cronExpression: string
+  timezone: string
+  enabled: boolean
+}
+
 export async function getDashboard(): Promise<DashboardData> {
   return request<DashboardData>('/api/dashboard')
 }
@@ -247,6 +310,68 @@ export async function retryScriptSync(scriptId: string, syncId: string): Promise
   }
 }
 
+export async function getTasks(): Promise<TaskDefinition[]> {
+  const response = await request<{ tasks: TaskDefinition[] }>('/api/tasks')
+  return response.tasks
+}
+
+export async function getTask(id: string): Promise<TaskDefinition> {
+  return request<TaskDefinition>(`/api/tasks/${encodeURIComponent(id)}`)
+}
+
+export async function createTask(input: TaskInput): Promise<TaskDefinition> {
+  return request<TaskDefinition>('/api/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function updateTask(id: string, input: TaskInput): Promise<TaskDefinition> {
+  return request<TaskDefinition>(`/api/tasks/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function setTaskEnabled(id: string, enabled: boolean, cancelQueued = false): Promise<void> {
+  await request<void>(`/api/tasks/${encodeURIComponent(id)}/enabled`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled, cancelQueued }),
+  })
+}
+
+export async function runTask(id: string, parameters: Record<string, unknown> = {}): Promise<TaskRun> {
+  return request<TaskRun>(`/api/tasks/${encodeURIComponent(id)}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parameters }),
+  })
+}
+
+export async function getTaskSchedules(id: string): Promise<TaskSchedule[]> {
+  const response = await request<{ schedules: TaskSchedule[] }>(`/api/tasks/${encodeURIComponent(id)}/schedules`)
+  return response.schedules
+}
+
+export async function createTaskSchedule(id: string, input: TaskScheduleInput): Promise<TaskSchedule> {
+  return request<TaskSchedule>(`/api/tasks/${encodeURIComponent(id)}/schedules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function validateTaskCron(input: Pick<TaskScheduleInput, 'cronExpression' | 'timezone'>): Promise<void> {
+  await request<{ valid: boolean }>('/api/tasks/cron/validate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -256,6 +381,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const failure = await response.json().catch(() => ({ message: '请求失败' })) as { message?: string }
     throw new Error(failure.message || '请求失败')
   }
+  if (response.status === 204) return undefined as T
   try {
     return await response.json() as T
   } catch {

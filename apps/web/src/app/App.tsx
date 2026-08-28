@@ -6,6 +6,8 @@ import { DashboardPage } from '../features/dashboard/DashboardPage'
 import { ServersPage } from '../features/servers/ServersPage'
 import { ScriptEditorPage } from '../features/scripts/ScriptEditorPage'
 import { ScriptsPage } from '../features/scripts/ScriptsPage'
+import { TaskEditorPage } from '../features/tasks/TaskEditorPage'
+import { TasksPage } from '../features/tasks/TasksPage'
 
 const navigation = [
   { label: '运行总览', href: '/' },
@@ -28,6 +30,9 @@ export function App() {
           <Route index element={<DashboardPage />} />
           <Route path="/scripts" element={<ScriptsPage />} />
           <Route path="/scripts/:id" element={<ScriptEditorPage />} />
+          <Route path="/tasks" element={<TasksPage />} />
+          <Route path="/tasks/new" element={<TaskEditorPage />} />
+          <Route path="/tasks/:id" element={<TaskEditorPage />} />
           <Route path="/servers" element={<ServersPage />} />
           <Route path="*" element={<PlaceholderPage />} />
         </Route>

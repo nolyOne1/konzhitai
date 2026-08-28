@@ -1770,6 +1770,244 @@ h1 {
   line-height: 1.5;
 }
 
+.notice-success {
+  border: 1px solid #b9ddcb;
+  color: #126541;
+  background: var(--success-soft);
+}
+
+.task-rule-banner {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin-top: 22px;
+  padding: 16px 18px;
+  border: 1px solid #c8ded2;
+  border-radius: 12px;
+  background: #f1f8f4;
+}
+
+.task-rule-banner h2,
+.task-rule-banner p {
+  margin: 0;
+}
+
+.task-rule-banner h2 {
+  font-size: 14px;
+}
+
+.task-rule-banner p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.task-rule-banner > span:last-child {
+  padding: 5px 9px;
+  border-radius: 999px;
+  color: #126541;
+  background: #dcefe5;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.queue-rule-mark {
+  width: 12px;
+  height: 12px;
+  border: 3px solid var(--success);
+  border-radius: 50%;
+  box-shadow: 0 0 0 4px rgba(24, 132, 87, .12);
+}
+
+.task-summary {
+  margin-top: 14px;
+}
+
+.task-list-panel,
+.task-form-section {
+  margin-top: 18px;
+}
+
+.task-table td > strong,
+.cell-note {
+  display: block;
+}
+
+.cell-note {
+  min-width: 0;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.task-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.task-state.is-enabled {
+  color: #126541;
+  background: var(--success-soft);
+}
+
+.task-state.is-disabled {
+  color: var(--muted);
+  background: #edf1ef;
+}
+
+.task-row-actions {
+  flex-wrap: wrap;
+}
+
+.task-editor-heading > div:first-child {
+  max-width: 760px;
+}
+
+.task-editor-form {
+  width: min(100%, 1120px);
+}
+
+.task-form-section {
+  padding: 20px;
+}
+
+.task-form-section .panel-header {
+  padding: 0 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.task-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 18px;
+}
+
+.task-span-2 {
+  grid-column: 1 / -1;
+}
+
+.task-number-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 16px;
+}
+
+.task-switches {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.check-card,
+.plain-checkbox {
+  min-width: 0;
+  min-height: 64px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f8faf9;
+}
+
+.check-card input,
+.plain-checkbox input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  accent-color: var(--success);
+}
+
+.check-card span,
+.plain-checkbox span {
+  min-width: 0;
+}
+
+.check-card label,
+.plain-checkbox label {
+  cursor: pointer;
+}
+
+.check-card strong,
+.check-card small,
+.plain-checkbox strong,
+.plain-checkbox small {
+  display: block;
+}
+
+.check-card strong,
+.plain-checkbox strong {
+  font-size: 14px;
+}
+
+.check-card small,
+.plain-checkbox small,
+.form-field small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.field-error {
+  color: var(--danger) !important;
+}
+
+.schedule-fields {
+  margin-top: 4px;
+}
+
+.task-form-actions {
+  position: sticky;
+  z-index: 4;
+  bottom: 12px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .96);
+  box-shadow: 0 8px 30px rgba(16, 36, 28, .08);
+}
+
+.danger-action {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 9px;
+  color: #ffffff;
+  background: var(--danger);
+  cursor: pointer;
+}
+
+.danger-action:hover:not(:disabled) {
+  background: #96372f;
+}
+
+.danger-action:disabled {
+  cursor: wait;
+  opacity: .64;
+}
+
+.plain-checkbox {
+  margin-top: 18px;
+}
+
 .login-submit {
   width: 100%;
   min-height: 46px;
@@ -1879,6 +2117,10 @@ h1 {
   .sync-list li > button {
     width: max-content;
   }
+
+  .task-number-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 820px) {
@@ -1986,6 +2228,15 @@ h1 {
 
   .compare-grid pre {
     min-height: 260px;
+  }
+
+  .task-rule-banner {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .task-rule-banner > span:last-child {
+    grid-column: 2;
+    width: fit-content;
   }
 }
 
@@ -2191,6 +2442,28 @@ h1 {
 
   .login-card {
     padding: 26px 22px;
+  }
+
+  .task-form-grid,
+  .task-number-grid,
+  .task-switches {
+    grid-template-columns: 1fr;
+  }
+
+  .task-span-2 {
+    grid-column: auto;
+  }
+
+  .task-form-section {
+    padding: 17px 15px;
+  }
+
+  .task-form-actions {
+    position: static;
+  }
+
+  .task-form-actions > * {
+    flex: 1 1 0;
   }
 }
 

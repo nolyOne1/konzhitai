@@ -484,6 +484,253 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/tasks:
+    get:
+      operationId: listTasks
+      summary: 获取任务定义列表
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: 任务定义、资源约束与排队规则
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tasks]
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TaskDefinition"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createTask
+      summary: 创建任务定义
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskDefinitionRequest"
+      responses:
+        "201":
+          description: 任务定义已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDefinition"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/tasks/cron/validate:
+    post:
+      operationId: validateTaskCron
+      summary: 校验五段 Cron 表达式和 IANA 时区
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CronValidationRequest"
+      responses:
+        "200":
+          description: Cron 规则有效
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [valid]
+                properties:
+                  valid:
+                    type: boolean
+                    const: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /api/tasks/{id}:
+    get:
+      operationId: getTask
+      summary: 获取任务定义
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/TaskID"
+      responses:
+        "200":
+          description: 任务定义详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDefinition"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      operationId: updateTask
+      summary: 更新任务定义
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/TaskID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskDefinitionRequest"
+      responses:
+        "200":
+          description: 任务定义已更新
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDefinition"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteTask
+      summary: 删除没有运行记录的任务定义
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/TaskID"
+      responses:
+        "204":
+          description: 任务定义已删除
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/tasks/{id}/enabled:
+    patch:
+      operationId: setTaskEnabled
+      summary: 启用或停用任务
+      description: 停用时默认保留已经排队的运行实例；只有明确传入 cancelQueued=true 才取消它们。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/TaskID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+                cancelQueued:
+                  type: boolean
+                  default: false
+      responses:
+        "204":
+          description: 任务状态已更新
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/tasks/{id}/run:
+    post:
+      operationId: runTask
+      summary: 手动创建排队运行实例
+      description: 创建时锁定具体脚本版本并复制资源、重试和参数快照；没有可用服务器时继续排队。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/TaskID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                parameters:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "201":
+          description: 运行实例已进入排队队列
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskRun"
+        "409":
+          description: 任务已停用或没有可执行版本
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/tasks/{id}/schedules:
+    get:
+      operationId: listTaskSchedules
+      summary: 获取任务的定时计划
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/TaskID"
+      responses:
+        "200":
+          description: 定时计划列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [schedules]
+                properties:
+                  schedules:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TaskSchedule"
+    post:
+      operationId: createTaskSchedule
+      summary: 创建任务定时计划
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/TaskID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskScheduleRequest"
+      responses:
+        "201":
+          description: 定时计划已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskSchedule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /api/tasks/{id}/schedules/{scheduleID}:
+    delete:
+      operationId: deleteTaskSchedule
+      summary: 删除任务定时计划
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/TaskID"
+        - name: scheduleID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: 定时计划已删除
+        "404":
+          $ref: "#/components/responses/NotFound"
   /api/agent/enroll:
     post:
       operationId: enrollAgent
@@ -571,6 +818,13 @@ components:
       bearerFormat: 云令代理凭据
   parameters:
     ScriptID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TaskID:
       name: id
       in: path
       required: true
@@ -1099,6 +1353,224 @@ components:
         releaseNotes:
           type: string
           description: 必须包含中文回滚说明。
+    TaskResources:
+      type: object
+      additionalProperties: false
+      required: [cpuMillicores, memoryBytes, diskBytes]
+      properties:
+        cpuMillicores:
+          type: integer
+          minimum: 1
+        memoryBytes:
+          type: integer
+          minimum: 1
+        diskBytes:
+          type: integer
+          minimum: 1
+    TaskRetryPolicy:
+      type: object
+      additionalProperties: false
+      required: [maxRetries, backoffSeconds]
+      properties:
+        maxRetries:
+          type: integer
+          minimum: 0
+        backoffSeconds:
+          type: integer
+          minimum: 0
+    TaskDefinitionRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - scriptId
+        - versionPolicy
+        - parameters
+        - secretRefs
+        - priority
+        - requiredLabels
+        - requiredRuntime
+        - resources
+        - maxConcurrency
+        - timeoutSeconds
+        - maxWaitSeconds
+        - retryPolicy
+        - idempotent
+        - enabled
+      properties:
+        name:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        scriptId:
+          type: string
+          format: uuid
+        versionPolicy:
+          type: string
+          enum: [latest, pinned]
+        pinnedVersionId:
+          type: string
+          format: uuid
+        parameters:
+          type: object
+          additionalProperties: true
+        secretRefs:
+          type: object
+          additionalProperties:
+            type: string
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 100
+        requiredLabels:
+          type: object
+          additionalProperties:
+            type: string
+        requiredRuntime:
+          $ref: "#/components/schemas/ScriptRuntime"
+        resources:
+          $ref: "#/components/schemas/TaskResources"
+        maxConcurrency:
+          type: integer
+          minimum: 1
+        timeoutSeconds:
+          type: integer
+          minimum: 1
+        maxWaitSeconds:
+          type: integer
+          minimum: 1
+        retryPolicy:
+          $ref: "#/components/schemas/TaskRetryPolicy"
+        idempotent:
+          type: boolean
+        enabled:
+          type: boolean
+    TaskDefinition:
+      allOf:
+        - $ref: "#/components/schemas/TaskDefinitionRequest"
+        - type: object
+          required: [id, scriptName, createdAt, updatedAt]
+          properties:
+            id:
+              type: string
+              format: uuid
+            scriptName:
+              type: string
+            createdBy:
+              type: string
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+    TaskRun:
+      type: object
+      required:
+        - id
+        - definitionId
+        - scriptVersionId
+        - triggerType
+        - state
+        - parameters
+        - priority
+        - resources
+        - maxConcurrency
+        - timeoutSeconds
+        - maxWaitSeconds
+        - retryPolicy
+        - idempotent
+        - queuedAt
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        definitionId:
+          type: string
+          format: uuid
+        scriptVersionId:
+          type: string
+          format: uuid
+        triggerType:
+          type: string
+          enum: [manual, schedule, retry]
+        state:
+          type: string
+          enum: [queued, scheduling, assigned, syncing, running, succeeded, failed, timed_out, cancelled, expired, unknown]
+        parameters:
+          type: object
+          additionalProperties: true
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 100
+        resources:
+          $ref: "#/components/schemas/TaskResources"
+        maxConcurrency:
+          type: integer
+          minimum: 1
+        timeoutSeconds:
+          type: integer
+          minimum: 1
+        maxWaitSeconds:
+          type: integer
+          minimum: 1
+        retryPolicy:
+          $ref: "#/components/schemas/TaskRetryPolicy"
+        idempotent:
+          type: boolean
+        scheduledFor:
+          type: [string, "null"]
+          format: date-time
+        queuedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    CronValidationRequest:
+      type: object
+      additionalProperties: false
+      required: [cronExpression, timezone]
+      properties:
+        cronExpression:
+          type: string
+          description: 五段 Cron 表达式，例如每天凌晨 2 点为 0 2 * * *。
+        timezone:
+          type: string
+          default: Asia/Shanghai
+          description: IANA 时区名称。
+    TaskScheduleRequest:
+      allOf:
+        - $ref: "#/components/schemas/CronValidationRequest"
+        - type: object
+          required: [enabled]
+          properties:
+            enabled:
+              type: boolean
+    TaskSchedule:
+      allOf:
+        - $ref: "#/components/schemas/TaskScheduleRequest"
+        - type: object
+          required: [id, definitionId, createdAt, updatedAt]
+          properties:
+            id:
+              type: string
+              format: uuid
+            definitionId:
+              type: string
+              format: uuid
+            nextRunAt:
+              type: [string, "null"]
+              format: date-time
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
     ServerUpdate:
       type: object
       additionalProperties: false

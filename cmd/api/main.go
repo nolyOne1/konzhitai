@@ -15,6 +15,7 @@ import (
 	"yunling.local/platform/internal/script"
 	"yunling.local/platform/internal/server"
 	"yunling.local/platform/internal/store/postgres"
+	"yunling.local/platform/internal/task"
 )
 
 func main() {
@@ -36,6 +37,7 @@ func main() {
 	var protectedServerHandler http.Handler = unavailableHandler
 	var managementHandler http.Handler = unavailableHandler
 	var scriptHandler http.Handler = unavailableHandler
+	var taskHandler http.Handler = unavailableHandler
 	if dsn := os.Getenv("YUNLING_DATABASE_URL"); dsn != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pool, err := postgres.Open(ctx, dsn)
@@ -47,6 +49,8 @@ func main() {
 		authRepository := auth.NewPostgresRepository(pool)
 		authService := auth.NewService(authRepository, authRepository)
 		authHandler = auth.Handler(authService)
+		taskService := task.NewService(pool, time.Now)
+		taskHandler = auth.Authenticate(authService)(task.Handler(taskService))
 
 		serverRepository := server.NewPostgresRepository(pool)
 		registry := server.NewRegistry(serverRepository, time.Now)
@@ -89,6 +93,18 @@ func main() {
 				}
 			}
 		}()
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for now := range ticker.C {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				_, err := taskService.ScheduleDue(ctx, now)
+				cancel()
+				if err != nil {
+					log.Printf("定时计划扫描失败：%v", err)
+				}
+			}
+		}()
 	} else {
 		log.Print("未设置 YUNLING_DATABASE_URL，认证和代理接口将返回暂不可用")
 	}
@@ -99,6 +115,8 @@ func main() {
 	router.Handle("/api/servers/{id}", managementHandler)
 	router.Handle("/api/scripts", scriptHandler)
 	router.Handle("/api/scripts/", scriptHandler)
+	router.Handle("/api/tasks", taskHandler)
+	router.Handle("/api/tasks/", taskHandler)
 	router.Handle("/api/agent/", serverHandler)
 
 	log.Printf("云令 API 正在监听 %s", address)

@@ -613,7 +613,7 @@ git commit -m "feat: 添加脚本同步和漂移检测"
 - Produces: `task.ScheduleDue(ctx, now time.Time) ([]task.Run, error)`。
 - Produces: 任务 CRUD、启停、手动执行和 Cron 校验接口。
 
-- [ ] **Step 1: 写“最新版本在创建运行时锁定”的失败测试**
+- [x] **Step 1: 写“最新版本在创建运行时锁定”的失败测试**
 
 ```go
 func TestTriggerResolvesLatestVersionOnce(t *testing.T) {
@@ -627,7 +627,7 @@ func TestTriggerResolvesLatestVersionOnce(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 写 Cron 去重失败测试**
+- [x] **Step 2: 写 Cron 去重失败测试**
 
 ```go
 func TestScheduleDueDoesNotDuplicateSameFireTime(t *testing.T) {
@@ -641,15 +641,15 @@ func TestScheduleDueDoesNotDuplicateSameFireTime(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: 实现任务服务与时区明确的 Cron**
+- [x] **Step 3: 实现任务服务与时区明确的 Cron**
 
 所有 Cron 规则保存 IANA 时区，默认 `Asia/Shanghai`。创建执行实例时解析版本、复制资源与重试配置，写入 `queued` 事件并发布 `run.queued` 调度事件。
 
-- [ ] **Step 4: 实现全中文任务编辑器**
+- [x] **Step 4: 实现全中文任务编辑器**
 
 表单包含脚本版本策略、参数、服务器标签、CPU、内存、磁盘、优先级、最大并发、超时、最大等待、幂等声明和重试次数。停用时提供单独复选项“同时取消当前排队任务”，默认不勾选。
 
-- [ ] **Step 5: 运行任务与 Cron 测试**
+- [x] **Step 5: 运行任务与 Cron 测试**
 
 Run: `go test ./internal/task -v`  
 Expected: PASS。
@@ -657,7 +657,7 @@ Expected: PASS。
 Run: `npm --workspace apps/web test -- --run src/features/tasks`  
 Expected: PASS。
 
-- [ ] **Step 6: 提交任务定义能力**
+- [x] **Step 6: 提交任务定义能力**
 
 ```bash
 git add internal/task apps/web/src/features/tasks api/openapi.yaml
