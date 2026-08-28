@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -60,11 +61,15 @@ func (r *PostgresRepository) SaveHeartbeat(
 		SET
 			last_heartbeat_sequence = $2,
 			last_seen_at = $3,
-			status = CASE WHEN status IN ('pending', 'offline') THEN 'online' ELSE status END,
+			status = CASE
+				WHEN status = 'quarantined' THEN status
+				WHEN drain_requested THEN 'draining'
+				ELSE 'online'
+			END,
 			runtimes = $4,
 			agent_version = $5,
 			updated_at = $3
-		WHERE id = $1 AND last_heartbeat_sequence < $2
+		WHERE id = $1 AND enabled = true AND last_heartbeat_sequence < $2
 		RETURNING id
 	`, heartbeat.ServerID, int64(heartbeat.Sequence), receivedAt, runtimes, heartbeat.AgentVersion).Scan(&serverID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -213,10 +218,14 @@ func (r *PostgresRepository) FindServerByCredentialHash(
 ) (string, error) {
 	var serverID string
 	err := r.db.QueryRow(ctx, `
-		UPDATE agent_identities
+		UPDATE agent_identities AS identity
 		SET last_authenticated_at = $2
-		WHERE credential_hash = $1 AND revoked_at IS NULL
-		RETURNING server_id
+		FROM servers
+		WHERE identity.credential_hash = $1
+			AND identity.revoked_at IS NULL
+			AND servers.id = identity.server_id
+			AND servers.enabled = true
+		RETURNING identity.server_id
 	`, credentialHash, authenticatedAt).Scan(&serverID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrAgentCredentialInvalid
@@ -227,5 +236,243 @@ func (r *PostgresRepository) FindServerByCredentialHash(
 	return serverID, nil
 }
 
+func (r *PostgresRepository) Dashboard(ctx context.Context) (Dashboard, error) {
+	dashboard := Dashboard{Servers: []ServerView{}, RecentEvents: []RecentEvent{}}
+	if err := r.db.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE enabled = true AND status IN ('online', 'draining')),
+			count(*)
+		FROM servers
+	`).Scan(&dashboard.OnlineServers, &dashboard.TotalServers); err != nil {
+		return Dashboard{}, err
+	}
+	if err := r.db.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE state = 'running'),
+			count(*) FILTER (WHERE state = 'queued'),
+			COALESCE(
+				round(
+					100.0 * count(*) FILTER (
+						WHERE state = 'succeeded' AND finished_at >= date_trunc('day', now())
+					) / NULLIF(count(*) FILTER (
+						WHERE state IN ('succeeded', 'failed', 'timed_out')
+							AND finished_at >= date_trunc('day', now())
+					), 0),
+					1
+				),
+				100.0
+			)
+		FROM task_runs
+	`).Scan(&dashboard.RunningRuns, &dashboard.QueuedRuns, &dashboard.TodaySuccessRate); err != nil {
+		return Dashboard{}, err
+	}
+	servers, err := r.ListServers(ctx)
+	if err != nil {
+		return Dashboard{}, err
+	}
+	dashboard.Servers = servers
+
+	rows, err := r.db.Query(ctx, `
+		SELECT id, event_type, COALESCE(NULLIF(payload->>'message', ''), '任务状态已更新'), occurred_at
+		FROM run_events
+		ORDER BY occurred_at DESC
+		LIMIT 8
+	`)
+	if err != nil {
+		return Dashboard{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var event RecentEvent
+		if err := rows.Scan(&event.ID, &event.Type, &event.Message, &event.OccurredAt); err != nil {
+			return Dashboard{}, err
+		}
+		dashboard.RecentEvents = append(dashboard.RecentEvents, event)
+	}
+	if err := rows.Err(); err != nil {
+		return Dashboard{}, err
+	}
+	return dashboard, nil
+}
+
+func (r *PostgresRepository) ListServers(ctx context.Context) ([]ServerView, error) {
+	rows, err := r.db.Query(ctx, serverViewSelect+` ORDER BY server.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	servers := make([]ServerView, 0)
+	for rows.Next() {
+		view, err := scanServerView(rows)
+		if err != nil {
+			return nil, err
+		}
+		servers = append(servers, view)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return servers, nil
+}
+
+func (r *PostgresRepository) UpdateServer(
+	ctx context.Context,
+	id string,
+	input UpdateServerInput,
+) (ServerView, error) {
+	if strings.TrimSpace(id) == "" || !validServerUpdate(input) {
+		return ServerView{}, ErrInvalidServerUpdate
+	}
+	var name any
+	if input.Name != nil {
+		name = strings.TrimSpace(*input.Name)
+	}
+	var labels any
+	if input.Labels != nil {
+		encoded, err := json.Marshal(*input.Labels)
+		if err != nil {
+			return ServerView{}, fmt.Errorf("编码服务器标签：%w", err)
+		}
+		labels = encoded
+	}
+	var weight any
+	if input.SchedulingWeight != nil {
+		weight = *input.SchedulingWeight
+	}
+	var enabled any
+	if input.Enabled != nil {
+		enabled = *input.Enabled
+	}
+	var draining any
+	if input.Draining != nil {
+		draining = *input.Draining
+	}
+
+	var updatedID string
+	err := r.db.QueryRow(ctx, `
+		UPDATE servers
+		SET
+			name = COALESCE($2::text, name),
+			labels = COALESCE($3::jsonb, labels),
+			scheduling_weight = COALESCE($4::integer, scheduling_weight),
+			enabled = COALESCE($5::boolean, enabled),
+			drain_requested = CASE
+				WHEN COALESCE($5::boolean, enabled) = false THEN false
+				ELSE COALESCE($6::boolean, drain_requested)
+			END,
+			status = CASE
+				WHEN COALESCE($5::boolean, enabled) = false THEN 'offline'
+				WHEN COALESCE($6::boolean, drain_requested) = true AND status = 'online' THEN 'draining'
+				WHEN COALESCE($6::boolean, drain_requested) = false AND status = 'draining' THEN
+					CASE
+						WHEN last_seen_at >= now() - interval '15 seconds' THEN 'online'
+						ELSE 'offline'
+					END
+				ELSE status
+			END,
+			updated_at = now()
+		WHERE id = $1
+		RETURNING id
+	`, id, name, labels, weight, enabled, draining).Scan(&updatedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ServerView{}, ErrServerNotFound
+	}
+	if err != nil {
+		return ServerView{}, err
+	}
+	return r.serverByID(ctx, updatedID)
+}
+
+func (r *PostgresRepository) serverByID(ctx context.Context, id string) (ServerView, error) {
+	view, err := scanServerView(r.db.QueryRow(ctx, serverViewSelect+` WHERE server.id = $1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ServerView{}, ErrServerNotFound
+	}
+	return view, err
+}
+
+const serverViewSelect = `
+	SELECT
+		server.id,
+		server.name,
+		server.cloud_provider,
+		server.region,
+		server.status,
+		server.enabled,
+		server.drain_requested,
+		server.labels,
+		server.runtimes,
+		server.agent_version,
+		server.scheduling_weight,
+		COALESCE(snapshot.cpu_usage_percent, 0),
+		COALESCE(snapshot.memory_total_bytes, 0),
+		COALESCE(snapshot.memory_available_bytes, 0),
+		COALESCE(snapshot.disk_total_bytes, 0),
+		COALESCE(snapshot.disk_available_bytes, 0),
+		COALESCE(snapshot.running_tasks, 0),
+		server.last_seen_at
+	FROM servers AS server
+	LEFT JOIN LATERAL (
+		SELECT
+			cpu_usage_percent,
+			memory_total_bytes,
+			memory_available_bytes,
+			disk_total_bytes,
+			disk_available_bytes,
+			running_tasks
+		FROM server_snapshots
+		WHERE server_id = server.id
+		ORDER BY collected_at DESC
+		LIMIT 1
+	) AS snapshot ON true
+`
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanServerView(row rowScanner) (ServerView, error) {
+	var view ServerView
+	var labels []byte
+	var runtimes []byte
+	err := row.Scan(
+		&view.ID,
+		&view.Name,
+		&view.CloudProvider,
+		&view.Region,
+		&view.Status,
+		&view.Enabled,
+		&view.Draining,
+		&labels,
+		&runtimes,
+		&view.AgentVersion,
+		&view.SchedulingWeight,
+		&view.CPUUsagePercent,
+		&view.MemoryTotalBytes,
+		&view.MemoryAvailableBytes,
+		&view.DiskTotalBytes,
+		&view.DiskAvailableBytes,
+		&view.RunningTasks,
+		&view.LastSeenAt,
+	)
+	if err != nil {
+		return ServerView{}, err
+	}
+	if err := json.Unmarshal(labels, &view.Labels); err != nil {
+		return ServerView{}, fmt.Errorf("解析服务器标签：%w", err)
+	}
+	if err := json.Unmarshal(runtimes, &view.Runtimes); err != nil {
+		return ServerView{}, fmt.Errorf("解析服务器运行环境：%w", err)
+	}
+	if view.Labels == nil {
+		view.Labels = map[string]string{}
+	}
+	if view.Runtimes == nil {
+		view.Runtimes = []string{}
+	}
+	return view, nil
+}
+
 var _ EnrollmentRepository = (*PostgresRepository)(nil)
 var _ HeartbeatRepository = (*PostgresRepository)(nil)
+var _ ManagementQuery = (*PostgresRepository)(nil)

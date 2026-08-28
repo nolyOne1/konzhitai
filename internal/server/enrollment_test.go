@@ -16,6 +16,7 @@ func TestEnrollmentTokenIsHashedAndCanOnlyBeUsedOnce(t *testing.T) {
 	db := testpostgres.Start(t)
 	testpostgres.ApplyInitialMigration(t, db)
 	testpostgres.ApplyMigration(t, db, "000002_agent_enrollment.up.sql")
+	testpostgres.ApplyMigration(t, db, "000003_server_management.up.sql")
 	ctx := context.Background()
 	now := time.Date(2026, 8, 28, 11, 0, 0, 0, time.UTC)
 	repository := server.NewPostgresRepository(db)
@@ -69,6 +70,7 @@ func TestPostgresHeartbeatAcceptsOnlyIncreasingSequence(t *testing.T) {
 	db := testpostgres.Start(t)
 	testpostgres.ApplyInitialMigration(t, db)
 	testpostgres.ApplyMigration(t, db, "000002_agent_enrollment.up.sql")
+	testpostgres.ApplyMigration(t, db, "000003_server_management.up.sql")
 	ctx := context.Background()
 	serverID := "123e4567-e89b-42d3-a456-426614174100"
 	_, err := db.Exec(ctx, `

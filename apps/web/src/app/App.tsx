@@ -1,7 +1,9 @@
 import './styles.css'
-import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Link, NavLink, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 
 import { LoginPage } from '../features/auth/LoginPage'
+import { DashboardPage } from '../features/dashboard/DashboardPage'
+import { ServersPage } from '../features/servers/ServersPage'
 
 const navigation = [
   { label: '运行总览', href: '/' },
@@ -20,35 +22,43 @@ export function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
-        <Route path="*" element={<ConsoleShell />} />
+        <Route element={<ConsoleShell />}>
+          <Route index element={<DashboardPage />} />
+          <Route path="/servers" element={<ServersPage />} />
+          <Route path="*" element={<PlaceholderPage />} />
+        </Route>
       </Routes>
     </BrowserRouter>
   )
 }
 
 function ConsoleShell() {
+  const location = useLocation()
+  const current = navigation.find((item) => item.href !== '/' && location.pathname.startsWith(item.href)) ?? navigation[0]
+
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">跳到主要内容</a>
       <aside className="sidebar">
-        <a className="brand" href="/" aria-label="云令首页">
+        <Link className="brand" to="/" aria-label="云令首页">
           <span className="brand-mark" aria-hidden="true">令</span>
           <span className="brand-copy">
             <strong>云令</strong>
             <small>脚本调度中心</small>
           </span>
-        </a>
+        </Link>
 
         <nav className="main-nav" aria-label="主导航">
-          {navigation.map((item, index) => (
-            <a
-              className={index === 0 ? 'nav-link is-active' : 'nav-link'}
-              href={item.href}
+          {navigation.map((item) => (
+            <NavLink
+              className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`}
+              to={item.href}
               key={item.href}
-              aria-current={index === 0 ? 'page' : undefined}
+              end={item.href === '/'}
             >
               <span className="nav-marker" aria-hidden="true" />
               <span>{item.label}</span>
-            </a>
+            </NavLink>
           ))}
         </nav>
 
@@ -60,31 +70,24 @@ function ConsoleShell() {
 
       <div className="workspace">
         <header className="topbar">
-          <span className="breadcrumb">工作台 / 运行总览</span>
+          <span className="breadcrumb">工作台 / {current.label}</span>
           <span className="system-health">
             <span className="status-dot" aria-hidden="true" />
             全部系统正常
           </span>
         </header>
 
-        <main className="page-content">
-          <div className="page-heading">
-            <div>
-              <h1>运行总览</h1>
-              <p>跨服务器脚本、任务负载和同步状态集中查看</p>
-            </div>
-            <button type="button" className="primary-action">新建任务</button>
-          </div>
-
-          <section className="empty-state" aria-labelledby="setup-title">
-            <span className="empty-state-mark" aria-hidden="true" />
-            <div>
-              <h2 id="setup-title">控制台已就绪</h2>
-              <p>服务器接入后，这里将显示实时资源、运行任务和脚本同步状态。</p>
-            </div>
-          </section>
-        </main>
+        <main className="page-content" id="main-content" tabIndex={-1}><Outlet /></main>
       </div>
     </div>
+  )
+}
+
+function PlaceholderPage() {
+  return (
+    <>
+      <div className="page-heading"><div><p className="eyebrow">功能建设中</p><h1>控制台模块</h1><p>该模块将在后续阶段按计划接入实际数据。</p></div></div>
+      <section className="empty-state" aria-labelledby="setup-title"><span className="empty-state-mark" aria-hidden="true" /><div><h2 id="setup-title">控制台已就绪</h2><p>当前优先完成服务器、脚本和任务调度主链路。</p></div></section>
+    </>
   )
 }

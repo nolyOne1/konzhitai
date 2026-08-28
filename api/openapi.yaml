@@ -115,6 +115,89 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/dashboard:
+    get:
+      operationId: getDashboard
+      summary: 获取运行总览
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: 服务器、任务、成功率和最近动态统计
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dashboard"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/servers:
+    get:
+      operationId: listServers
+      summary: 获取服务器和最新资源快照
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: 服务器列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [servers]
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Server"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/servers/{id}:
+    patch:
+      operationId: updateServer
+      summary: 更新服务器调度设置
+      description: 排空只阻止新任务分配；停用会断开当前代理连接并阻止重连。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServerUpdate"
+      responses:
+        "200":
+          description: 服务器已更新
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Server"
+        "400":
+          description: 更新内容无效
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: 当前用户无服务器管理权限
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: 服务器不存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/agent/enroll:
     post:
       operationId: enrollAgent
@@ -286,6 +369,141 @@ components:
             type: string
         agent_version:
           type: string
+    Dashboard:
+      type: object
+      required: [onlineServers, totalServers, runningRuns, queuedRuns, todaySuccessRate, servers, recentEvents]
+      properties:
+        onlineServers:
+          type: integer
+          minimum: 0
+        totalServers:
+          type: integer
+          minimum: 0
+        runningRuns:
+          type: integer
+          minimum: 0
+        queuedRuns:
+          type: integer
+          minimum: 0
+        todaySuccessRate:
+          type: number
+          minimum: 0
+          maximum: 100
+        servers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Server"
+        recentEvents:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecentEvent"
+    RecentEvent:
+      type: object
+      required: [id, type, message, occurredAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+        message:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+    Server:
+      type: object
+      required:
+        - id
+        - name
+        - cloudProvider
+        - region
+        - status
+        - enabled
+        - draining
+        - labels
+        - runtimes
+        - agentVersion
+        - schedulingWeight
+        - cpuUsagePercent
+        - memoryTotalBytes
+        - memoryAvailableBytes
+        - diskTotalBytes
+        - diskAvailableBytes
+        - runningTasks
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        cloudProvider:
+          type: string
+        region:
+          type: string
+        status:
+          type: string
+          enum: [pending, online, offline, draining, quarantined]
+        enabled:
+          type: boolean
+        draining:
+          type: boolean
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        runtimes:
+          type: array
+          items:
+            type: string
+        agentVersion:
+          type: string
+        schedulingWeight:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        cpuUsagePercent:
+          type: number
+          minimum: 0
+          maximum: 100
+        memoryTotalBytes:
+          type: integer
+          minimum: 0
+        memoryAvailableBytes:
+          type: integer
+          minimum: 0
+        diskTotalBytes:
+          type: integer
+          minimum: 0
+        diskAvailableBytes:
+          type: integer
+          minimum: 0
+        runningTasks:
+          type: integer
+          minimum: 0
+        lastSeenAt:
+          type: [string, "null"]
+          format: date-time
+    ServerUpdate:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        schedulingWeight:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        enabled:
+          type: boolean
+        draining:
+          type: boolean
   responses:
     Unauthorized:
       description: 未登录、会话已失效或登录凭据错误

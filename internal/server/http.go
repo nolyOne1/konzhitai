@@ -19,15 +19,96 @@ type EnrollmentManager interface {
 	Authenticate(ctx context.Context, credential string) (string, error)
 }
 
-func Handler(registry *Registry, enrollment EnrollmentManager) http.Handler {
+type HandlerOption func(*handlerOptions)
+
+type handlerOptions struct {
+	connections *AgentConnectionHub
+}
+
+func WithConnectionHub(connections *AgentConnectionHub) HandlerOption {
+	return func(options *handlerOptions) {
+		options.connections = connections
+	}
+}
+
+func Handler(registry *Registry, enrollment EnrollmentManager, options ...HandlerOption) http.Handler {
+	configuration := handlerOptions{connections: NewAgentConnectionHub()}
+	for _, option := range options {
+		option(&configuration)
+	}
 	router := http.NewServeMux()
 	router.Handle(
 		"POST /api/servers/enrollment-tokens",
 		auth.Require(auth.PermissionAdmin)(createEnrollmentTokenHandler(enrollment)),
 	)
 	router.HandleFunc("POST /api/agent/enroll", enrollAgentHandler(enrollment))
-	router.HandleFunc("GET /api/agent/connect", agentConnectHandler(registry, enrollment))
+	router.HandleFunc("GET /api/agent/connect", agentConnectHandler(registry, enrollment, configuration.connections))
 	return router
+}
+
+func ManagementHandler(query ManagementQuery) http.Handler {
+	router := http.NewServeMux()
+	router.Handle("GET /api/dashboard", auth.Require(auth.PermissionRead)(dashboardHandler(query)))
+	router.Handle("GET /api/servers", auth.Require(auth.PermissionRead)(listServersHandler(query)))
+	router.Handle("PATCH /api/servers/{id}", auth.Require(auth.PermissionExecute)(updateServerHandler(query)))
+	return router
+}
+
+func dashboardHandler(query ManagementQuery) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dashboard, err := query.Dashboard(r.Context())
+		if err != nil {
+			writeServerError(w, http.StatusInternalServerError, "读取运行总览失败")
+			return
+		}
+		if dashboard.Servers == nil {
+			dashboard.Servers = []ServerView{}
+		}
+		if dashboard.RecentEvents == nil {
+			dashboard.RecentEvents = []RecentEvent{}
+		}
+		writeServerJSON(w, http.StatusOK, dashboard)
+	})
+}
+
+func listServersHandler(query ManagementQuery) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		servers, err := query.ListServers(r.Context())
+		if err != nil {
+			writeServerError(w, http.StatusInternalServerError, "读取服务器列表失败")
+			return
+		}
+		if servers == nil {
+			servers = []ServerView{}
+		}
+		writeServerJSON(w, http.StatusOK, map[string]any{"servers": servers})
+	})
+}
+
+func updateServerHandler(query ManagementQuery) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input UpdateServerInput
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			writeServerError(w, http.StatusBadRequest, ErrInvalidServerUpdate.Error())
+			return
+		}
+		updated, err := query.UpdateServer(r.Context(), r.PathValue("id"), input)
+		if errors.Is(err, ErrInvalidServerUpdate) {
+			writeServerError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if errors.Is(err, ErrServerNotFound) {
+			writeServerError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		if err != nil {
+			writeServerError(w, http.StatusInternalServerError, "更新服务器失败")
+			return
+		}
+		writeServerJSON(w, http.StatusOK, updated)
+	})
 }
 
 func createEnrollmentTokenHandler(enrollment EnrollmentManager) http.Handler {
@@ -86,7 +167,11 @@ func enrollAgentHandler(enrollment EnrollmentManager) http.HandlerFunc {
 	}
 }
 
-func agentConnectHandler(registry *Registry, enrollment EnrollmentManager) http.HandlerFunc {
+func agentConnectHandler(
+	registry *Registry,
+	enrollment EnrollmentManager,
+	connections *AgentConnectionHub,
+) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		credential, ok := bearerCredential(r.Header.Get("Authorization"))
 		if !ok {
@@ -104,6 +189,8 @@ func agentConnectHandler(registry *Registry, enrollment EnrollmentManager) http.
 			return
 		}
 		defer connection.CloseNow()
+		unregister := connections.Register(serverID, connection)
+		defer unregister()
 		connection.SetReadLimit(64 << 10)
 		ctx := context.Background()
 		for {

@@ -398,6 +398,8 @@ git commit -m "feat: 添加代理注册心跳和资源采集"
 - Create: `apps/web/src/features/servers/ServersPage.tsx`
 - Create: `apps/web/src/features/servers/ServerDrawer.tsx`
 - Create: `apps/web/src/api/client.ts`
+- Create: `migrations/000003_server_management.up.sql`
+- Create: `migrations/000003_server_management.down.sql`
 - Modify: `api/openapi.yaml`
 - Modify: `apps/web/src/app/App.tsx`
 
@@ -406,7 +408,7 @@ git commit -m "feat: 添加代理注册心跳和资源采集"
 - Produces: `GET /api/dashboard` 返回 `onlineServers`、`totalServers`、`runningRuns`、`queuedRuns`、`todaySuccessRate`、`servers`、`recentEvents`。
 - Produces: `GET /api/servers`、`PATCH /api/servers/{id}`，支持名称、标签、权重、停用和排空。
 
-- [ ] **Step 1: 写 Dashboard API 失败测试**
+- [x] **Step 1: 写 Dashboard API 失败测试**
 
 ```go
 func TestDashboardCountsQueuedRuns(t *testing.T) {
@@ -417,7 +419,7 @@ func TestDashboardCountsQueuedRuns(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 写控制台排队规则展示失败测试**
+- [x] **Step 2: 写控制台排队规则展示失败测试**
 
 ```tsx
 it('把排队作为控制台运行状态而非独立页面', async () => {
@@ -428,15 +430,15 @@ it('把排队作为控制台运行状态而非独立页面', async () => {
 })
 ```
 
-- [ ] **Step 3: 实现 Dashboard 查询和中文页面**
+- [x] **Step 3: 实现 Dashboard 查询和中文页面**
 
 页面严格沿用已确认的深绿色控制台结构：左侧导航、四项指标、服务器负载、实时任务、脚本同步摘要和最近动态。实时任务的“调度信息”列显示“空闲内存最高”“已缓存脚本版本”或“暂无节点满足 4 核 / 8 GB；资源空闲后自动运行”。
 
-- [ ] **Step 4: 实现服务器列表、标签、停用和排空**
+- [x] **Step 4: 实现服务器列表、标签、停用和排空**
 
 排空只阻止新任务分配，不终止当前任务；停用会断开代理会话并阻止新连接，恢复启用后代理可重新连接。
 
-- [ ] **Step 5: 运行 API、组件与可访问性测试**
+- [x] **Step 5: 运行 API、组件与可访问性测试**
 
 Run: `go test ./internal/server -v`  
 Expected: PASS。
@@ -444,7 +446,7 @@ Expected: PASS。
 Run: `npm --workspace apps/web test -- --run src/features/dashboard src/features/servers`  
 Expected: PASS。
 
-- [ ] **Step 6: 提交运行控制台**
+- [x] **Step 6: 提交运行控制台**
 
 ```bash
 git add internal/server apps/web/src/features/dashboard apps/web/src/features/servers apps/web/src/api api/openapi.yaml apps/web/src/app/App.tsx

@@ -10,6 +10,7 @@ describe('云令应用壳', () => {
     expect(screen.getByText('云令')).toBeInTheDocument()
     expect(screen.getByText('脚本调度中心')).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: '主导航' })).toBeVisible()
+    expect(screen.getByRole('link', { name: '跳到主要内容' })).toHaveAttribute('href', '#main-content')
     expect(screen.getByRole('link', { name: '运行总览' })).toBeVisible()
     expect(screen.getByRole('link', { name: '脚本中心' })).toBeVisible()
     expect(screen.getByRole('link', { name: '任务调度' })).toBeVisible()

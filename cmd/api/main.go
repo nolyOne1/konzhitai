@@ -31,6 +31,7 @@ func main() {
 	var authHandler http.Handler = unavailableHandler
 	var serverHandler http.Handler = unavailableHandler
 	var protectedServerHandler http.Handler = unavailableHandler
+	var managementHandler http.Handler = unavailableHandler
 	if dsn := os.Getenv("YUNLING_DATABASE_URL"); dsn != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pool, err := postgres.Open(ctx, dsn)
@@ -46,8 +47,11 @@ func main() {
 		serverRepository := server.NewPostgresRepository(pool)
 		registry := server.NewRegistry(serverRepository, time.Now)
 		enrollment := server.NewEnrollmentService(serverRepository, time.Now)
-		serverHandler = server.Handler(registry, enrollment)
+		connections := server.NewAgentConnectionHub()
+		serverHandler = server.Handler(registry, enrollment, server.WithConnectionHub(connections))
 		protectedServerHandler = auth.Authenticate(authService)(serverHandler)
+		management := server.NewManagementService(serverRepository, connections)
+		managementHandler = auth.Authenticate(authService)(server.ManagementHandler(management))
 		go func() {
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()
@@ -65,6 +69,9 @@ func main() {
 	}
 	router.Handle("/api/auth/", authHandler)
 	router.Handle("/api/servers/enrollment-tokens", protectedServerHandler)
+	router.Handle("/api/dashboard", managementHandler)
+	router.Handle("/api/servers", managementHandler)
+	router.Handle("/api/servers/{id}", managementHandler)
 	router.Handle("/api/agent/", serverHandler)
 
 	log.Printf("云令 API 正在监听 %s", address)
