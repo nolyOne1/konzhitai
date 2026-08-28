@@ -1,0 +1,21 @@
+.worktrees/
+.superpowers/
+outputs/
+
+# 构建与依赖
+node_modules/
+dist/
+coverage/
+
+# 本地配置与密钥
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# 编辑器与系统文件
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
