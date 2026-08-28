@@ -68,7 +68,7 @@ func Start(t testing.TB) *pgxpool.Pool {
 			t.Errorf("停止嵌入式 PostgreSQL：%v", err)
 		}
 		for _, path := range []string{runtimePath, dataPath} {
-			if err := os.RemoveAll(path); err != nil {
+			if err := removeAllEventually(path, os.RemoveAll, time.Sleep); err != nil {
 				t.Errorf("清理 PostgreSQL 测试目录 %s：%v", path, err)
 			}
 		}
@@ -76,15 +76,40 @@ func Start(t testing.TB) *pgxpool.Pool {
 	return pool
 }
 
+func removeAllEventually(
+	path string,
+	remove func(string) error,
+	pause func(time.Duration),
+) error {
+	const attempts = 40
+	const retryDelay = 50 * time.Millisecond
+
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if err = remove(path); err == nil {
+			return nil
+		}
+		if attempt+1 < attempts {
+			pause(retryDelay)
+		}
+	}
+	return err
+}
+
 func ApplyInitialMigration(t testing.TB, db *pgxpool.Pool) {
 	t.Helper()
-	path := filepath.Join(RepositoryRoot(t), "migrations", "000001_initial.up.sql")
+	ApplyMigration(t, db, "000001_initial.up.sql")
+}
+
+func ApplyMigration(t testing.TB, db *pgxpool.Pool, name string) {
+	t.Helper()
+	path := filepath.Join(RepositoryRoot(t), "migrations", name)
 	contents, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("读取初始迁移：%v", err)
+		t.Fatalf("读取迁移 %s：%v", name, err)
 	}
 	if _, err := db.Exec(context.Background(), string(contents)); err != nil {
-		t.Fatalf("执行初始迁移：%v", err)
+		t.Fatalf("执行迁移 %s：%v", name, err)
 	}
 }
 

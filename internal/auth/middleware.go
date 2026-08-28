@@ -17,6 +17,24 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 	return principal, ok
 }
 
+func Authenticate(service *Service) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cookie, err := r.Cookie(SessionCookieName)
+			if err != nil {
+				writeAuthError(w, http.StatusUnauthorized, "请先登录")
+				return
+			}
+			principal, err := service.Authenticate(r.Context(), cookie.Value)
+			if err != nil {
+				writeAuthError(w, http.StatusUnauthorized, "登录已失效，请重新登录")
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), principal)))
+		})
+	}
+}
+
 func Require(permission string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

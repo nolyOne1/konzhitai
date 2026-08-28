@@ -88,12 +88,88 @@ paths:
                     $ref: "#/components/schemas/SessionUser"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/servers/enrollment-tokens:
+    post:
+      operationId: createServerEnrollmentToken
+      summary: 创建一次性服务器注册令牌
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnrollmentTokenRequest"
+      responses:
+        "201":
+          description: 注册令牌创建成功，明文令牌仅在本次响应显示
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnrollmentTokenResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: 当前用户不是管理员
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/agent/enroll:
+    post:
+      operationId: enrollAgent
+      summary: 使用一次性令牌注册执行代理
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  writeOnly: true
+      responses:
+        "201":
+          description: 注册成功，独立代理凭据仅在本次响应显示
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentCredentials"
+        "401":
+          description: 注册令牌无效、已使用或已过期
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/agent/connect:
+    get:
+      operationId: connectAgent
+      summary: 建立代理 WebSocket 长连接
+      description: 代理通过此连接上报心跳；中央服务以凭据绑定的服务器身份为准。
+      security:
+        - agentBearer: []
+      responses:
+        "101":
+          description: WebSocket 协议升级成功
+        "401":
+          description: 代理凭据无效或已撤销
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   securitySchemes:
     sessionCookie:
       type: apiKey
       in: cookie
       name: yunling_session
+    agentBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: 云令代理凭据
   schemas:
     Role:
       type: string
@@ -119,6 +195,96 @@ components:
       required: [message]
       properties:
         message:
+          type: string
+    EnrollmentTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+        cloud_provider:
+          type: string
+        region:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+    EnrollmentTokenResponse:
+      type: object
+      required: [id, token, expires_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        token:
+          type: string
+          writeOnly: true
+        expires_at:
+          type: string
+          format: date-time
+    AgentCredentials:
+      type: object
+      required: [server_id, credential]
+      properties:
+        server_id:
+          type: string
+          format: uuid
+        credential:
+          type: string
+          writeOnly: true
+    AgentHeartbeat:
+      type: object
+      required:
+        - server_id
+        - sequence
+        - sent_at
+        - cpu_total_milli
+        - cpu_used_milli
+        - memory_total_bytes
+        - memory_used_bytes
+        - disk_total_bytes
+        - disk_free_bytes
+        - running_tasks
+        - runtimes
+        - agent_version
+      properties:
+        server_id:
+          type: string
+          format: uuid
+        sequence:
+          type: integer
+          minimum: 1
+        sent_at:
+          type: string
+          format: date-time
+        cpu_total_milli:
+          type: integer
+          minimum: 0
+        cpu_used_milli:
+          type: integer
+          minimum: 0
+        memory_total_bytes:
+          type: integer
+          minimum: 0
+        memory_used_bytes:
+          type: integer
+          minimum: 0
+        disk_total_bytes:
+          type: integer
+          minimum: 0
+        disk_free_bytes:
+          type: integer
+          minimum: 0
+        running_tasks:
+          type: integer
+          minimum: 0
+        runtimes:
+          type: array
+          items:
+            type: string
+        agent_version:
           type: string
   responses:
     Unauthorized:

@@ -97,6 +97,27 @@ func TestRequireRejectsRoleWithoutPermission(t *testing.T) {
 	}
 }
 
+func TestAuthenticateLoadsServerSessionBeforePermissionCheck(t *testing.T) {
+	sessions := &fakeSessions{principal: auth.Principal{
+		UserID: "user-1",
+		Roles:  []auth.RoleName{auth.RoleOperator},
+	}}
+	service := auth.NewService(fakeUsers{}, sessions)
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := auth.Authenticate(service)(auth.Require(auth.PermissionExecute)(next))
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/run", nil)
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "valid-session-token"})
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("有效运维会话应通过执行权限校验，实际状态码为 %d", rec.Code)
+	}
+}
+
 type fakeUsers struct {
 	user auth.User
 }

@@ -329,16 +329,18 @@ git commit -m "feat: 添加中文登录和角色权限"
 - Create: `internal/agent/collector_test.go`
 - Create: `internal/agent/client.go`
 - Create: `cmd/agent/main.go`
+- Create: `migrations/000002_agent_enrollment.up.sql`
+- Create: `migrations/000002_agent_enrollment.down.sql`
 - Modify: `api/openapi.yaml`
 - Modify: `cmd/api/main.go`
 
 **Interfaces:**
-- Produces: `agentprotocol.Heartbeat{ServerID, Sequence, SentAt, CPUUsedMilli, MemoryUsedBytes, DiskFreeBytes, RunningTasks, Runtimes, AgentVersion}`。
+- Produces: `agentprotocol.Heartbeat{ServerID, Sequence, SentAt, CPUTotalMilli, CPUUsedMilli, MemoryTotalBytes, MemoryUsedBytes, DiskTotalBytes, DiskFreeBytes, RunningTasks, Runtimes, AgentVersion}`。
 - Produces: `server.Registry.AcceptHeartbeat(ctx, heartbeat) error`；小于等于已保存序号的心跳被忽略。
-- Produces: `POST /api/servers/enrollment-tokens` 和 `GET /api/agent/connect` WebSocket 升级端点。
+- Produces: `POST /api/servers/enrollment-tokens`、`POST /api/agent/enroll` 和 `GET /api/agent/connect` WebSocket 升级端点。
 - Produces: `agent.Collector.Snapshot(ctx) (agentprotocol.Heartbeat, error)`。
 
-- [ ] **Step 1: 写乱序心跳和资源采集失败测试**
+- [x] **Step 1: 写乱序心跳和资源采集失败测试**
 
 ```go
 func TestRegistryIgnoresOlderHeartbeat(t *testing.T) {
@@ -359,25 +361,25 @@ func TestCollectorReportsConfiguredRuntimes(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: `go test ./internal/server ./internal/agent -v`  
 Expected: FAIL，缺少协议、Registry 和 Collector。
 
-- [ ] **Step 3: 实现一次性注册令牌和代理独立身份**
+- [x] **Step 3: 实现一次性注册令牌和代理独立身份**
 
 注册令牌只保存哈希、有效期和是否使用；首次注册后返回服务器 ID 与代理凭据，令牌立即失效。代理凭据写入 `/etc/yunling-agent/credentials.json`，文件权限 `0600`。
 
-- [ ] **Step 4: 实现 5 秒心跳与 15 秒离线判定**
+- [x] **Step 4: 实现 5 秒心跳与 15 秒离线判定**
 
 代理每 5 秒发送单调递增序号的心跳。中央服务以收到时间为准，连续 15 秒没有心跳时把服务器标记为离线，并发布 `server.offline` 调度事件。
 
-- [ ] **Step 5: 运行代理与服务器测试**
+- [x] **Step 5: 运行代理与服务器测试**
 
 Run: `go test ./internal/server ./internal/agentprotocol ./internal/agent -v`  
 Expected: PASS。
 
-- [ ] **Step 6: 提交代理基础能力**
+- [x] **Step 6: 提交代理基础能力**
 
 ```bash
 git add internal/agent internal/agentprotocol internal/server cmd/agent api/openapi.yaml cmd/api/main.go

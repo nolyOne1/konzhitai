@@ -10,6 +10,7 @@ import (
 
 	"yunling.local/platform/internal/auth"
 	"yunling.local/platform/internal/health"
+	"yunling.local/platform/internal/server"
 	"yunling.local/platform/internal/store/postgres"
 )
 
@@ -22,11 +23,14 @@ func main() {
 	router := http.NewServeMux()
 	router.Handle("GET /api/health", health.Handler())
 
-	var authHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	unavailableHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]string{"message": "认证服务尚未配置数据库"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "服务尚未配置数据库"})
 	})
+	var authHandler http.Handler = unavailableHandler
+	var serverHandler http.Handler = unavailableHandler
+	var protectedServerHandler http.Handler = unavailableHandler
 	if dsn := os.Getenv("YUNLING_DATABASE_URL"); dsn != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pool, err := postgres.Open(ctx, dsn)
@@ -35,12 +39,33 @@ func main() {
 			log.Fatalf("连接认证数据库失败：%v", err)
 		}
 		defer pool.Close()
-		repository := auth.NewPostgresRepository(pool)
-		authHandler = auth.Handler(auth.NewService(repository, repository))
+		authRepository := auth.NewPostgresRepository(pool)
+		authService := auth.NewService(authRepository, authRepository)
+		authHandler = auth.Handler(authService)
+
+		serverRepository := server.NewPostgresRepository(pool)
+		registry := server.NewRegistry(serverRepository, time.Now)
+		enrollment := server.NewEnrollmentService(serverRepository, time.Now)
+		serverHandler = server.Handler(registry, enrollment)
+		protectedServerHandler = auth.Authenticate(authService)(serverHandler)
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				err := registry.ReconcileOffline(ctx)
+				cancel()
+				if err != nil {
+					log.Printf("服务器离线对账失败：%v", err)
+				}
+			}
+		}()
 	} else {
-		log.Print("未设置 YUNLING_DATABASE_URL，认证接口将返回暂不可用")
+		log.Print("未设置 YUNLING_DATABASE_URL，认证和代理接口将返回暂不可用")
 	}
 	router.Handle("/api/auth/", authHandler)
+	router.Handle("/api/servers/enrollment-tokens", protectedServerHandler)
+	router.Handle("/api/agent/", serverHandler)
 
 	log.Printf("云令 API 正在监听 %s", address)
 	if err := http.ListenAndServe(address, router); err != nil {
