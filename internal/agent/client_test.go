@@ -71,6 +71,52 @@ func TestClientSendsMonotonicHeartbeatEveryFiveSeconds(t *testing.T) {
 	}
 }
 
+func TestWebSocketSenderRoutesSyncAndExecutionCommandsFromOneReader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer connection.CloseNow()
+		ctx := context.Background()
+		_ = wsjson.Write(ctx, connection, agentprotocol.SyncCommand{
+			ScriptID: "script-1", VersionID: "version-1", ArtifactURL: "https://control.example/artifact", SHA256: "abc",
+		})
+		_ = wsjson.Write(ctx, connection, agentprotocol.ExecutionCommand{
+			Type: agentprotocol.CommandAssign,
+			Assignment: &agentprotocol.Assignment{
+				RunID: "run-1", ExecutionToken: "token-1", ScriptVersionID: "version-1", Runtime: "python3",
+			},
+		})
+		_ = wsjson.Write(ctx, connection, agentprotocol.ExecutionCommand{
+			Type:         agentprotocol.CommandCancel,
+			Cancellation: &agentprotocol.CancelCommand{RunID: "run-1", ExecutionToken: "token-1"},
+		})
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	transport, err := DialHeartbeatSender(ctx, server.URL, "agent-secret")
+	if err != nil {
+		t.Fatalf("连接中央 WebSocket：%v", err)
+	}
+	defer transport.Close()
+	syncCommand, err := transport.ReceiveSyncCommand(ctx)
+	if err != nil || syncCommand.ScriptID != "script-1" {
+		t.Fatalf("同步命令路由错误：command=%+v err=%v", syncCommand, err)
+	}
+	assignment, err := transport.ReceiveExecutionCommand(ctx)
+	if err != nil || assignment.Type != agentprotocol.CommandAssign || assignment.Assignment == nil || assignment.Assignment.RunID != "run-1" {
+		t.Fatalf("任务分配命令路由错误：command=%+v err=%v", assignment, err)
+	}
+	cancellation, err := transport.ReceiveExecutionCommand(ctx)
+	if err != nil || cancellation.Type != agentprotocol.CommandCancel || cancellation.Cancellation == nil || cancellation.Cancellation.ExecutionToken != "token-1" {
+		t.Fatalf("任务取消命令路由错误：command=%+v err=%v", cancellation, err)
+	}
+}
+
 func TestWebSocketSenderUsesAgentCredentialAndWritesHeartbeat(t *testing.T) {
 	received := make(chan agentprotocol.Heartbeat, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

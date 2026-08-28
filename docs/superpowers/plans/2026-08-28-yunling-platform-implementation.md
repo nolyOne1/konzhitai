@@ -772,7 +772,7 @@ git commit -m "feat: 添加资源感知调度和等待队列"
 - Produces: `executor.Runner.Cancel(ctx, runID, executionToken) error`。
 - Produces: `executor.Event{Sequence, Type, OccurredAt, ExitCode, Message}`。
 
-- [ ] **Step 1: 写参数不经过 shell 拼接的失败测试**
+- [x] **Step 1: 写参数不经过 shell 拼接的失败测试**
 
 ```go
 func TestBuildCommandKeepsArgumentBoundaries(t *testing.T) {
@@ -783,7 +783,7 @@ func TestBuildCommandKeepsArgumentBoundaries(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 写超时终止整个进程组的失败测试**
+- [x] **Step 2: 写超时终止整个进程组的失败测试**
 
 ```go
 func TestRunnerKillsProcessGroupOnTimeout(t *testing.T) {
@@ -796,24 +796,24 @@ func TestRunnerKillsProcessGroupOnTimeout(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: 实现运行环境白名单和独立工作目录**
+- [x] **Step 3: 实现运行环境白名单和独立工作目录**
 
 运行环境只接受代理注册时上报并由管理员允许的可执行文件。每次执行目录为 `/var/lib/yunling-agent/runs/{runID}`，脚本缓存以只读方式引用，临时输出只写入执行目录。
 
-- [ ] **Step 4: 实现 systemd 临时单元资源限制**
+- [x] **Step 4: 实现 systemd 临时单元资源限制**
 
 Linux 使用 `systemd-run --unit=yunling-run-{runID} --uid=yunling-runner --wait --collect` 创建临时服务单元，并通过 `--property` 设置 `CPUQuota`、`MemoryMax`、`TasksMax` 和 `RuntimeMaxSec`。测试使用 `Launcher` 接口替代真实 systemd，集成环境再验证真实限制。
 
-- [ ] **Step 5: 实现取消与超时**
+- [x] **Step 5: 实现取消与超时**
 
 取消先发送 SIGTERM，等待 10 秒后对整个进程组发送 SIGKILL。只有 RunID 与 ExecutionToken 同时匹配当前执行，代理才接受取消请求。
 
-- [ ] **Step 6: 运行执行器测试**
+- [x] **Step 6: 运行执行器测试**
 
 Run: `go test ./internal/executor ./internal/agent -v`  
 Expected: PASS。
 
-- [ ] **Step 7: 提交代理执行能力**
+- [x] **Step 7: 提交代理执行能力**
 
 ```bash
 git add internal/agent internal/agentprotocol internal/executor cmd/agent deploy/agent

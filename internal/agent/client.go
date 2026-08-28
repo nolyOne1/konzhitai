@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -104,6 +105,14 @@ func (t realTicker) C() <-chan time.Time {
 type WebSocketSender struct {
 	connection *websocket.Conn
 	writeMu    sync.Mutex
+	readOnce   sync.Once
+	readMu     sync.Mutex
+	readErr    error
+	readCtx    context.Context
+	cancelRead context.CancelFunc
+	readDone   chan struct{}
+	syncQueue  chan agentprotocol.SyncCommand
+	execQueue  chan agentprotocol.ExecutionCommand
 }
 
 func DialHeartbeatSender(ctx context.Context, controlURL, credential string) (*WebSocketSender, error) {
@@ -121,7 +130,15 @@ func DialHeartbeatSender(ctx context.Context, controlURL, credential string) (*W
 		}
 		return nil, fmt.Errorf("连接中央服务 WebSocket（状态码 %d）：%w", status, err)
 	}
-	return &WebSocketSender{connection: connection}, nil
+	readCtx, cancelRead := context.WithCancel(context.Background())
+	return &WebSocketSender{
+		connection: connection,
+		readCtx:    readCtx,
+		cancelRead: cancelRead,
+		readDone:   make(chan struct{}),
+		syncQueue:  make(chan agentprotocol.SyncCommand, 32),
+		execQueue:  make(chan agentprotocol.ExecutionCommand, 32),
+	}, nil
 }
 
 func (s *WebSocketSender) SendHeartbeat(ctx context.Context, heartbeat agentprotocol.Heartbeat) error {
@@ -129,13 +146,21 @@ func (s *WebSocketSender) SendHeartbeat(ctx context.Context, heartbeat agentprot
 }
 
 func (s *WebSocketSender) ReceiveSyncCommand(ctx context.Context) (agentprotocol.SyncCommand, error) {
-	var command agentprotocol.SyncCommand
-	err := wsjson.Read(ctx, s.connection, &command)
-	return command, err
+	s.startReader()
+	return receiveCommand(ctx, s.syncQueue, s.readDone, s.readerError)
+}
+
+func (s *WebSocketSender) ReceiveExecutionCommand(ctx context.Context) (agentprotocol.ExecutionCommand, error) {
+	s.startReader()
+	return receiveCommand(ctx, s.execQueue, s.readDone, s.readerError)
 }
 
 func (s *WebSocketSender) SendSyncResult(ctx context.Context, result agentprotocol.SyncResult) error {
 	return s.write(ctx, result)
+}
+
+func (s *WebSocketSender) SendRunEvent(ctx context.Context, event agentprotocol.RunEvent) error {
+	return s.write(ctx, event)
 }
 
 func (s *WebSocketSender) write(ctx context.Context, value any) error {
@@ -145,7 +170,90 @@ func (s *WebSocketSender) write(ctx context.Context, value any) error {
 }
 
 func (s *WebSocketSender) Close() error {
+	s.cancelRead()
 	return s.connection.Close(websocket.StatusNormalClosure, "代理停止")
+}
+
+func (s *WebSocketSender) startReader() {
+	s.readOnce.Do(func() { go s.readCommands() })
+}
+
+func (s *WebSocketSender) readCommands() {
+	defer close(s.readDone)
+	for {
+		var payload json.RawMessage
+		if err := wsjson.Read(s.readCtx, s.connection, &payload); err != nil {
+			s.setReaderError(err)
+			return
+		}
+		var header struct {
+			Type agentprotocol.ExecutionCommandType `json:"type"`
+		}
+		if err := json.Unmarshal(payload, &header); err != nil {
+			s.setReaderError(fmt.Errorf("解析中央命令类型：%w", err))
+			return
+		}
+		if header.Type != "" {
+			var command agentprotocol.ExecutionCommand
+			if err := json.Unmarshal(payload, &command); err != nil || (command.Type != agentprotocol.CommandAssign && command.Type != agentprotocol.CommandCancel) {
+				s.setReaderError(fmt.Errorf("中央执行命令格式无效"))
+				return
+			}
+			select {
+			case s.execQueue <- command:
+			case <-s.readCtx.Done():
+				return
+			}
+			continue
+		}
+		var command agentprotocol.SyncCommand
+		if err := json.Unmarshal(payload, &command); err != nil {
+			s.setReaderError(fmt.Errorf("中央同步命令格式无效：%w", err))
+			return
+		}
+		select {
+		case s.syncQueue <- command:
+		case <-s.readCtx.Done():
+			return
+		}
+	}
+}
+
+func (s *WebSocketSender) setReaderError(err error) {
+	s.readMu.Lock()
+	s.readErr = err
+	s.readMu.Unlock()
+}
+
+func (s *WebSocketSender) readerError() error {
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+	return s.readErr
+}
+
+func receiveCommand[T any](ctx context.Context, queue <-chan T, done <-chan struct{}, readError func() error) (T, error) {
+	var zero T
+	select {
+	case command := <-queue:
+		return command, nil
+	default:
+	}
+	select {
+	case command := <-queue:
+		return command, nil
+	case <-done:
+		select {
+		case command := <-queue:
+			return command, nil
+		default:
+		}
+		if err := readError(); err != nil {
+			return zero, err
+		}
+		return zero, fmt.Errorf("中央命令连接已关闭")
+	case <-ctx.Done():
+		return zero, ctx.Err()
+	}
 }
 
 func agentConnectURL(controlURL string) (string, error) {

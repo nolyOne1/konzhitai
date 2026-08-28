@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"yunling.local/platform/internal/agent"
 	"yunling.local/platform/internal/executor"
@@ -48,10 +50,6 @@ func main() {
 			diskPath = "."
 		}
 	}
-	stats, err := agent.NewSystemStatsSource(diskPath, nil)
-	if err != nil {
-		log.Fatalf("初始化系统资源采集失败：%v", err)
-	}
 	runtimeConfig := os.Getenv("YUNLING_RUNTIMES")
 	if runtimeConfig == "" {
 		runtimeConfig = "bash,python3"
@@ -61,6 +59,18 @@ func main() {
 		if runtimeName = strings.TrimSpace(runtimeName); runtimeName != "" {
 			runtimes = append(runtimes, runtimeName)
 		}
+	}
+	cacheRoot := filepath.Join(diskPath, "script-cache")
+	runner := executor.NewRunner(
+		newAgentLauncher(runtime.GOOS, os.Getenv("YUNLING_EXECUTION_MODE")),
+		10*time.Second,
+		executor.WithWorkRoot(filepath.Join(diskPath, "runs")),
+		executor.WithAllowedScriptRoots(filepath.Join(cacheRoot, "scripts")),
+		executor.WithAllowedRuntimes(runtimes...),
+	)
+	stats, err := agent.NewSystemStatsSource(diskPath, runner.RunningCount)
+	if err != nil {
+		log.Fatalf("初始化系统资源采集失败：%v", err)
 	}
 	collector := agent.NewCollector(stats, runtimes)
 	allowedRoots := agent.ParseAllowedScriptRoots(os.Getenv("YUNLING_ALLOWED_SCRIPT_ROOTS"))
@@ -81,13 +91,14 @@ func main() {
 	defer sender.Close()
 
 	heartbeatClient := agent.NewClient(credentials.ServerID, agentVersion, collector, sender)
-	cacheRoot := filepath.Join(diskPath, "script-cache")
 	cache := executor.NewCache(cacheRoot, agent.NewCredentialDownloader(credentials.Credential, nil))
 	syncClient := agent.NewSyncClient(cache, executor.NewDriftScanner(cacheRoot), sender)
+	executionClient := agent.NewExecutionClient(runner, sender)
 	log.Printf("云令代理已连接，服务器编号：%s", credentials.ServerID)
-	errors := make(chan error, 2)
+	errors := make(chan error, 3)
 	go func() { errors <- heartbeatClient.Run(ctx) }()
 	go func() { errors <- syncClient.Run(ctx) }()
+	go func() { errors <- executionClient.Run(ctx) }()
 	select {
 	case <-ctx.Done():
 		return
@@ -96,4 +107,14 @@ func main() {
 			log.Fatalf("云令代理停止：%v", err)
 		}
 	}
+}
+
+func newAgentLauncher(goos, mode string) executor.Launcher {
+	if strings.EqualFold(strings.TrimSpace(mode), "process") {
+		return executor.NewProcessLauncher()
+	}
+	if goos == "linux" {
+		return executor.NewSystemdLauncher()
+	}
+	return executor.NewProcessLauncher()
 }
