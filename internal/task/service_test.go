@@ -156,11 +156,45 @@ func TestCreateRejectsPinnedVersionFromAnotherScript(t *testing.T) {
 	}
 }
 
+func TestTriggerSnapshotsAllocationConstraints(t *testing.T) {
+	db := taskDatabase(t)
+	ctx := context.Background()
+	userID := insertTaskUser(t, db)
+	scriptID := insertTaskScript(t, db, userID)
+	_ = insertTaskVersion(t, db, scriptID, userID, 1)
+	input := validTaskInput(scriptID, userID, "分配条件快照任务")
+	input.RequiredLabels = map[string]string{"用途": "批处理"}
+	service := task.NewService(db, taskClock)
+	definition, err := service.Create(ctx, input)
+	if err != nil {
+		t.Fatalf("创建任务定义：%v", err)
+	}
+	run, err := service.Trigger(ctx, definition.ID, task.Trigger{Type: task.TriggerManual})
+	if err != nil {
+		t.Fatalf("创建运行实例：%v", err)
+	}
+	if run.RequiredRuntime != "bash" || run.RequiredLabels["用途"] != "批处理" {
+		t.Fatalf("运行实例必须返回锁定的分配条件：%+v", run)
+	}
+	if _, err := db.Exec(ctx, `UPDATE task_definitions SET required_runtime='python3', required_labels='{"用途":"交互"}' WHERE id=$1`, definition.ID); err != nil {
+		t.Fatalf("修改任务定义：%v", err)
+	}
+	var runtime string
+	var labels map[string]string
+	if err := db.QueryRow(ctx, `SELECT required_runtime, required_labels FROM task_runs WHERE id=$1`, run.ID).Scan(&runtime, &labels); err != nil {
+		t.Fatalf("读取运行实例分配条件快照：%v", err)
+	}
+	if runtime != "bash" || labels["用途"] != "批处理" {
+		t.Fatalf("任务定义修改后不得改变已入队实例，runtime=%s labels=%v", runtime, labels)
+	}
+}
+
 func taskDatabase(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	db := testpostgres.Start(t)
 	testpostgres.ApplyInitialMigration(t, db)
 	testpostgres.ApplyMigration(t, db, "000005_task_scheduling.up.sql")
+	testpostgres.ApplyMigration(t, db, "000006_scheduler_resources.up.sql")
 	return db
 }
 

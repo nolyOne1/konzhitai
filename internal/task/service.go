@@ -211,11 +211,13 @@ func (s *Service) Trigger(ctx context.Context, definitionID string, trigger Trig
 	var pinnedVersionID *string
 	var scriptID string
 	var enabled, idempotent bool
-	var parametersJSON []byte
+	var parametersJSON, labelsJSON []byte
+	var requiredRuntime string
 	var priority, cpu, timeout, maxWait, maxRetries, backoff, maxConcurrency int
 	var memory, disk int64
 	err = tx.QueryRow(ctx, `
 		SELECT script_id, version_policy, pinned_version_id, enabled, parameters,
+		       required_labels, required_runtime,
 		       priority, cpu_millicores, memory_bytes, disk_bytes, max_concurrency,
 		       timeout_seconds, max_wait_seconds, max_retries, retry_backoff_seconds,
 		       idempotent
@@ -223,6 +225,7 @@ func (s *Service) Trigger(ctx context.Context, definitionID string, trigger Trig
 		WHERE id=$1
 		FOR SHARE
 	`, definitionID).Scan(&scriptID, &policy, &pinnedVersionID, &enabled, &parametersJSON,
+		&labelsJSON, &requiredRuntime,
 		&priority, &cpu, &memory, &disk, &maxConcurrency, &timeout, &maxWait,
 		&maxRetries, &backoff, &idempotent)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -253,11 +256,16 @@ func (s *Service) Trigger(ctx context.Context, definitionID string, trigger Trig
 	for key, value := range trigger.Parameters {
 		parameters[key] = value
 	}
+	requiredLabels := map[string]string{}
+	if err := json.Unmarshal(labelsJSON, &requiredLabels); err != nil {
+		return Run{}, fmt.Errorf("解析任务标签：%w", err)
+	}
 	parametersJSON, _ = json.Marshal(parameters)
 	now := s.now()
 	run := Run{
 		DefinitionID: definitionID, ScriptVersionID: versionID, TriggerType: trigger.Type,
-		State: Queued, Parameters: parameters, Priority: priority,
+		State: Queued, Parameters: parameters, RequiredLabels: requiredLabels,
+		RequiredRuntime: requiredRuntime, Priority: priority,
 		Resources:      Resources{CPUMillicores: cpu, MemoryBytes: memory, DiskBytes: disk},
 		MaxConcurrency: maxConcurrency, TimeoutSeconds: timeout, MaxWaitSeconds: maxWait,
 		RetryPolicy: RetryPolicy{MaxRetries: maxRetries, BackoffSeconds: backoff},
@@ -266,15 +274,16 @@ func (s *Service) Trigger(ctx context.Context, definitionID string, trigger Trig
 	err = tx.QueryRow(ctx, `
 		INSERT INTO task_runs (
 			task_definition_id, script_version_id, requested_by, trigger_type, state,
-			parameters_snapshot, scheduled_for, queued_at, priority, cpu_millicores,
+			parameters_snapshot, required_labels, required_runtime,
+			scheduled_for, queued_at, priority, cpu_millicores,
 			memory_bytes, disk_bytes, max_concurrency, timeout_seconds,
 			max_wait_seconds, max_retries, retry_backoff_seconds, idempotent,
 			created_at, updated_at
 		)
-		VALUES ($1,$2,$3,$4,'queued',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$7,$7)
+		VALUES ($1,$2,$3,$4,'queued',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$9,$9)
 		RETURNING id
 	`, definitionID, versionID, nullableUUID(trigger.RequestedBy), trigger.Type,
-		parametersJSON, trigger.ScheduledFor, now, priority, cpu, memory, disk,
+		parametersJSON, labelsJSON, requiredRuntime, trigger.ScheduledFor, now, priority, cpu, memory, disk,
 		maxConcurrency, timeout, maxWait, maxRetries, backoff, idempotent).Scan(&run.ID)
 	if err != nil {
 		var pgError *pgconn.PgError

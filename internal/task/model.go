@@ -107,22 +107,24 @@ type Trigger struct {
 }
 
 type Run struct {
-	ID              string         `json:"id"`
-	DefinitionID    string         `json:"definitionId"`
-	ScriptVersionID string         `json:"scriptVersionId"`
-	TriggerType     TriggerType    `json:"triggerType"`
-	State           RunState       `json:"state"`
-	Parameters      map[string]any `json:"parameters"`
-	Priority        int            `json:"priority"`
-	Resources       Resources      `json:"resources"`
-	MaxConcurrency  int            `json:"maxConcurrency"`
-	TimeoutSeconds  int            `json:"timeoutSeconds"`
-	MaxWaitSeconds  int            `json:"maxWaitSeconds"`
-	RetryPolicy     RetryPolicy    `json:"retryPolicy"`
-	Idempotent      bool           `json:"idempotent"`
-	ScheduledFor    *time.Time     `json:"scheduledFor,omitempty"`
-	QueuedAt        time.Time      `json:"queuedAt"`
-	CreatedAt       time.Time      `json:"createdAt"`
+	ID              string            `json:"id"`
+	DefinitionID    string            `json:"definitionId"`
+	ScriptVersionID string            `json:"scriptVersionId"`
+	TriggerType     TriggerType       `json:"triggerType"`
+	State           RunState          `json:"state"`
+	Parameters      map[string]any    `json:"parameters"`
+	RequiredLabels  map[string]string `json:"requiredLabels"`
+	RequiredRuntime string            `json:"requiredRuntime"`
+	Priority        int               `json:"priority"`
+	Resources       Resources         `json:"resources"`
+	MaxConcurrency  int               `json:"maxConcurrency"`
+	TimeoutSeconds  int               `json:"timeoutSeconds"`
+	MaxWaitSeconds  int               `json:"maxWaitSeconds"`
+	RetryPolicy     RetryPolicy       `json:"retryPolicy"`
+	Idempotent      bool              `json:"idempotent"`
+	ScheduledFor    *time.Time        `json:"scheduledFor,omitempty"`
+	QueuedAt        time.Time         `json:"queuedAt"`
+	CreatedAt       time.Time         `json:"createdAt"`
 }
 
 type Schedule struct {

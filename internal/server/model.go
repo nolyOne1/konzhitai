@@ -32,3 +32,25 @@ type ResourceSnapshot struct {
 	RunningTasks         int
 	CollectedAt          time.Time
 }
+
+// Snapshot 是调度器做一次确定性决策所需的服务器状态快照。
+type Snapshot struct {
+	ID                     string
+	Status                 Status
+	Enabled                bool
+	Draining               bool
+	Labels                 map[string]string
+	Runtimes               []string
+	MaxConcurrency         int
+	RunningTasks           int
+	CPUTotalMillicores     int
+	CPUAvailableMillicores int
+	MemoryTotalBytes       int64
+	MemoryAvailableBytes   int64
+	DiskTotalBytes         int64
+	DiskAvailableBytes     int64
+	ReadyScriptVersions    map[string]bool
+	BlockedScriptVersions  map[string]bool
+	SchedulingWeight       int
+	FairnessScore          int64
+}

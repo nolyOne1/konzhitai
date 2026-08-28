@@ -92,6 +92,7 @@ func (r *PostgresRepository) SaveHeartbeat(
 		INSERT INTO server_snapshots (
 			server_id,
 			cpu_usage_percent,
+			cpu_total_milli,
 			memory_total_bytes,
 			memory_available_bytes,
 			disk_total_bytes,
@@ -101,10 +102,11 @@ func (r *PostgresRepository) SaveHeartbeat(
 			cpu_used_milli,
 			memory_used_bytes,
 			disk_free_bytes
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`,
 		serverID,
 		cpuUsagePercent,
+		heartbeat.CPUTotalMilli,
 		heartbeat.MemoryTotalBytes,
 		memoryAvailable,
 		diskTotal,

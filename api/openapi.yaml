@@ -1474,6 +1474,8 @@ components:
         - triggerType
         - state
         - parameters
+        - requiredLabels
+        - requiredRuntime
         - priority
         - resources
         - maxConcurrency
@@ -1502,6 +1504,12 @@ components:
         parameters:
           type: object
           additionalProperties: true
+        requiredLabels:
+          type: object
+          additionalProperties:
+            type: string
+        requiredRuntime:
+          type: string
         priority:
           type: integer
           minimum: 0

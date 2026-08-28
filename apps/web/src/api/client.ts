@@ -206,6 +206,8 @@ export interface TaskRun {
   scriptVersionId: string
   triggerType: 'manual' | 'schedule' | 'retry'
   state: string
+  requiredLabels: Record<string, string>
+  requiredRuntime: string
   queuedAt: string
 }
 

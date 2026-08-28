@@ -17,6 +17,9 @@ func TestEnrollmentTokenIsHashedAndCanOnlyBeUsedOnce(t *testing.T) {
 	testpostgres.ApplyInitialMigration(t, db)
 	testpostgres.ApplyMigration(t, db, "000002_agent_enrollment.up.sql")
 	testpostgres.ApplyMigration(t, db, "000003_server_management.up.sql")
+	testpostgres.ApplyMigration(t, db, "000004_script_sync_states.up.sql")
+	testpostgres.ApplyMigration(t, db, "000005_task_scheduling.up.sql")
+	testpostgres.ApplyMigration(t, db, "000006_scheduler_resources.up.sql")
 	ctx := context.Background()
 	now := time.Date(2026, 8, 28, 11, 0, 0, 0, time.UTC)
 	repository := server.NewPostgresRepository(db)
@@ -71,6 +74,9 @@ func TestPostgresHeartbeatAcceptsOnlyIncreasingSequence(t *testing.T) {
 	testpostgres.ApplyInitialMigration(t, db)
 	testpostgres.ApplyMigration(t, db, "000002_agent_enrollment.up.sql")
 	testpostgres.ApplyMigration(t, db, "000003_server_management.up.sql")
+	testpostgres.ApplyMigration(t, db, "000004_script_sync_states.up.sql")
+	testpostgres.ApplyMigration(t, db, "000005_task_scheduling.up.sql")
+	testpostgres.ApplyMigration(t, db, "000006_scheduler_resources.up.sql")
 	ctx := context.Background()
 	serverID := "123e4567-e89b-42d3-a456-426614174100"
 	_, err := db.Exec(ctx, `
@@ -86,6 +92,7 @@ func TestPostgresHeartbeatAcceptsOnlyIncreasingSequence(t *testing.T) {
 	accepted, err := repository.SaveHeartbeat(ctx, agentprotocol.Heartbeat{
 		ServerID:        serverID,
 		Sequence:        10,
+		CPUTotalMilli:   8000,
 		CPUUsedMilli:    3200,
 		MemoryUsedBytes: 4 << 30,
 		DiskFreeBytes:   20 << 30,
@@ -109,18 +116,19 @@ func TestPostgresHeartbeatAcceptsOnlyIncreasingSequence(t *testing.T) {
 	}
 
 	var sequence uint64
+	var cpuTotalMilli int64
 	var cpuUsedMilli int64
 	var snapshotCount int
 	if err := db.QueryRow(ctx, `SELECT last_heartbeat_sequence FROM servers WHERE id = $1`, serverID).Scan(&sequence); err != nil {
 		t.Fatalf("读取服务器心跳序号：%v", err)
 	}
-	if err := db.QueryRow(ctx, `SELECT cpu_used_milli FROM server_snapshots WHERE server_id = $1`, serverID).Scan(&cpuUsedMilli); err != nil {
+	if err := db.QueryRow(ctx, `SELECT cpu_total_milli, cpu_used_milli FROM server_snapshots WHERE server_id = $1`, serverID).Scan(&cpuTotalMilli, &cpuUsedMilli); err != nil {
 		t.Fatalf("读取服务器资源快照：%v", err)
 	}
 	if err := db.QueryRow(ctx, `SELECT count(*) FROM server_snapshots WHERE server_id = $1`, serverID).Scan(&snapshotCount); err != nil {
 		t.Fatalf("统计服务器资源快照：%v", err)
 	}
-	if sequence != 10 || cpuUsedMilli != 3200 || snapshotCount != 1 {
-		t.Fatalf("旧心跳不得改变数据库，sequence=%d cpu=%d snapshots=%d", sequence, cpuUsedMilli, snapshotCount)
+	if sequence != 10 || cpuTotalMilli != 8000 || cpuUsedMilli != 3200 || snapshotCount != 1 {
+		t.Fatalf("旧心跳不得改变数据库，sequence=%d cpu_total=%d cpu_used=%d snapshots=%d", sequence, cpuTotalMilli, cpuUsedMilli, snapshotCount)
 	}
 }

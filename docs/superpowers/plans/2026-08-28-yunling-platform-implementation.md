@@ -688,7 +688,7 @@ git commit -m "feat: 添加任务定义和定时计划"
 - Produces: `scheduler.LeaseStore.TryReserve(ctx, LeaseRequest) (Lease, bool, error)`。
 - Produces: `scheduler.Service.ScheduleOne(ctx, runID) (scheduler.Outcome, error)`，Outcome 为 `assigned` 或 `queued`。
 
-- [ ] **Step 1: 写资源不足保持排队的失败测试**
+- [x] **Step 1: 写资源不足保持排队的失败测试**
 
 ```go
 func TestScheduleOneKeepsRunQueuedWhenNoServerFits(t *testing.T) {
@@ -701,7 +701,7 @@ func TestScheduleOneKeepsRunQueuedWhenNoServerFits(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 写资源释放唤醒队列的失败测试**
+- [x] **Step 2: 写资源释放唤醒队列的失败测试**
 
 ```go
 func TestResourceReleasedWakesHighestPriorityWaitingRun(t *testing.T) {
@@ -714,7 +714,7 @@ func TestResourceReleasedWakesHighestPriorityWaitingRun(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: 写原子租约防超卖测试**
+- [x] **Step 3: 写原子租约防超卖测试**
 
 ```go
 func TestTryReserveAllowsOnlyOneConcurrentWinner(t *testing.T) {
@@ -728,22 +728,22 @@ func TestTryReserveAllowsOnlyOneConcurrentWinner(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: 实现筛选、确定性评分和 Redis Lua 租约**
+- [x] **Step 4: 实现筛选、确定性评分和 Redis Lua 租约**
 
 筛选顺序固定为：在线与未排空、标签、运行环境、并发、脚本隔离、CPU、内存、磁盘。评分使用整数权重：剩余内存 35%、剩余 CPU 25%、低运行数 20%、脚本已缓存 15%、近期公平性 5%；相同分数按服务器 ID 排序，保证测试可重复。
 
 租约 Lua 脚本在一个 Redis 操作中检查可用资源、扣减 CPU/内存/磁盘并写入带过期时间的租约键；失败不产生部分扣减。
 
-- [ ] **Step 5: 实现事件唤醒与 15 秒兜底扫描**
+- [x] **Step 5: 实现事件唤醒与 15 秒兜底扫描**
 
 监听 `run.queued`、`resource.released`、`server.online`、`server.changed` 和 `script.ready`。每 15 秒按优先级降序、入队时间升序扫描排队任务；超过 `MaxWait` 的任务迁移到 `expired`。
 
-- [ ] **Step 6: 运行调度器与 Redis 集成测试**
+- [x] **Step 6: 运行调度器与 Redis 集成测试**
 
 Run: `go test ./internal/scheduler ./internal/store/redis -v`  
 Expected: PASS，包含并发租约测试。
 
-- [ ] **Step 7: 提交调度核心**
+- [x] **Step 7: 提交调度核心**
 
 ```bash
 git add internal/scheduler internal/store/redis cmd/scheduler
