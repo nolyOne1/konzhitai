@@ -20,3 +20,110 @@ paths:
                   status:
                     type: string
                     const: ok
+  /api/auth/login:
+    post:
+      operationId: login
+      summary: 登录管理控制台
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  format: password
+      responses:
+        "200":
+          description: 登录成功，并通过安全 Cookie 返回会话令牌
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message, expires_at]
+                properties:
+                  message:
+                    type: string
+                    const: 登录成功
+                  expires_at:
+                    type: string
+                    format: date-time
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/auth/logout:
+    post:
+      operationId: logout
+      summary: 退出当前会话
+      security:
+        - sessionCookie: []
+      responses:
+        "204":
+          description: 已退出登录
+  /api/auth/session:
+    get:
+      operationId: getSession
+      summary: 获取当前登录用户
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: 当前会话有效
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/SessionUser"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: yunling_session
+  schemas:
+    Role:
+      type: string
+      enum: [admin, operator, developer, viewer]
+    SessionUser:
+      type: object
+      required: [user_id, email, display_name, roles]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        roles:
+          type: array
+          items:
+            $ref: "#/components/schemas/Role"
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+  responses:
+    Unauthorized:
+      description: 未登录、会话已失效或登录凭据错误
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

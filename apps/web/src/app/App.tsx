@@ -1,4 +1,7 @@
 import './styles.css'
+import { BrowserRouter, Route, Routes } from 'react-router-dom'
+
+import { LoginPage } from '../features/auth/LoginPage'
 
 const navigation = [
   { label: '运行总览', href: '/' },
@@ -13,6 +16,17 @@ const navigation = [
 ]
 
 export function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="*" element={<ConsoleShell />} />
+      </Routes>
+    </BrowserRouter>
+  )
+}
+
+function ConsoleShell() {
   return (
     <div className="app-shell">
       <aside className="sidebar">

@@ -262,7 +262,7 @@ git commit -m "feat: 建立核心领域模型和数据库迁移"
 - Produces: `POST /api/auth/login`、`POST /api/auth/logout`、`GET /api/auth/session`。
 - Produces: 权限 `system.admin`、`operations.execute`、`scripts.publish`、`system.read`。
 
-- [ ] **Step 1: 写密码、登录和权限失败测试**
+- [x] **Step 1: 写密码、登录和权限失败测试**
 
 ```go
 func TestOperatorCannotPublishScript(t *testing.T) {
@@ -278,16 +278,16 @@ func TestWrongPasswordReturnsInvalidCredentials(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: `go test ./internal/auth -v`  
 Expected: FAIL，缺少角色、密码哈希和会话实现。
 
-- [ ] **Step 3: 实现 Argon2id 密码哈希、服务端会话和 RBAC**
+- [x] **Step 3: 实现 Argon2id 密码哈希、服务端会话和 RBAC**
 
 角色映射固定为：管理员拥有全部权限；运维人员可执行、终止和管理服务器；脚本开发者可创建草稿和发布脚本；只读成员仅有 `system.read`。会话令牌只通过 `HttpOnly`、`Secure`、`SameSite=Lax` Cookie 返回，数据库只保存令牌哈希。
 
-- [ ] **Step 4: 写并实现中文登录页**
+- [x] **Step 4: 写并实现中文登录页**
 
 ```tsx
 it('登录失败时在表单旁显示中文错误', async () => {
@@ -300,7 +300,7 @@ it('登录失败时在表单旁显示中文错误', async () => {
 })
 ```
 
-- [ ] **Step 5: 运行认证测试与 Web 测试**
+- [x] **Step 5: 运行认证测试与 Web 测试**
 
 Run: `go test ./internal/auth -v`  
 Expected: PASS。
@@ -308,7 +308,7 @@ Expected: PASS。
 Run: `npm --workspace apps/web test -- --run src/features/auth/LoginPage.test.tsx`  
 Expected: PASS。
 
-- [ ] **Step 6: 提交认证能力**
+- [x] **Step 6: 提交认证能力**
 
 ```bash
 git add internal/auth apps/web/src/features/auth api/openapi.yaml cmd/api/main.go
