@@ -62,6 +62,7 @@ func buildSystemdCommand(spec LaunchSpec) (*exec.Cmd, error) {
 		"--unit=yunling-run-" + spec.RunID,
 		"--uid=yunling-runner",
 		"--wait",
+		"--pipe",
 		"--collect",
 		"--quiet",
 		"--property=CPUQuota=" + cpuQuota,

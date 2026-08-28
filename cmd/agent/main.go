@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"yunling.local/platform/internal/agent"
+	"yunling.local/platform/internal/agentprotocol"
 	"yunling.local/platform/internal/executor"
+	"yunling.local/platform/internal/logstream"
 )
 
 const agentVersion = "0.1.0"
@@ -61,12 +63,25 @@ func main() {
 		}
 	}
 	cacheRoot := filepath.Join(diskPath, "script-cache")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	sender, err := agent.DialHeartbeatSender(ctx, credentials.ControlURL, credentials.Credential)
+	if err != nil {
+		log.Fatalf("连接云令中央服务失败：%v", err)
+	}
+	defer sender.Close()
+	spool, err := logstream.NewSpool(filepath.Join(diskPath, "log-spool"), logstream.DefaultChunkSize)
+	if err != nil {
+		log.Fatalf("初始化本地日志缓冲失败：%v", err)
+	}
+	logClient := agent.NewLogClient(spool, sender)
 	runner := executor.NewRunner(
 		newAgentLauncher(runtime.GOOS, os.Getenv("YUNLING_EXECUTION_MODE")),
 		10*time.Second,
 		executor.WithWorkRoot(filepath.Join(diskPath, "runs")),
 		executor.WithAllowedScriptRoots(filepath.Join(cacheRoot, "scripts")),
 		executor.WithAllowedRuntimes(runtimes...),
+		executor.WithOutputSink(logClient),
 	)
 	stats, err := agent.NewSystemStatsSource(diskPath, runner.RunningCount)
 	if err != nil {
@@ -82,23 +97,21 @@ func main() {
 		log.Printf("已从允许目录发现 %d 个可导入脚本", len(discovered))
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	sender, err := agent.DialHeartbeatSender(ctx, credentials.ControlURL, credentials.Credential)
-	if err != nil {
-		log.Fatalf("连接云令中央服务失败：%v", err)
-	}
-	defer sender.Close()
-
 	heartbeatClient := agent.NewClient(credentials.ServerID, agentVersion, collector, sender)
 	cache := executor.NewCache(cacheRoot, agent.NewCredentialDownloader(credentials.Credential, nil))
 	syncClient := agent.NewSyncClient(cache, executor.NewDriftScanner(cacheRoot), sender)
 	executionClient := agent.NewExecutionClient(runner, sender)
+	if err := sender.SendRunningReport(ctx, agentprotocol.RunningReport{
+		ServerID: credentials.ServerID, ReportedAt: time.Now().UTC(), Authoritative: false, Processes: runner.RunningProcesses(),
+	}); err != nil {
+		log.Fatalf("上报代理重连状态失败：%v", err)
+	}
 	log.Printf("云令代理已连接，服务器编号：%s", credentials.ServerID)
-	errors := make(chan error, 3)
+	errors := make(chan error, 4)
 	go func() { errors <- heartbeatClient.Run(ctx) }()
 	go func() { errors <- syncClient.Run(ctx) }()
 	go func() { errors <- executionClient.Run(ctx) }()
+	go func() { errors <- logClient.Run(ctx) }()
 	select {
 	case <-ctx.Done():
 		return

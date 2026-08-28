@@ -165,6 +165,7 @@ func schedulerDatabase(t *testing.T) *pgxpool.Pool {
 	for _, migration := range []string{
 		"000001_initial.up.sql", "000002_agent_enrollment.up.sql", "000003_server_management.up.sql",
 		"000004_script_sync_states.up.sql", "000005_task_scheduling.up.sql", "000006_scheduler_resources.up.sql",
+		"000007_run_observability.up.sql",
 	} {
 		testpostgres.ApplyMigration(t, db, migration)
 	}

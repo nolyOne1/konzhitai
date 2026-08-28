@@ -9,9 +9,11 @@ import (
 	"strconv"
 	"time"
 
+	"yunling.local/platform/internal/agentprotocol"
 	"yunling.local/platform/internal/artifact"
 	"yunling.local/platform/internal/auth"
 	"yunling.local/platform/internal/health"
+	"yunling.local/platform/internal/logstream"
 	"yunling.local/platform/internal/script"
 	"yunling.local/platform/internal/server"
 	"yunling.local/platform/internal/store/postgres"
@@ -38,6 +40,7 @@ func main() {
 	var managementHandler http.Handler = unavailableHandler
 	var scriptHandler http.Handler = unavailableHandler
 	var taskHandler http.Handler = unavailableHandler
+	var runHandler http.Handler = unavailableHandler
 	if dsn := os.Getenv("YUNLING_DATABASE_URL"); dsn != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pool, err := postgres.Open(ctx, dsn)
@@ -52,13 +55,22 @@ func main() {
 		taskService := task.NewService(pool, time.Now)
 		taskHandler = auth.Authenticate(authService)(task.Handler(taskService))
 
+		eventService := task.NewEventService(task.NewPostgresRunEventStore(pool))
+		reconciler := task.NewReconciler(task.NewPostgresReconcileStore(pool), time.Now)
+		logService := logstream.NewService(logstream.NewPostgresChunkStore(pool))
 		serverRepository := server.NewPostgresRepository(pool)
-		registry := server.NewRegistry(serverRepository, time.Now)
+		registry := server.NewRegistry(serverRepository, time.Now, server.WithEventPublisher(offlineRunPublisher{reconciler: reconciler}))
 		enrollment := server.NewEnrollmentService(serverRepository, time.Now)
 		connections := server.NewAgentConnectionHub()
-		serverHandler = server.Handler(registry, enrollment, server.WithConnectionHub(connections))
+		agentOptions := []server.HandlerOption{
+			server.WithConnectionHub(connections), server.WithRunEventReceiver(eventService),
+			server.WithLogReceiver(apiLogReceiver{service: logService}), server.WithRunningReconciler(reconciler),
+		}
+		serverHandler = server.Handler(registry, enrollment, agentOptions...)
 		management := server.NewManagementService(serverRepository, connections)
 		managementHandler = auth.Authenticate(authService)(server.ManagementHandler(management))
+		runService := task.NewRunService(pool, connections, reconciler, time.Now)
+		runHandler = auth.Authenticate(authService)(task.RunHandler(runService))
 
 		secure, _ := strconv.ParseBool(os.Getenv("YUNLING_S3_SECURE"))
 		objectStore, err := artifact.NewMinIOStore(artifact.MinIOConfig{
@@ -73,11 +85,12 @@ func main() {
 		} else {
 			scriptService := script.NewService(pool, objectStore, time.Now)
 			syncService := script.NewSyncService(pool, publicBaseURL(address), time.Now)
-			serverHandler = server.Handler(
-				registry, enrollment, server.WithConnectionHub(connections),
+			configuredAgentOptions := append([]server.HandlerOption{}, agentOptions...)
+			configuredAgentOptions = append(configuredAgentOptions,
 				server.WithSyncCoordinator(syncService),
 				server.WithAgentArtifactProvider(script.NewVersionArtifactProvider(pool, objectStore)),
 			)
+			serverHandler = server.Handler(registry, enrollment, configuredAgentOptions...)
 			scriptHandler = auth.Authenticate(authService)(script.Handler(scriptService, script.WithSyncManager(syncService)))
 		}
 		protectedServerHandler = auth.Authenticate(authService)(serverHandler)
@@ -117,12 +130,32 @@ func main() {
 	router.Handle("/api/scripts/", scriptHandler)
 	router.Handle("/api/tasks", taskHandler)
 	router.Handle("/api/tasks/", taskHandler)
+	router.Handle("/api/runs", runHandler)
+	router.Handle("/api/runs/", runHandler)
 	router.Handle("/api/agent/", serverHandler)
 
 	log.Printf("云令 API 正在监听 %s", address)
 	if err := http.ListenAndServe(address, router); err != nil {
 		log.Fatal(err)
 	}
+}
+
+type offlineRunPublisher struct{ reconciler *task.Reconciler }
+
+func (p offlineRunPublisher) Publish(ctx context.Context, event server.Event) error {
+	if event.Type == "server.offline" {
+		return p.reconciler.ServerOffline(ctx, event.ServerID)
+	}
+	return nil
+}
+
+type apiLogReceiver struct{ service *logstream.Service }
+
+func (r apiLogReceiver) Accept(ctx context.Context, chunk agentprotocol.LogChunk) (uint64, error) {
+	return r.service.Accept(ctx, logstream.LogChunk{
+		RunID: chunk.RunID, ExecutionToken: chunk.ExecutionToken, Sequence: chunk.Sequence,
+		Stream: logstream.Stream(chunk.Stream), Content: chunk.Content, CreatedAt: chunk.CreatedAt,
+	})
 }
 
 func publicBaseURL(address string) string {

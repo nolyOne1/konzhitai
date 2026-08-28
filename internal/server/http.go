@@ -26,6 +26,9 @@ type handlerOptions struct {
 	connections *AgentConnectionHub
 	sync        SyncCoordinator
 	artifacts   AgentArtifactProvider
+	runEvents   RunEventReceiver
+	logs        LogReceiver
+	reconciler  RunningReconciler
 }
 
 type SyncCoordinator interface {
@@ -35,6 +38,18 @@ type SyncCoordinator interface {
 
 type AgentArtifactProvider interface {
 	OpenVersionArtifact(context.Context, string, string) (io.ReadCloser, string, error)
+}
+
+type RunEventReceiver interface {
+	Apply(context.Context, agentprotocol.RunEvent) error
+}
+
+type LogReceiver interface {
+	Accept(context.Context, agentprotocol.LogChunk) (uint64, error)
+}
+
+type RunningReconciler interface {
+	Reconcile(context.Context, agentprotocol.RunningReport) error
 }
 
 func WithConnectionHub(connections *AgentConnectionHub) HandlerOption {
@@ -51,6 +66,18 @@ func WithAgentArtifactProvider(provider AgentArtifactProvider) HandlerOption {
 	return func(options *handlerOptions) { options.artifacts = provider }
 }
 
+func WithRunEventReceiver(receiver RunEventReceiver) HandlerOption {
+	return func(options *handlerOptions) { options.runEvents = receiver }
+}
+
+func WithLogReceiver(receiver LogReceiver) HandlerOption {
+	return func(options *handlerOptions) { options.logs = receiver }
+}
+
+func WithRunningReconciler(reconciler RunningReconciler) HandlerOption {
+	return func(options *handlerOptions) { options.reconciler = reconciler }
+}
+
 func Handler(registry *Registry, enrollment EnrollmentManager, options ...HandlerOption) http.Handler {
 	configuration := handlerOptions{connections: NewAgentConnectionHub()}
 	for _, option := range options {
@@ -65,7 +92,7 @@ func Handler(registry *Registry, enrollment EnrollmentManager, options ...Handle
 	if configuration.artifacts != nil {
 		router.HandleFunc("GET /api/agent/scripts/{versionID}/artifact", agentArtifactHandler(enrollment, configuration.artifacts))
 	}
-	router.HandleFunc("GET /api/agent/connect", agentConnectHandler(registry, enrollment, configuration.connections, configuration.sync))
+	router.HandleFunc("GET /api/agent/connect", agentConnectHandler(registry, enrollment, configuration))
 	return router
 }
 
@@ -219,8 +246,7 @@ func enrollAgentHandler(enrollment EnrollmentManager) http.HandlerFunc {
 func agentConnectHandler(
 	registry *Registry,
 	enrollment EnrollmentManager,
-	connections *AgentConnectionHub,
-	coordinator SyncCoordinator,
+	configuration handlerOptions,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		credential, ok := bearerCredential(r.Header.Get("Authorization"))
@@ -239,9 +265,11 @@ func agentConnectHandler(
 			return
 		}
 		defer connection.CloseNow()
-		unregister := connections.Register(serverID, connection)
+		unregister := configuration.connections.Register(serverID, connection)
 		defer unregister()
-		connection.SetReadLimit(64 << 10)
+		// 日志正文最大为 64 KiB；JSON 转义控制字符时消息可能膨胀到约 6 倍。
+		// 传输层保留 512 KiB 上限，业务层仍按日志块大小严格校验。
+		connection.SetReadLimit(512 << 10)
 		ctx := context.Background()
 		for {
 			var payload json.RawMessage
@@ -249,23 +277,74 @@ func agentConnectHandler(
 				return
 			}
 			var messageType struct {
-				State agentprotocol.SyncState `json:"state"`
+				MessageType string                  `json:"message_type"`
+				RunID       string                  `json:"run_id"`
+				Stream      string                  `json:"stream"`
+				Type        string                  `json:"type"`
+				State       agentprotocol.SyncState `json:"state"`
 			}
 			if err := json.Unmarshal(payload, &messageType); err != nil {
 				_ = connection.Close(websocket.StatusUnsupportedData, "代理消息格式无效")
 				return
 			}
-			if messageType.State != "" {
-				if coordinator == nil {
+			switch {
+			case messageType.MessageType == "running_report":
+				if configuration.reconciler == nil {
+					_ = connection.Close(websocket.StatusPolicyViolation, "状态对账服务尚未启用")
+					return
+				}
+				var report agentprotocol.RunningReport
+				if err := json.Unmarshal(payload, &report); err != nil {
+					_ = connection.Close(websocket.StatusUnsupportedData, "运行状态报告无效")
+					return
+				}
+				report.ServerID = serverID
+				if err := configuration.reconciler.Reconcile(ctx, report); err != nil {
+					_ = connection.Close(websocket.StatusPolicyViolation, "运行状态对账失败")
+					return
+				}
+			case messageType.MessageType == "log_chunk" || messageType.Stream != "":
+				if configuration.logs == nil {
+					_ = connection.Close(websocket.StatusPolicyViolation, "日志接收服务尚未启用")
+					return
+				}
+				var chunk agentprotocol.LogChunk
+				if err := json.Unmarshal(payload, &chunk); err != nil {
+					_ = connection.Close(websocket.StatusUnsupportedData, "日志块格式无效")
+					return
+				}
+				next, err := configuration.logs.Accept(ctx, chunk)
+				if err != nil {
+					_ = connection.Close(websocket.StatusPolicyViolation, "日志块序号无效")
+					return
+				}
+				if err := configuration.connections.Write(ctx, connection, agentprotocol.LogAcknowledgement{
+					MessageType: "log_ack", RunID: chunk.RunID, ExecutionToken: chunk.ExecutionToken,
+					Stream: chunk.Stream, NextSequence: next,
+				}); err != nil {
+					return
+				}
+			case messageType.RunID != "" && messageType.Type != "":
+				if configuration.runEvents == nil {
+					_ = connection.Close(websocket.StatusPolicyViolation, "运行事件服务尚未启用")
+					return
+				}
+				var event agentprotocol.RunEvent
+				if err := json.Unmarshal(payload, &event); err != nil || configuration.runEvents.Apply(ctx, event) != nil {
+					_ = connection.Close(websocket.StatusPolicyViolation, "任务运行事件无效")
+					return
+				}
+			case messageType.State != "":
+				if configuration.sync == nil {
 					_ = connection.Close(websocket.StatusPolicyViolation, "同步服务尚未启用")
 					return
 				}
 				var result agentprotocol.SyncResult
-				if err := json.Unmarshal(payload, &result); err != nil || coordinator.RecordResult(ctx, serverID, result) != nil {
+				if err := json.Unmarshal(payload, &result); err != nil || configuration.sync.RecordResult(ctx, serverID, result) != nil {
 					_ = connection.Close(websocket.StatusPolicyViolation, "脚本同步结果无效")
 					return
 				}
-			} else {
+			default:
 				var heartbeat agentprotocol.Heartbeat
 				if err := json.Unmarshal(payload, &heartbeat); err != nil {
 					_ = connection.Close(websocket.StatusUnsupportedData, "心跳格式无效")
@@ -277,14 +356,14 @@ func agentConnectHandler(
 					return
 				}
 			}
-			if coordinator != nil {
-				command, ok, err := coordinator.NextCommand(ctx, serverID)
+			if configuration.sync != nil {
+				command, ok, err := configuration.sync.NextCommand(ctx, serverID)
 				if err != nil {
 					_ = connection.Close(websocket.StatusInternalError, "同步调度暂时不可用")
 					return
 				}
 				if ok {
-					if err := wsjson.Write(ctx, connection, command); err != nil {
+					if err := configuration.connections.Write(ctx, connection, command); err != nil {
 						return
 					}
 				}

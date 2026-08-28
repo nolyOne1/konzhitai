@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/google/uuid"
 	"yunling.local/platform/internal/task"
 )
 
@@ -70,7 +71,8 @@ func (s *Service) ScheduleOne(ctx context.Context, runID string) (Outcome, error
 		}
 		assignment := Assignment{
 			RunID: run.ID, ServerID: candidate.ServerID,
-			ScriptVersionID: run.ScriptVersionID, Lease: lease, AssignedAt: now,
+			ScriptVersionID: run.ScriptVersionID, ExecutionToken: uuid.NewString(),
+			Lease: lease, AssignedAt: now,
 		}
 		assigned, err := s.runs.Assign(ctx, assignment)
 		if err != nil {

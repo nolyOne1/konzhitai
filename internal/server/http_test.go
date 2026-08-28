@@ -106,6 +106,83 @@ func TestAgentConnectDispatchesSyncCommandAndRecordsResult(t *testing.T) {
 	}
 }
 
+func TestAgentConnectRoutesRunEventsLogsAndReconciliation(t *testing.T) {
+	repository := newMemoryServerRepository()
+	registry := NewRegistry(repository, time.Now)
+	enrollment := &fakeEnrollmentManager{serverID: "server-runtime"}
+	events := &fakeRunEventReceiver{received: make(chan agentprotocol.RunEvent, 1)}
+	logs := &fakeLogReceiver{received: make(chan agentprotocol.LogChunk, 1)}
+	reconciler := &fakeRunningReconciler{received: make(chan agentprotocol.RunningReport, 1)}
+	server := httptest.NewServer(Handler(
+		registry, enrollment,
+		WithRunEventReceiver(events), WithLogReceiver(logs), WithRunningReconciler(reconciler),
+	))
+	defer server.Close()
+	header := http.Header{}
+	header.Set("Authorization", "Bearer valid-agent-credential")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	connection, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/agent/connect", &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+
+	if err := wsjson.Write(ctx, connection, agentprotocol.RunEvent{RunID: "run-1", ExecutionToken: "token-1", Sequence: 1, Type: "started", OccurredAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if received := <-events.received; received.RunID != "run-1" {
+		t.Fatalf("运行事件路由错误：%+v", received)
+	}
+	chunk := agentprotocol.LogChunk{MessageType: "log_chunk", RunID: "run-1", ExecutionToken: "token-1", Sequence: 1, Stream: "stdout", Content: "日志\n"}
+	if err := wsjson.Write(ctx, connection, chunk); err != nil {
+		t.Fatal(err)
+	}
+	var acknowledgement agentprotocol.LogAcknowledgement
+	if err := wsjson.Read(ctx, connection, &acknowledgement); err != nil || acknowledgement.NextSequence != 2 {
+		t.Fatalf("日志确认不正确：ack=%+v err=%v", acknowledgement, err)
+	}
+	report := agentprotocol.RunningReport{MessageType: "running_report", Processes: []agentprotocol.RunningProcess{{RunID: "run-1", ExecutionToken: "token-1"}}}
+	if err := wsjson.Write(ctx, connection, report); err != nil {
+		t.Fatal(err)
+	}
+	if received := <-reconciler.received; received.ServerID != "server-runtime" {
+		t.Fatalf("状态对账必须使用认证服务器编号：%+v", received)
+	}
+}
+
+func TestAgentConnectAcceptsMaximumLogChunk(t *testing.T) {
+	registry := NewRegistry(newMemoryServerRepository(), time.Now)
+	logs := &fakeLogReceiver{received: make(chan agentprotocol.LogChunk, 1)}
+	server := httptest.NewServer(Handler(
+		registry,
+		&fakeEnrollmentManager{serverID: "server-runtime"},
+		WithLogReceiver(logs),
+	))
+	defer server.Close()
+	header := http.Header{}
+	header.Set("Authorization", "Bearer valid-agent-credential")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	connection, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/agent/connect", &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+
+	chunk := agentprotocol.LogChunk{
+		MessageType: "log_chunk", RunID: "run-1", ExecutionToken: "token-1",
+		Sequence: 1, Stream: "stdout", Content: strings.Repeat("x", 64<<10),
+	}
+	if err := wsjson.Write(ctx, connection, chunk); err != nil {
+		t.Fatal(err)
+	}
+	var acknowledgement agentprotocol.LogAcknowledgement
+	if err := wsjson.Read(ctx, connection, &acknowledgement); err != nil || acknowledgement.NextSequence != 2 {
+		t.Fatalf("最大日志块必须能够通过代理 WebSocket：ack=%+v err=%v", acknowledgement, err)
+	}
+}
+
 func TestAgentArtifactDownloadUsesAuthenticatedServerScope(t *testing.T) {
 	provider := &fakeAgentArtifactProvider{}
 	handler := Handler(NewRegistry(newMemoryServerRepository(), time.Now), &fakeEnrollmentManager{serverID: "server-artifact"}, WithAgentArtifactProvider(provider))
@@ -247,6 +324,29 @@ type fakeSyncCoordinator struct {
 type fakeAgentArtifactProvider struct {
 	serverID  string
 	versionID string
+}
+
+type fakeRunEventReceiver struct{ received chan agentprotocol.RunEvent }
+
+func (r *fakeRunEventReceiver) Apply(_ context.Context, event agentprotocol.RunEvent) error {
+	r.received <- event
+	return nil
+}
+
+type fakeLogReceiver struct{ received chan agentprotocol.LogChunk }
+
+func (r *fakeLogReceiver) Accept(_ context.Context, chunk agentprotocol.LogChunk) (uint64, error) {
+	r.received <- chunk
+	return chunk.Sequence + 1, nil
+}
+
+type fakeRunningReconciler struct {
+	received chan agentprotocol.RunningReport
+}
+
+func (r *fakeRunningReconciler) Reconcile(_ context.Context, report agentprotocol.RunningReport) error {
+	r.received <- report
+	return nil
 }
 
 func (p *fakeAgentArtifactProvider) OpenVersionArtifact(_ context.Context, serverID, versionID string) (io.ReadCloser, string, error) {

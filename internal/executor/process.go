@@ -24,6 +24,12 @@ func (l *ProcessLauncher) Start(ctx context.Context, spec LaunchSpec) (Process, 
 	command := spec.Command
 	command.Dir = spec.WorkingDirectory
 	command.Env = mergedEnvironment(command.Env, spec.Environment)
+	if spec.Stdout != nil {
+		command.Stdout = spec.Stdout
+	}
+	if spec.Stderr != nil {
+		command.Stderr = spec.Stderr
+	}
 	configureProcessGroup(command)
 	if err := command.Start(); err != nil {
 		return nil, fmt.Errorf("启动任务进程：%w", err)

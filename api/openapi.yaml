@@ -731,6 +731,102 @@ paths:
           description: 定时计划已删除
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/runs:
+    get:
+      operationId: listRuns
+      summary: 获取执行记录
+      description: 返回最近 200 条运行实例；排队是运行状态之一，不是独立管理模块。
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: 执行记录列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RunView"
+  /api/runs/{id}:
+    get:
+      operationId: getRun
+      summary: 获取执行详情
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: 执行上下文、资源、服务器、版本和结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunView"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/runs/{id}/events:
+    get:
+      operationId: streamRunEvents
+      summary: 订阅运行状态与实时日志
+      description: 通过 SSE 发送 state 和 log 事件；断线重连后服务端会重新发送历史事件，客户端按事件 ID 去重。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - name: follow
+          in: query
+          required: false
+          description: 设置为 false 时只返回当前事件，供诊断和测试使用。
+          schema:
+            type: boolean
+            default: true
+      responses:
+        "200":
+          description: Server-Sent Events 流
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /api/runs/{id}/cancel:
+    post:
+      operationId: cancelRun
+      summary: 取消排队或运行中的任务
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "204":
+          description: 排队任务已取消，或取消命令已发送到执行服务器
+        "409":
+          description: 当前状态不能取消或执行服务器未连接
+  /api/runs/{id}/retry:
+    post:
+      operationId: retryRun
+      summary: 按安全策略重试任务
+      description: 仅当任务允许幂等执行、重试次数未耗尽且原进程已确认不存在时创建新运行实例。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "201":
+          description: 新运行实例已进入排队队列
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+        "409":
+          description: 不满足安全重试条件
   /api/agent/enroll:
     post:
       operationId: enrollAgent
@@ -764,7 +860,7 @@ paths:
     get:
       operationId: connectAgent
       summary: 建立代理 WebSocket 长连接
-      description: 代理通过此连接上报心跳；中央服务以凭据绑定的服务器身份为准。
+      description: 代理通过此连接上报心跳、运行状态、日志块和重连对账信息；中央服务以凭据绑定的服务器身份为准。
       security:
         - agentBearer: []
       responses:
@@ -817,6 +913,13 @@ components:
       scheme: bearer
       bearerFormat: 云令代理凭据
   parameters:
+    RunID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     ScriptID:
       name: id
       in: path
@@ -1536,6 +1639,108 @@ components:
           type: string
           format: date-time
         createdAt:
+          type: string
+          format: date-time
+    RunView:
+      type: object
+      required: [id, definitionId, taskName, scriptId, scriptName, scriptVersionId, versionNumber, triggerType, state, parameters, resources, requiredRuntime, priority, attempt, maxRetries, idempotent, processConfirmedGone, queuedAt, resultSummary, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        definitionId:
+          type: string
+          format: uuid
+        taskName:
+          type: string
+        scriptId:
+          type: string
+          format: uuid
+        scriptName:
+          type: string
+        scriptVersionId:
+          type: string
+          format: uuid
+        versionNumber:
+          type: integer
+          minimum: 1
+        serverId:
+          type: string
+          format: uuid
+        serverName:
+          type: string
+        triggerType:
+          type: string
+          enum: [manual, schedule, retry]
+        state:
+          type: string
+          enum: [queued, scheduling, assigned, syncing, running, succeeded, failed, timed_out, cancelled, expired, unknown]
+        parameters:
+          type: object
+          additionalProperties: true
+        resources:
+          $ref: "#/components/schemas/TaskResources"
+        requiredRuntime:
+          type: string
+        priority:
+          type: integer
+          minimum: 0
+          maximum: 100
+        attempt:
+          type: integer
+          minimum: 1
+        maxRetries:
+          type: integer
+          minimum: 0
+        idempotent:
+          type: boolean
+        processConfirmedGone:
+          type: boolean
+        queuedAt:
+          type: string
+          format: date-time
+        assignedAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+        exitCode:
+          type: integer
+        resultSummary:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    RunStreamEvent:
+      type: object
+      required: [id, kind, sequence, occurredAt]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [state, log]
+        state:
+          type: string
+        eventType:
+          type: string
+        stream:
+          type: string
+          enum: [stdout, stderr, system]
+        sequence:
+          type: integer
+          minimum: 0
+        message:
+          type: string
+        content:
+          type: string
+        exitCode:
+          type: integer
+        occurredAt:
           type: string
           format: date-time
     CronValidationRequest:

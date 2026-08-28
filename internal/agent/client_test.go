@@ -157,6 +157,36 @@ func TestWebSocketSenderUsesAgentCredentialAndWritesHeartbeat(t *testing.T) {
 	}
 }
 
+func TestWebSocketSenderSendsLogAndWaitsForMatchingAcknowledgement(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer connection.CloseNow()
+		var chunk agentprotocol.LogChunk
+		if wsjson.Read(r.Context(), connection, &chunk) != nil {
+			return
+		}
+		_ = wsjson.Write(r.Context(), connection, agentprotocol.LogAcknowledgement{
+			MessageType: "log_ack", RunID: chunk.RunID, ExecutionToken: chunk.ExecutionToken,
+			Stream: chunk.Stream, NextSequence: chunk.Sequence + 1,
+		})
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	sender, err := DialHeartbeatSender(ctx, server.URL, "agent-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	next, err := sender.SendLogChunk(ctx, agentprotocol.LogChunk{MessageType: "log_chunk", RunID: "run-1", ExecutionToken: "token-1", Sequence: 1, Stream: "stdout", Content: "日志\n"})
+	if err != nil || next != 2 {
+		t.Fatalf("日志确认路由错误：next=%d err=%v", next, err)
+	}
+}
+
 func receiveHeartbeat(t *testing.T, heartbeats <-chan agentprotocol.Heartbeat) agentprotocol.Heartbeat {
 	t.Helper()
 	select {

@@ -145,7 +145,8 @@ func (s *PostgresStore) Assign(ctx context.Context, assignment Assignment) (bool
 	var runID string
 	err = tx.QueryRow(ctx, `
 		UPDATE task_runs AS candidate
-		SET state='assigned', assigned_server_id=$2, assigned_at=$3, updated_at=$3
+		SET state='assigned', assigned_server_id=$2, assigned_at=$3,
+		    execution_token=$4, process_confirmed_gone=false, updated_at=$3
 		WHERE candidate.id=$1 AND candidate.state='queued'
 		  AND (
 			SELECT count(*) FROM task_runs AS active
@@ -153,7 +154,7 @@ func (s *PostgresStore) Assign(ctx context.Context, assignment Assignment) (bool
 			  AND active.state IN ('assigned','syncing','running')
 		  ) < candidate.max_concurrency
 		RETURNING id
-	`, assignment.RunID, assignment.ServerID, assignment.AssignedAt).Scan(&runID)
+	`, assignment.RunID, assignment.ServerID, assignment.AssignedAt, assignment.ExecutionToken).Scan(&runID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

@@ -1,8 +1,10 @@
 package executor_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -101,7 +103,25 @@ func TestRunnerRejectsInvalidEnvironmentVariableNames(t *testing.T) {
 	}
 }
 
-func newTestRunner(t *testing.T, launcher *fakeLauncher, grace time.Duration) (*executor.Runner, agentprotocol.Assignment) {
+func TestRunnerConnectsStdoutAndStderrToOutputSink(t *testing.T) {
+	launcher := newFakeLauncher(true)
+	sink := &fakeOutputSink{writers: map[string]*bytes.Buffer{"stdout": {}, "stderr": {}}}
+	runner, assignment := newTestRunner(t, launcher, time.Second, executor.WithOutputSink(sink))
+	if _, err := runner.Start(context.Background(), assignment); err != nil {
+		t.Fatal(err)
+	}
+	if launcher.spec.Stdout == nil || launcher.spec.Stderr == nil {
+		t.Fatal("启动任务时必须连接标准输出和标准错误日志流")
+	}
+	_, _ = launcher.spec.Stdout.Write([]byte("输出"))
+	_, _ = launcher.spec.Stderr.Write([]byte("错误"))
+	if sink.writers["stdout"].String() != "输出" || sink.writers["stderr"].String() != "错误" {
+		t.Fatalf("日志流未写入缓冲：stdout=%q stderr=%q", sink.writers["stdout"], sink.writers["stderr"])
+	}
+	_ = runner.Cancel(context.Background(), assignment.RunID, assignment.ExecutionToken)
+}
+
+func newTestRunner(t *testing.T, launcher *fakeLauncher, grace time.Duration, extra ...executor.RunnerOption) (*executor.Runner, agentprotocol.Assignment) {
 	t.Helper()
 	root := t.TempDir()
 	cacheRoot := filepath.Join(root, "cache")
@@ -112,12 +132,16 @@ func newTestRunner(t *testing.T, launcher *fakeLauncher, grace time.Duration) (*
 	if err := os.WriteFile(scriptPath, []byte("print('ok')\n"), 0o640); err != nil {
 		t.Fatalf("创建测试脚本：%v", err)
 	}
-	runner := executor.NewRunner(
-		launcher,
-		grace,
+	options := []executor.RunnerOption{
 		executor.WithWorkRoot(filepath.Join(root, "runs")),
 		executor.WithAllowedScriptRoots(cacheRoot),
 		executor.WithAllowedRuntimes("python3"),
+	}
+	options = append(options, extra...)
+	runner := executor.NewRunner(
+		launcher,
+		grace,
+		options...,
 	)
 	return runner, agentprotocol.Assignment{
 		RunID:           "run-1",
@@ -136,6 +160,10 @@ func newTestRunner(t *testing.T, launcher *fakeLauncher, grace time.Duration) (*
 		Timeout: time.Minute,
 	}
 }
+
+type fakeOutputSink struct{ writers map[string]*bytes.Buffer }
+
+func (s *fakeOutputSink) OutputWriter(_, _, stream string) io.Writer { return s.writers[stream] }
 
 func collectEventTypes(t *testing.T, events <-chan executor.Event) []executor.EventType {
 	t.Helper()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,6 +49,12 @@ type LaunchSpec struct {
 	Environment      map[string]string
 	Resources        agentprotocol.ResourceLimits
 	Timeout          time.Duration
+	Stdout           io.Writer
+	Stderr           io.Writer
+}
+
+type OutputSink interface {
+	OutputWriter(runID, executionToken, stream string) io.Writer
 }
 
 type Process interface {
@@ -88,6 +95,10 @@ func WithAllowedRuntimes(runtimes ...string) RunnerOption {
 	}
 }
 
+func WithOutputSink(sink OutputSink) RunnerOption {
+	return func(runner *Runner) { runner.output = sink }
+}
+
 type Runner struct {
 	launcher           Launcher
 	stopGrace          time.Duration
@@ -95,6 +106,7 @@ type Runner struct {
 	allowedScriptRoots []string
 	allowedRuntimes    map[string]bool
 	now                func() time.Time
+	output             OutputSink
 
 	mu     sync.Mutex
 	active map[string]*activeRun
@@ -160,6 +172,10 @@ func (r *Runner) Start(ctx context.Context, assignment agentprotocol.Assignment)
 		Resources:        assignment.Resources,
 		Timeout:          assignment.Timeout,
 	}
+	if r.output != nil {
+		spec.Stdout = r.output.OutputWriter(assignment.RunID, assignment.ExecutionToken, "stdout")
+		spec.Stderr = r.output.OutputWriter(assignment.RunID, assignment.ExecutionToken, "stderr")
+	}
 
 	r.mu.Lock()
 	if _, exists := r.active[assignment.RunID]; exists {
@@ -218,6 +234,16 @@ func (r *Runner) RunningCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.active)
+}
+
+func (r *Runner) RunningProcesses() []agentprotocol.RunningProcess {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	processes := make([]agentprotocol.RunningProcess, 0, len(r.active))
+	for runID, active := range r.active {
+		processes = append(processes, agentprotocol.RunningProcess{RunID: runID, ExecutionToken: active.token})
+	}
+	return processes
 }
 
 func (r *Runner) supervise(ctx context.Context, assignment agentprotocol.Assignment, process Process, active *activeRun, events chan<- Event) {

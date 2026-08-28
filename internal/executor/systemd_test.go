@@ -32,6 +32,7 @@ func TestBuildSystemdCommandAppliesResourceLimitsWithoutShell(t *testing.T) {
 		"--unit=yunling-run-run-1",
 		"--uid=yunling-runner",
 		"--wait",
+		"--pipe",
 		"--collect",
 		"--quiet",
 		"--property=CPUQuota=25%",

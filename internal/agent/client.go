@@ -113,6 +113,7 @@ type WebSocketSender struct {
 	readDone   chan struct{}
 	syncQueue  chan agentprotocol.SyncCommand
 	execQueue  chan agentprotocol.ExecutionCommand
+	logAcks    chan agentprotocol.LogAcknowledgement
 }
 
 func DialHeartbeatSender(ctx context.Context, controlURL, credential string) (*WebSocketSender, error) {
@@ -138,6 +139,7 @@ func DialHeartbeatSender(ctx context.Context, controlURL, credential string) (*W
 		readDone:   make(chan struct{}),
 		syncQueue:  make(chan agentprotocol.SyncCommand, 32),
 		execQueue:  make(chan agentprotocol.ExecutionCommand, 32),
+		logAcks:    make(chan agentprotocol.LogAcknowledgement, 32),
 	}, nil
 }
 
@@ -161,6 +163,27 @@ func (s *WebSocketSender) SendSyncResult(ctx context.Context, result agentprotoc
 
 func (s *WebSocketSender) SendRunEvent(ctx context.Context, event agentprotocol.RunEvent) error {
 	return s.write(ctx, event)
+}
+
+func (s *WebSocketSender) SendRunningReport(ctx context.Context, report agentprotocol.RunningReport) error {
+	report.MessageType = "running_report"
+	return s.write(ctx, report)
+}
+
+func (s *WebSocketSender) SendLogChunk(ctx context.Context, chunk agentprotocol.LogChunk) (uint64, error) {
+	chunk.MessageType = "log_chunk"
+	s.startReader()
+	if err := s.write(ctx, chunk); err != nil {
+		return 0, err
+	}
+	acknowledgement, err := receiveCommand(ctx, s.logAcks, s.readDone, s.readerError)
+	if err != nil {
+		return 0, err
+	}
+	if acknowledgement.RunID != chunk.RunID || acknowledgement.ExecutionToken != chunk.ExecutionToken || acknowledgement.Stream != chunk.Stream {
+		return 0, fmt.Errorf("中央日志确认与上传日志流不匹配")
+	}
+	return acknowledgement.NextSequence, nil
 }
 
 func (s *WebSocketSender) write(ctx context.Context, value any) error {
@@ -187,11 +210,25 @@ func (s *WebSocketSender) readCommands() {
 			return
 		}
 		var header struct {
-			Type agentprotocol.ExecutionCommandType `json:"type"`
+			MessageType string                             `json:"message_type"`
+			Type        agentprotocol.ExecutionCommandType `json:"type"`
 		}
 		if err := json.Unmarshal(payload, &header); err != nil {
 			s.setReaderError(fmt.Errorf("解析中央命令类型：%w", err))
 			return
+		}
+		if header.MessageType == "log_ack" {
+			var acknowledgement agentprotocol.LogAcknowledgement
+			if err := json.Unmarshal(payload, &acknowledgement); err != nil || acknowledgement.NextSequence == 0 {
+				s.setReaderError(fmt.Errorf("中央日志确认格式无效"))
+				return
+			}
+			select {
+			case s.logAcks <- acknowledgement:
+			case <-s.readCtx.Done():
+				return
+			}
+			continue
 		}
 		if header.Type != "" {
 			var command agentprotocol.ExecutionCommand

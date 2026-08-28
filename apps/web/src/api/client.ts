@@ -211,6 +211,37 @@ export interface TaskRun {
   queuedAt: string
 }
 
+export type RunState = 'queued' | 'scheduling' | 'assigned' | 'syncing' | 'running' | 'succeeded' | 'failed' | 'timed_out' | 'cancelled' | 'expired' | 'unknown'
+
+export interface RunView {
+  id: string
+  definitionId: string
+  taskName: string
+  scriptId: string
+  scriptName: string
+  scriptVersionId: string
+  versionNumber: number
+  serverId?: string
+  serverName?: string
+  triggerType: 'manual' | 'schedule' | 'retry'
+  state: RunState
+  parameters: Record<string, unknown>
+  resources: TaskResources
+  requiredRuntime: string
+  priority: number
+  attempt: number
+  maxRetries: number
+  idempotent: boolean
+  processConfirmedGone: boolean
+  queuedAt: string
+  assignedAt?: string
+  startedAt?: string
+  finishedAt?: string
+  exitCode?: number
+  resultSummary: string
+  createdAt: string
+}
+
 export interface TaskSchedule {
   id: string
   definitionId: string
@@ -351,6 +382,24 @@ export async function runTask(id: string, parameters: Record<string, unknown> = 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ parameters }),
   })
+}
+
+export async function getRuns(): Promise<RunView[]> {
+  const response = await request<{ runs: RunView[] }>('/api/runs')
+  return response.runs
+}
+
+export async function getRun(id: string): Promise<RunView> {
+  return request<RunView>(`/api/runs/${encodeURIComponent(id)}`)
+}
+
+export async function cancelRun(id: string): Promise<void> {
+  await request<void>(`/api/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+}
+
+export async function retryRun(id: string): Promise<string> {
+  const response = await request<{ id: string }>(`/api/runs/${encodeURIComponent(id)}/retry`, { method: 'POST' })
+  return response.id
 }
 
 export async function getTaskSchedules(id: string): Promise<TaskSchedule[]> {

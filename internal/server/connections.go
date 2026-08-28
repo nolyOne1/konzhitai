@@ -1,15 +1,42 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"sync"
 
 	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+	"yunling.local/platform/internal/agentprotocol"
 )
+
+var ErrAgentConnectionUnavailable = errors.New("代理当前未连接")
 
 type AgentConnectionHub struct {
 	mu          sync.Mutex
 	connections map[string]map[*websocket.Conn]struct{}
 	disabled    map[string]struct{}
+	writeMu     sync.Mutex
+}
+
+func (h *AgentConnectionHub) Write(ctx context.Context, connection *websocket.Conn, value any) error {
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+	return wsjson.Write(ctx, connection, value)
+}
+
+func (h *AgentConnectionHub) SendExecutionCommand(ctx context.Context, serverID string, command agentprotocol.ExecutionCommand) error {
+	h.mu.Lock()
+	var connection *websocket.Conn
+	for candidate := range h.connections[serverID] {
+		connection = candidate
+		break
+	}
+	h.mu.Unlock()
+	if connection == nil {
+		return ErrAgentConnectionUnavailable
+	}
+	return h.Write(ctx, connection, command)
 }
 
 func NewAgentConnectionHub() *AgentConnectionHub {

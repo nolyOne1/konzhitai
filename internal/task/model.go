@@ -2,6 +2,8 @@ package task
 
 import "time"
 
+type RunID string
+
 type RunState string
 
 const (

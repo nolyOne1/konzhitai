@@ -71,6 +71,7 @@ type Assignment struct {
 	RunID           string
 	ServerID        string
 	ScriptVersionID string
+	ExecutionToken  string
 	Lease           Lease
 	AssignedAt      time.Time
 }

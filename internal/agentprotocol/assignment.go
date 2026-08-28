@@ -48,3 +48,16 @@ type RunEvent struct {
 	ExitCode       int       `json:"exit_code,omitempty"`
 	Message        string    `json:"message,omitempty"`
 }
+
+type RunningProcess struct {
+	RunID          string `json:"run_id"`
+	ExecutionToken string `json:"execution_token"`
+}
+
+type RunningReport struct {
+	MessageType   string           `json:"message_type"`
+	ServerID      string           `json:"server_id"`
+	ReportedAt    time.Time        `json:"reported_at"`
+	Authoritative bool             `json:"authoritative"`
+	Processes     []RunningProcess `json:"processes"`
+}

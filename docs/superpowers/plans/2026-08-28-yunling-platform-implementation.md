@@ -847,7 +847,7 @@ git commit -m "feat: 添加代理隔离执行和任务终止"
 - Produces: `logstream.Archiver.Archive(ctx, runID task.RunID) (artifactKey string, error)`。
 - Produces: `GET /api/runs`、`GET /api/runs/{id}`、`GET /api/runs/{id}/events` SSE、`POST /api/runs/{id}/cancel`、`POST /api/runs/{id}/retry`。
 
-- [ ] **Step 1: 写日志续传和事件去重失败测试**
+- [x] **Step 1: 写日志续传和事件去重失败测试**
 
 ```go
 func TestAcceptAcknowledgesNextMissingSequence(t *testing.T) {
@@ -862,7 +862,7 @@ func TestAcceptAcknowledgesNextMissingSequence(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 写失联后状态待确认测试**
+- [x] **Step 2: 写失联后状态待确认测试**
 
 ```go
 func TestOfflineRunningServerMarksRunUnknown(t *testing.T) {
@@ -873,23 +873,23 @@ func TestOfflineRunningServerMarksRunUnknown(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: 实现本地日志分块与确认后清理**
+- [x] **Step 3: 实现本地日志分块与确认后清理**
 
 代理日志块默认 64 KiB，包含 RunID、ExecutionToken、Sequence、Stream 和内容。服务端只接受下一个序号或已存在的重复序号；代理收到 `nextSequence` 后删除更小序号的本地缓冲。
 
-- [ ] **Step 4: 实现状态对账和幂等重试限制**
+- [x] **Step 4: 实现状态对账和幂等重试限制**
 
 代理重连后发送正在运行令牌列表。中央将匹配任务恢复为 `running`；代理确认已结束的任务补交终态；无法确认的任务保持 `unknown`。只有 `Idempotent=true` 且重试策略允许、并确认原进程不存在时，才创建新的重试执行实例。
 
-- [ ] **Step 5: 实现日志归档和运行产物索引**
+- [x] **Step 5: 实现日志归档和运行产物索引**
 
 完成任务的日志超过数据库保留阈值后压缩写入 `runs/{runID}/logs.ndjson.gz`，数据库保留对象键、大小、校验值和时间范围。代理上报的运行产物必须匹配任务定义允许的 glob，逐个校验大小并写入 `runs/{runID}/artifacts/{name}`。
 
-- [ ] **Step 6: 实现执行记录和实时日志页面**
+- [x] **Step 6: 实现执行记录和实时日志页面**
 
 详情页展示中文状态时间线、服务器、版本、资源、参数摘要、退出码和流式日志。日志支持暂停自动滚动、关键词过滤、下载和清屏显示；清屏只影响浏览器，不删除服务端日志。
 
-- [ ] **Step 7: 运行日志、归档、对账和 Web 测试**
+- [x] **Step 7: 运行日志、归档、对账和 Web 测试**
 
 Run: `go test ./internal/logstream ./internal/task -v`  
 Expected: PASS。
@@ -897,7 +897,7 @@ Expected: PASS。
 Run: `npm --workspace apps/web test -- --run src/features/runs`  
 Expected: PASS。
 
-- [ ] **Step 8: 提交状态与日志能力**
+- [x] **Step 8: 提交状态与日志能力**
 
 ```bash
 git add internal/logstream internal/task apps/web/src/features/runs apps/web/src/api/events.ts api/openapi.yaml
