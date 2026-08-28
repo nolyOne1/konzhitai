@@ -1,0 +1,22 @@
+openapi: 3.1.0
+info:
+  title: 云令控制 API
+  version: 0.1.0
+  description: 多服务器脚本调度平台的中央控制接口。
+paths:
+  /api/health:
+    get:
+      operationId: getHealth
+      summary: 检查 API 健康状态
+      responses:
+        "200":
+          description: API 正常
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok

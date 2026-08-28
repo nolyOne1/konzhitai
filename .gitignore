@@ -6,6 +6,8 @@ outputs/
 node_modules/
 dist/
 coverage/
+bin/
+*.tsbuildinfo
 
 # 本地配置与密钥
 .env
@@ -19,3 +21,6 @@ coverage/
 Thumbs.db
 .idea/
 .vscode/
+
+# 项目本地工具链
+.tools/
