@@ -198,6 +198,246 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /api/scripts:
+    get:
+      operationId: listScripts
+      summary: 获取中央脚本列表
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: 脚本、分类、标签、运行环境与当前版本
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [scripts]
+                properties:
+                  scripts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Script"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createScript
+      summary: 创建脚本和初始草稿
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScriptCreateRequest"
+      responses:
+        "201":
+          description: 脚本已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Script"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/scripts/import:
+    post:
+      operationId: importScript
+      summary: 导入文本脚本为中央草稿
+      description: 仅接受不超过 1 MB 的 .sh、.py、.js 和 .ps1 UTF-8 文本文件。
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                name:
+                  type: string
+                description:
+                  type: string
+      responses:
+        "201":
+          description: 脚本已导入为草稿
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Script"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/scripts/{id}:
+    get:
+      operationId: getScript
+      summary: 获取脚本草稿和版本历史
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ScriptID"
+      responses:
+        "200":
+          description: 脚本编辑详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScriptDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/scripts/{id}/draft:
+    put:
+      operationId: saveScriptDraft
+      summary: 保存脚本草稿
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ScriptID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScriptEditorRequest"
+      responses:
+        "200":
+          description: 草稿已保存
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScriptDraft"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/scripts/{id}/publish:
+    post:
+      operationId: publishScript
+      summary: 发布不可变脚本版本
+      description: 脚本包按 SHA-256 内容寻址保存；发布说明必须包含中文，并明确分发目标。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ScriptID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScriptPublishRequest"
+      responses:
+        "201":
+          description: 不可变版本已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScriptVersion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/scripts/{id}/versions:
+    get:
+      operationId: listScriptVersions
+      summary: 获取脚本不可变版本历史
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ScriptID"
+      responses:
+        "200":
+          description: 按版本号倒序返回版本
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [versions]
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ScriptVersion"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/scripts/{id}/versions/{versionID}/content:
+    get:
+      operationId: getScriptVersionContent
+      summary: 获取已校验的历史版本文本内容
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ScriptID"
+        - name: versionID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 历史脚本内容
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [content]
+                properties:
+                  content:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/scripts/{id}/rollback:
+    post:
+      operationId: rollbackScript
+      summary: 将历史内容重新发布为新版本
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ScriptID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScriptRollbackRequest"
+      responses:
+        "201":
+          description: 回滚内容已追加为新版本
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScriptVersion"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /api/agent/enroll:
     post:
       operationId: enrollAgent
@@ -253,6 +493,14 @@ components:
       type: http
       scheme: bearer
       bearerFormat: 云令代理凭据
+  parameters:
+    ScriptID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
   schemas:
     Role:
       type: string
@@ -484,6 +732,258 @@ components:
         lastSeenAt:
           type: [string, "null"]
           format: date-time
+    Script:
+      type: object
+      required: [id, name, description, runtime, category, tags, currentVersionId, currentVersion, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        runtime:
+          $ref: "#/components/schemas/ScriptRuntime"
+        category:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        currentVersionId:
+          type: string
+          description: 尚未发布时为空字符串。
+        currentVersion:
+          type: integer
+          minimum: 0
+        draftUpdatedAt:
+          type: [string, "null"]
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ScriptRuntime:
+      type: string
+      enum: [bash, python3, node, powershell]
+    DistributionRule:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [all_compatible, server_group, labels, on_demand]
+        serverGroupId:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+    ParameterDefinition:
+      type: object
+      additionalProperties: false
+      required: [name, type, required]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [string, number, boolean]
+        required:
+          type: boolean
+        description:
+          type: string
+    ResourceRequirements:
+      type: object
+      additionalProperties: false
+      required: [cpuMillicores, memoryBytes, diskBytes]
+      properties:
+        cpuMillicores:
+          type: integer
+          minimum: 1
+        memoryBytes:
+          type: integer
+          minimum: 1
+        diskBytes:
+          type: integer
+          minimum: 1
+    ScriptManifest:
+      type: object
+      required: [runtime, entrypoint, category, tags, distribution, parameterDefinitions, resources]
+      properties:
+        runtime:
+          $ref: "#/components/schemas/ScriptRuntime"
+        entrypoint:
+          type: string
+        category:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        distribution:
+          $ref: "#/components/schemas/DistributionRule"
+        parameterDefinitions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParameterDefinition"
+        resources:
+          $ref: "#/components/schemas/ResourceRequirements"
+    ScriptDraft:
+      type: object
+      required: [scriptId, baseVersionId, content, manifest, updatedAt]
+      properties:
+        scriptId:
+          type: string
+          format: uuid
+        baseVersionId:
+          type: string
+          description: 尚未发布时为空字符串。
+        content:
+          type: string
+          maxLength: 1048576
+        manifest:
+          $ref: "#/components/schemas/ScriptManifest"
+        updatedAt:
+          type: string
+          format: date-time
+    ScriptVersion:
+      type: object
+      required: [id, scriptId, number, artifactUri, artifactSha256, entrypoint, manifest, releaseNotes, createdBy, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        scriptId:
+          type: string
+          format: uuid
+        number:
+          type: integer
+          minimum: 1
+        artifactUri:
+          type: string
+          pattern: ^scripts/.+/[0-9a-f]{64}\.tar\.gz$
+        artifactSha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+        entrypoint:
+          type: string
+        manifest:
+          $ref: "#/components/schemas/ScriptManifest"
+        releaseNotes:
+          type: string
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    ScriptDetail:
+      type: object
+      required: [script, draft, versions]
+      properties:
+        script:
+          $ref: "#/components/schemas/Script"
+        draft:
+          $ref: "#/components/schemas/ScriptDraft"
+        versions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScriptVersion"
+    ScriptCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, runtime]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        runtime:
+          $ref: "#/components/schemas/ScriptRuntime"
+        entrypoint:
+          type: string
+        category:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        content:
+          type: string
+          maxLength: 1048576
+    ScriptEditorRequest:
+      type: object
+      additionalProperties: false
+      required: [content, runtime, entrypoint, category, tags, distribution, parameterDefinitions, resources]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          maxLength: 1048576
+        runtime:
+          $ref: "#/components/schemas/ScriptRuntime"
+        entrypoint:
+          type: string
+        category:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        distribution:
+          $ref: "#/components/schemas/DistributionRule"
+        parameterDefinitions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParameterDefinition"
+        resources:
+          $ref: "#/components/schemas/ResourceRequirements"
+    ScriptPublishRequest:
+      type: object
+      additionalProperties: false
+      required: [content, runtime, entrypoint, category, tags, distribution, parameterDefinitions, resources, releaseNotes]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          maxLength: 1048576
+        runtime:
+          $ref: "#/components/schemas/ScriptRuntime"
+        entrypoint:
+          type: string
+        category:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        distribution:
+          $ref: "#/components/schemas/DistributionRule"
+        parameterDefinitions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParameterDefinition"
+        resources:
+          $ref: "#/components/schemas/ResourceRequirements"
+        releaseNotes:
+          type: string
+          description: 必须包含中文发布说明。
+    ScriptRollbackRequest:
+      type: object
+      additionalProperties: false
+      required: [versionId, releaseNotes]
+      properties:
+        versionId:
+          type: string
+          format: uuid
+        releaseNotes:
+          type: string
+          description: 必须包含中文回滚说明。
     ServerUpdate:
       type: object
       additionalProperties: false
@@ -505,6 +1005,24 @@ components:
         draining:
           type: boolean
   responses:
+    BadRequest:
+      description: 请求内容无效
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: 当前用户没有脚本发布权限
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: 脚本或脚本版本不存在
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     Unauthorized:
       description: 未登录、会话已失效或登录凭据错误
       content:

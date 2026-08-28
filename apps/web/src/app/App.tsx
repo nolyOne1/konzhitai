@@ -4,6 +4,8 @@ import { BrowserRouter, Link, NavLink, Outlet, Route, Routes, useLocation } from
 import { LoginPage } from '../features/auth/LoginPage'
 import { DashboardPage } from '../features/dashboard/DashboardPage'
 import { ServersPage } from '../features/servers/ServersPage'
+import { ScriptEditorPage } from '../features/scripts/ScriptEditorPage'
+import { ScriptsPage } from '../features/scripts/ScriptsPage'
 
 const navigation = [
   { label: '运行总览', href: '/' },
@@ -24,6 +26,8 @@ export function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route element={<ConsoleShell />}>
           <Route index element={<DashboardPage />} />
+          <Route path="/scripts" element={<ScriptsPage />} />
+          <Route path="/scripts/:id" element={<ScriptEditorPage />} />
           <Route path="/servers" element={<ServersPage />} />
           <Route path="*" element={<PlaceholderPage />} />
         </Route>

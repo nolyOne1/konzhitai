@@ -474,7 +474,7 @@ git commit -m "feat: 添加服务器管理和运行总览"
 - Produces: `script.Service.Publish(ctx, PublishInput) (script.Version, error)`。
 - Produces: `POST /api/scripts`、`POST /api/scripts/import`、`PUT /api/scripts/{id}/draft`、`POST /api/scripts/{id}/publish`、`GET /api/scripts/{id}/versions`、`POST /api/scripts/{id}/rollback`。
 
-- [ ] **Step 1: 写不可变版本与内容去重失败测试**
+- [x] **Step 1: 写不可变版本与内容去重失败测试**
 
 ```go
 func TestPublishCreatesImmutableVersion(t *testing.T) {
@@ -490,20 +490,20 @@ func TestPublishCreatesImmutableVersion(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: `go test ./internal/script ./internal/artifact -v`  
 Expected: FAIL，缺少 Store 与 Publish。
 
-- [ ] **Step 3: 实现 SHA-256、对象键和事务发布**
+- [x] **Step 3: 实现 SHA-256、对象键和事务发布**
 
 对象键固定为 `scripts/{scriptID}/{sha256}.tar.gz`。先上传并校验对象，再在同一数据库事务内创建版本与发布事件；数据库失败时保留内容寻址对象，由每日无引用对象清理任务回收。
 
-- [ ] **Step 4: 实现创建、文件导入、编辑、发布、版本比较和回滚页面**
+- [x] **Step 4: 实现创建、文件导入、编辑、发布、版本比较和回滚页面**
 
 文件导入只接受配置允许的文本脚本扩展名和大小上限，导入内容先成为草稿。回滚不修改旧版本，而是将历史内容重新发布为新版本。发布表单必须填写中文发布说明，并选择全部兼容服务器、服务器组、标签集合或按需分发。
 
-- [ ] **Step 5: 运行脚本服务和 Web 测试**
+- [x] **Step 5: 运行脚本服务和 Web 测试**
 
 Run: `go test ./internal/script ./internal/artifact -v`  
 Expected: PASS。
@@ -511,7 +511,7 @@ Expected: PASS。
 Run: `npm --workspace apps/web test -- --run src/features/scripts`  
 Expected: PASS。
 
-- [ ] **Step 6: 提交脚本版本能力**
+- [x] **Step 6: 提交脚本版本能力**
 
 ```bash
 git add internal/artifact internal/script apps/web/src/features/scripts api/openapi.yaml

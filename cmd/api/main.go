@@ -6,10 +6,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
+	"yunling.local/platform/internal/artifact"
 	"yunling.local/platform/internal/auth"
 	"yunling.local/platform/internal/health"
+	"yunling.local/platform/internal/script"
 	"yunling.local/platform/internal/server"
 	"yunling.local/platform/internal/store/postgres"
 )
@@ -32,6 +35,7 @@ func main() {
 	var serverHandler http.Handler = unavailableHandler
 	var protectedServerHandler http.Handler = unavailableHandler
 	var managementHandler http.Handler = unavailableHandler
+	var scriptHandler http.Handler = unavailableHandler
 	if dsn := os.Getenv("YUNLING_DATABASE_URL"); dsn != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pool, err := postgres.Open(ctx, dsn)
@@ -52,6 +56,21 @@ func main() {
 		protectedServerHandler = auth.Authenticate(authService)(serverHandler)
 		management := server.NewManagementService(serverRepository, connections)
 		managementHandler = auth.Authenticate(authService)(server.ManagementHandler(management))
+
+		secure, _ := strconv.ParseBool(os.Getenv("YUNLING_S3_SECURE"))
+		objectStore, err := artifact.NewMinIOStore(artifact.MinIOConfig{
+			Endpoint:  os.Getenv("YUNLING_S3_ENDPOINT"),
+			AccessKey: os.Getenv("YUNLING_S3_ACCESS_KEY"),
+			SecretKey: os.Getenv("YUNLING_S3_SECRET_KEY"),
+			Bucket:    os.Getenv("YUNLING_S3_BUCKET"),
+			Secure:    secure,
+		})
+		if err != nil {
+			log.Printf("脚本对象存储尚未配置，脚本接口将返回暂不可用：%v", err)
+		} else {
+			scriptService := script.NewService(pool, objectStore, time.Now)
+			scriptHandler = auth.Authenticate(authService)(script.Handler(scriptService))
+		}
 		go func() {
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()
@@ -72,6 +91,8 @@ func main() {
 	router.Handle("/api/dashboard", managementHandler)
 	router.Handle("/api/servers", managementHandler)
 	router.Handle("/api/servers/{id}", managementHandler)
+	router.Handle("/api/scripts", scriptHandler)
+	router.Handle("/api/scripts/", scriptHandler)
 	router.Handle("/api/agent/", serverHandler)
 
 	log.Printf("云令 API 正在监听 %s", address)

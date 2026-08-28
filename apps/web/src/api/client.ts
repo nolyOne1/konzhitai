@@ -46,6 +46,103 @@ export interface UpdateServerInput {
   draining?: boolean
 }
 
+export type DistributionMode = 'all_compatible' | 'server_group' | 'labels' | 'on_demand'
+
+export interface DistributionRule {
+  mode: DistributionMode
+  serverGroupId?: string
+  labels?: Record<string, string>
+}
+
+export interface ParameterDefinition {
+  name: string
+  type: string
+  required: boolean
+  description?: string
+}
+
+export interface ResourceRequirements {
+  cpuMillicores: number
+  memoryBytes: number
+  diskBytes: number
+}
+
+export interface ScriptManifest {
+  runtime: string
+  entrypoint: string
+  category: string
+  tags: string[]
+  distribution: DistributionRule
+  parameterDefinitions: ParameterDefinition[]
+  resources: ResourceRequirements
+}
+
+export interface ScriptView {
+  id: string
+  name: string
+  description: string
+  runtime: string
+  category: string
+  tags: string[]
+  currentVersionId: string
+  currentVersion: number
+  draftUpdatedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ScriptDraft {
+  scriptId: string
+  baseVersionId: string
+  content: string
+  manifest: ScriptManifest
+  updatedAt: string
+}
+
+export interface ScriptVersion {
+  id: string
+  scriptId: string
+  number: number
+  artifactUri: string
+  artifactSha256: string
+  entrypoint: string
+  manifest: ScriptManifest
+  releaseNotes: string
+  createdBy: string
+  createdAt: string
+}
+
+export interface ScriptDetail {
+  script: ScriptView
+  draft: ScriptDraft
+  versions: ScriptVersion[]
+}
+
+export interface CreateScriptInput {
+  name: string
+  description: string
+  runtime: string
+  entrypoint?: string
+  category?: string
+  tags?: string[]
+  content?: string
+}
+
+export interface ScriptEditorInput {
+  content: string
+  runtime: string
+  entrypoint: string
+  category: string
+  tags: string[]
+  distribution: DistributionRule
+  parameterDefinitions: ParameterDefinition[]
+  resources: ResourceRequirements
+}
+
+export interface PublishScriptInput extends ScriptEditorInput {
+  releaseNotes: string
+}
+
 export async function getDashboard(): Promise<DashboardData> {
   return request<DashboardData>('/api/dashboard')
 }
@@ -61,6 +158,59 @@ export async function updateServer(id: string, input: UpdateServerInput): Promis
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
+}
+
+export async function getScripts(): Promise<ScriptView[]> {
+  const response = await request<{ scripts: ScriptView[] }>('/api/scripts')
+  return response.scripts
+}
+
+export async function getScript(id: string): Promise<ScriptDetail> {
+  return request<ScriptDetail>(`/api/scripts/${encodeURIComponent(id)}`)
+}
+
+export async function createScript(input: CreateScriptInput): Promise<ScriptView> {
+  return request<ScriptView>('/api/scripts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function importScript(file: File, name = ''): Promise<ScriptView> {
+  const body = new FormData()
+  body.append('file', file)
+  if (name.trim()) body.append('name', name.trim())
+  return request<ScriptView>('/api/scripts/import', { method: 'POST', body })
+}
+
+export async function saveScriptDraft(id: string, input: ScriptEditorInput): Promise<ScriptDraft> {
+  return request<ScriptDraft>(`/api/scripts/${encodeURIComponent(id)}/draft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function publishScript(id: string, input: PublishScriptInput): Promise<ScriptVersion> {
+  return request<ScriptVersion>(`/api/scripts/${encodeURIComponent(id)}/publish`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+}
+
+export async function rollbackScript(id: string, versionId: string, releaseNotes: string): Promise<ScriptVersion> {
+  return request<ScriptVersion>(`/api/scripts/${encodeURIComponent(id)}/rollback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ versionId, releaseNotes }),
+  })
+}
+
+export async function getScriptVersionContent(id: string, versionId: string): Promise<string> {
+  const response = await request<{ content: string }>(`/api/scripts/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}/content`)
+  return response.content
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
