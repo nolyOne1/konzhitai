@@ -87,7 +87,7 @@ func TestBuildSystemdCommandUsesFixedRunnerTemplateWithoutShell(t *testing.T) {
 		"--no-ask-password",
 		"yunling-run@run-1.service",
 	}
-	if command.Path != "systemctl" || !reflect.DeepEqual(command.Args, want) {
+	if command.Path != "/usr/bin/systemctl" || !reflect.DeepEqual(command.Args, want) {
 		t.Fatalf("systemd 模板启动参数不正确：\ngot=%q\nwant=%q", command.Args, want)
 	}
 	body, err := os.ReadFile(filepath.Join(workDir, systemdSpecFileName))
@@ -106,12 +106,12 @@ func TestBuildSystemdCommandUsesFixedRunnerTemplateWithoutShell(t *testing.T) {
 func TestBuildSystemdKillCommandTargetsEveryProcessInUnit(t *testing.T) {
 	terminate := buildSystemdKillCommand("yunling-run@run-1.service", "TERM")
 	wantTerminate := []string{"systemctl", "kill", "--kill-who=all", "--signal=TERM", "yunling-run@run-1.service"}
-	if terminate.Path != "systemctl" || !reflect.DeepEqual(terminate.Args, wantTerminate) {
+	if terminate.Path != "/usr/bin/systemctl" || !reflect.DeepEqual(terminate.Args, wantTerminate) {
 		t.Fatalf("正常终止必须覆盖临时单元全部进程：got=%q want=%q", terminate.Args, wantTerminate)
 	}
 	kill := buildSystemdKillCommand("yunling-run@run-1.service", "KILL")
 	wantKill := []string{"systemctl", "kill", "--kill-who=all", "--signal=KILL", "yunling-run@run-1.service"}
-	if kill.Path != "systemctl" || !reflect.DeepEqual(kill.Args, wantKill) {
+	if kill.Path != "/usr/bin/systemctl" || !reflect.DeepEqual(kill.Args, wantKill) {
 		t.Fatalf("强制终止必须覆盖临时单元全部进程：got=%q want=%q", kill.Args, wantKill)
 	}
 }

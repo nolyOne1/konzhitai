@@ -16,6 +16,7 @@ const (
 	systemdSpecFileName   = "systemd-run-spec.json"
 	systemdStdoutFileName = "stdout.log"
 	systemdStderrFileName = "stderr.log"
+	systemctlPath         = "/usr/bin/systemctl"
 )
 
 type systemdRunSpec struct {
@@ -135,7 +136,7 @@ func buildSystemdCommand(spec LaunchSpec) (*exec.Cmd, error) {
 		}
 	}
 	command := exec.Command("systemctl", "start", "--wait", "--no-ask-password", systemdUnitName(spec.RunID))
-	command.Path = "systemctl"
+	command.Path = systemctlPath
 	return command, nil
 }
 
@@ -178,7 +179,7 @@ func (tail *systemdLogTail) copyAvailable() error {
 
 func buildSystemdKillCommand(unitName, signal string) *exec.Cmd {
 	command := exec.Command("systemctl", "kill", "--kill-who=all", "--signal="+signal, unitName)
-	command.Path = "systemctl"
+	command.Path = systemctlPath
 	return command
 }
 
