@@ -32,19 +32,18 @@ func TestAgentInstallerUsesDedicatedControlAndRunnerAccounts(t *testing.T) {
 		!strings.Contains(install, `-m 2750 /var/lib/yunling-agent/runs`) {
 		t.Fatal("业务运行账户不得写入共享脚本缓存或创建任意运行目录")
 	}
-	if !strings.Contains(service, "User=yunling-agent") || strings.Contains(service, "User=root") {
-		t.Fatal("代理控制服务必须以 yunling-agent 专用账号运行")
+	if !strings.Contains(service, "User=yunling-agent") || strings.Contains(service, "User=root") ||
+		!strings.Contains(service, "NoNewPrivileges=true") {
+		t.Fatal("代理控制服务必须以禁止提权的 yunling-agent 专用账号运行")
 	}
 	if !strings.Contains(runService, "User=yunling-runner") ||
 		!strings.Contains(runService, "ExecStart=/usr/local/bin/yunling-agent run-spec") {
 		t.Fatal("业务脚本必须由固定的 root 管理模板以 yunling-runner 账号启动")
 	}
-	if !strings.Contains(policy, `subject.user == "yunling-agent"`) ||
-		!strings.Contains(policy, `subject.system_unit == "yunling-agent.service"`) ||
-		!strings.Contains(policy, "subject.no_new_privileges") ||
+	if !strings.Contains(policy, `subject.user != "yunling-agent"`) ||
 		!strings.Contains(policy, `^yunling-run@[A-Za-z0-9_-]+\.service$`) ||
 		strings.Contains(policy, `unit.indexOf("yunling-run-") == 0`) {
-		t.Fatal("polkit 规则必须只允许受约束代理服务管理固定的 yunling-run@ 实例")
+		t.Fatal("polkit 规则必须只允许禁止提权的专用代理账号管理固定 yunling-run@ 实例")
 	}
 	if strings.Contains(policy, "StartTransientUnit") || strings.Contains(policy, "systemd-run") {
 		t.Fatal("代理不得获得创建任意 systemd 临时单元的授权")
