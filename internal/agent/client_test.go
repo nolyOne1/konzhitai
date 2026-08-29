@@ -71,6 +71,46 @@ func TestClientSendsMonotonicHeartbeatEveryFiveSeconds(t *testing.T) {
 	}
 }
 
+func TestClientStartsHeartbeatSequenceAfterConfiguredFloor(t *testing.T) {
+	ticker := &fakeTicker{
+		values: make(chan time.Time, 1),
+		ready:  make(chan time.Duration, 1),
+	}
+	sender := &recordingHeartbeatSender{heartbeats: make(chan agentprotocol.Heartbeat, 1)}
+	collector := NewCollector(fakeStats{snapshot: Stats{
+		CPUTotalMilli: 1000, MemoryTotalBytes: 1 << 30, DiskTotalBytes: 10 << 30, DiskFreeBytes: 5 << 30,
+	}}, []string{"bash"})
+	client := NewClient(
+		"server-1",
+		"0.1.0",
+		collector,
+		sender,
+		WithInitialHeartbeatSequence(1_000_000),
+		WithTickerFactory(func(interval time.Duration) Ticker {
+			ticker.ready <- interval
+			return ticker
+		}),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+	<-ticker.ready
+	ticker.values <- time.Now()
+
+	if heartbeat := receiveHeartbeat(t, sender.heartbeats); heartbeat.Sequence != 1_000_001 {
+		t.Fatalf("重启后的首个心跳必须高于配置基线：%d", heartbeat.Sequence)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("取消客户端后应正常退出：%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("取消客户端后未在 1 秒内退出")
+	}
+}
+
 func TestWebSocketSenderRoutesSyncAndExecutionCommandsFromOneReader(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		connection, err := websocket.Accept(w, r, nil)

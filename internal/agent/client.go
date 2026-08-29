@@ -41,6 +41,12 @@ func WithTickerFactory(factory TickerFactory) ClientOption {
 	}
 }
 
+func WithInitialHeartbeatSequence(sequence uint64) ClientOption {
+	return func(client *Client) {
+		client.sequence = sequence
+	}
+}
+
 type Client struct {
 	serverID  string
 	version   string

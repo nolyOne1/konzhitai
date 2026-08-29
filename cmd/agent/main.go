@@ -118,7 +118,17 @@ func main() {
 		log.Printf("已从允许目录发现 %d 个可导入脚本", len(discovered))
 	}
 
-	heartbeatClient := agent.NewClient(credentials.ServerID, agentVersion, collector, sender)
+	heartbeatSequenceFloor := time.Now().UTC().UnixMilli()
+	if heartbeatSequenceFloor < 0 {
+		heartbeatSequenceFloor = 0
+	}
+	heartbeatClient := agent.NewClient(
+		credentials.ServerID,
+		agentVersion,
+		collector,
+		sender,
+		agent.WithInitialHeartbeatSequence(uint64(heartbeatSequenceFloor)),
+	)
 	cache := executor.NewCache(cacheRoot, agent.NewCredentialDownloader(credentials.Credential, nil))
 	syncClient := agent.NewSyncClient(cache, executor.NewDriftScanner(cacheRoot), sender)
 	executionClient := agent.NewExecutionClient(runner, sender)
