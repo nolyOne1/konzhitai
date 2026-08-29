@@ -2,12 +2,6 @@ polkit.addRule(function(action, subject) {
     if (action.id != "org.freedesktop.systemd1.manage-units" || subject.user != "yunling-agent") {
         return polkit.Result.NOT_HANDLED;
     }
-    var trustedAgent = subject.user == "yunling-agent" &&
-        subject.system_unit == "yunling-agent.service" &&
-        subject.no_new_privileges;
-    if (!trustedAgent) {
-        return polkit.Result.NO;
-    }
 
     var unit = action.lookup("unit");
     var verb = action.lookup("verb");
