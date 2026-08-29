@@ -11,6 +11,28 @@
 
 API、Scheduler、Web、Caddy、PostgreSQL、Redis 和 MinIO 七个长期服务均通过 Docker 健康检查。生产 HTTPS 验收结果：健康接口 200、登录 200、会话 200、退出 204。
 
+## 京东云执行节点
+
+- 公网地址：`117.72.119.183`
+- 控制面名称：`京东云执行节点-1`
+- 云厂商与区域：京东云 / 中国大陆
+- 代理版本：`0.1.0`
+- 运行环境：Bash、Python 3
+- systemd 服务：`yunling-agent.service`，已启用且运行中
+- 专用账号：`yunling-agent`、`yunling-runner`
+- 凭据文件：`/var/lib/yunling-agent/credentials.json`，权限 `0600`
+- 工作目录：`/var/lib/yunling-agent`
+
+首次接入验收时，控制面已收到在线心跳与资源数据：2 核 CPU、约 4 GB 内存、60 GB 系统盘，当前运行任务数为 0。一次性注册令牌已从腾讯云和京东云清理，代理环境文件中不保留控制面登录密码、注册令牌或用户此前提供的 root 密码。
+
+执行节点常用检查命令：
+
+```bash
+systemctl status yunling-agent.service
+journalctl -u yunling-agent.service --since '-30 min' --no-pager
+systemctl list-units 'yunling-run@*.service'
+```
+
 ## 管理员凭据
 
 初始管理员邮箱是 `admin@aiwise.top`。随机初始密码仅保存在服务器 `/root/yunling-initial-admin.txt`，权限为 `0600 root:root`；`deploy/.env` 中的全部 `YUNLING_BOOTSTRAP_*` 临时变量已删除。
