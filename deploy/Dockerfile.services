@@ -1,5 +1,9 @@
 FROM golang:1.27.0-alpine3.24 AS builder
 
+ARG GOPROXY=https://mirrors.cloud.tencent.com/go,direct
+ARG GOSUMDB=sum.golang.google.cn
+ENV GOPROXY=${GOPROXY} GOSUMDB=${GOSUMDB}
+
 WORKDIR /src
 RUN apk add --no-cache ca-certificates git
 COPY go.mod go.sum ./

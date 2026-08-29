@@ -35,3 +35,12 @@ func TestMinIOUsesFixedSecurityReleaseBuiltFromSource(t *testing.T) {
 		t.Fatal("MinIO 构建文件必须固定官方安全源码版本")
 	}
 }
+
+func TestServiceBuildUsesReachableVerifiedGoModuleMirror(t *testing.T) {
+	root := testpostgres.RepositoryRoot(t)
+	dockerfile := mustReadDeploymentFile(t, root, "deploy", "Dockerfile.services")
+	if !strings.Contains(dockerfile, "GOPROXY=https://mirrors.cloud.tencent.com/go,direct") ||
+		!strings.Contains(dockerfile, "GOSUMDB=sum.golang.google.cn") {
+		t.Fatal("腾讯云服务镜像构建必须使用可达的 Go 模块镜像并保留校验数据库")
+	}
+}
