@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"yunling.local/platform/internal/agentprotocol"
+	"yunling.local/platform/internal/alert"
 )
 
 var ErrInvalidHeartbeat = errors.New("心跳内容无效")
@@ -37,10 +39,19 @@ func WithEventPublisher(publisher EventPublisher) RegistryOption {
 	}
 }
 
+type registryAlertSink interface {
+	Raise(context.Context, alert.Event) error
+}
+
+func WithAlertSink(sink registryAlertSink) RegistryOption {
+	return func(registry *Registry) { registry.alerts = sink }
+}
+
 type Registry struct {
 	repository HeartbeatRepository
 	clock      Clock
 	publisher  EventPublisher
+	alerts     registryAlertSink
 
 	mu     sync.Mutex
 	latest map[string]uint64
@@ -89,6 +100,18 @@ func (r *Registry) AcceptHeartbeat(ctx context.Context, heartbeat agentprotocol.
 	}
 	if accepted {
 		r.latest[heartbeat.ServerID] = heartbeat.Sequence
+		alertThreshold := heartbeat.LogSpoolLimitBytes - heartbeat.LogSpoolLimitBytes/5
+		if r.alerts != nil && heartbeat.LogSpoolLimitBytes > 0 &&
+			heartbeat.LogSpoolUsedBytes >= alertThreshold {
+			percentage := int(float64(heartbeat.LogSpoolUsedBytes) / float64(heartbeat.LogSpoolLimitBytes) * 100)
+			if err := r.alerts.Raise(ctx, alert.Event{
+				ResourceType: "server", ResourceID: heartbeat.ServerID, Code: "log_spool_near_limit",
+				Severity: alert.SeverityWarning, Title: "日志缓冲接近上限",
+				Message: fmt.Sprintf("代理本地日志缓冲已使用 %d%%，请检查中央连接或磁盘空间", percentage),
+			}); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

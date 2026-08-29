@@ -218,24 +218,107 @@ func (r *PostgresRepository) FindServerByCredentialHash(
 	credentialHash []byte,
 	authenticatedAt time.Time,
 ) (string, error) {
-	var serverID string
-	err := r.db.QueryRow(ctx, `
-		UPDATE agent_identities AS identity
-		SET last_authenticated_at = $2
-		FROM servers
-		WHERE identity.credential_hash = $1
-			AND identity.revoked_at IS NULL
-			AND servers.id = identity.server_id
-			AND servers.enabled = true
-		RETURNING identity.server_id
-	`, credentialHash, authenticatedAt).Scan(&serverID)
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var identityID, serverID string
+	var pending bool
+	err = tx.QueryRow(ctx, `
+		SELECT identity.id::text, identity.server_id::text, identity.pending_activation
+		FROM agent_identities AS identity
+		JOIN servers ON servers.id=identity.server_id
+		WHERE identity.credential_hash=$1 AND identity.revoked_at IS NULL
+		  AND servers.enabled=true
+		FOR UPDATE OF identity
+	`, credentialHash).Scan(&identityID, &serverID, &pending)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrAgentCredentialInvalid
 	}
 	if err != nil {
 		return "", err
 	}
+	if pending {
+		if _, err := tx.Exec(ctx, `
+			UPDATE agent_identities SET revoked_at=$3
+			WHERE server_id=$1 AND id<>$2 AND revoked_at IS NULL
+		`, serverID, identityID, authenticatedAt); err != nil {
+			return "", err
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE agent_identities
+		SET last_authenticated_at=$2, pending_activation=false
+		WHERE id=$1
+	`, identityID, authenticatedAt); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
 	return serverID, nil
+}
+
+func (r *PostgresRepository) CreatePendingIdentity(ctx context.Context, identity PendingAgentIdentity) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM servers WHERE id=$1 AND enabled=true FOR UPDATE)
+	`, identity.ServerID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return ErrServerNotFound
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE agent_identities SET revoked_at=$2
+		WHERE server_id=$1 AND pending_activation=true AND revoked_at IS NULL
+	`, identity.ServerID, identity.CreatedAt); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO agent_identities (
+			id, server_id, credential_hash, pending_activation, rotated_from_id, created_at
+		) VALUES (
+			$1,$2,$3,true,
+			(SELECT id FROM agent_identities WHERE server_id=$2 AND revoked_at IS NULL
+			 AND pending_activation=false ORDER BY created_at DESC LIMIT 1),
+			$4
+		)
+	`, identity.IdentityID, identity.ServerID, identity.CredentialHash, identity.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("创建待激活代理身份：%w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *PostgresRepository) RevokeServerCredentials(ctx context.Context, serverID string, revokedAt time.Time) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	command, err := tx.Exec(ctx, `
+		UPDATE servers SET status='offline', updated_at=$2 WHERE id=$1
+	`, serverID, revokedAt)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return ErrServerNotFound
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE agent_identities SET revoked_at=$2
+		WHERE server_id=$1 AND revoked_at IS NULL
+	`, serverID, revokedAt); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *PostgresRepository) Dashboard(ctx context.Context) (Dashboard, error) {

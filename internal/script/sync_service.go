@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"yunling.local/platform/internal/agentprotocol"
+	"yunling.local/platform/internal/alert"
 )
 
 var (
@@ -22,13 +23,28 @@ type SyncService struct {
 	db              *pgxpool.Pool
 	artifactBaseURL string
 	now             func() time.Time
+	alerts          syncAlertSink
 }
 
-func NewSyncService(db *pgxpool.Pool, artifactBaseURL string, now func() time.Time) *SyncService {
+type syncAlertSink interface {
+	Raise(context.Context, alert.Event) error
+}
+
+type SyncServiceOption func(*SyncService)
+
+func WithAlertSink(sink syncAlertSink) SyncServiceOption {
+	return func(service *SyncService) { service.alerts = sink }
+}
+
+func NewSyncService(db *pgxpool.Pool, artifactBaseURL string, now func() time.Time, options ...SyncServiceOption) *SyncService {
 	if now == nil {
 		now = time.Now
 	}
-	return &SyncService{db: db, artifactBaseURL: strings.TrimRight(artifactBaseURL, "/"), now: now}
+	service := &SyncService{db: db, artifactBaseURL: strings.TrimRight(artifactBaseURL, "/"), now: now}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 func (s *SyncService) PrepareVersion(ctx context.Context, versionID string) (int64, error) {
@@ -212,6 +228,28 @@ func (s *SyncService) RecordResult(ctx context.Context, serverID string, result 
 	}
 	if command.RowsAffected() == 0 {
 		return ErrSyncNotFound
+	}
+	if s.alerts != nil && (state == agentprotocol.SyncFailed || state == agentprotocol.SyncDrifted) {
+		code := errorCode
+		title := "脚本同步失败"
+		if state == agentprotocol.SyncDrifted {
+			title = "脚本版本漂移"
+			if code == "" {
+				code = "script_drifted"
+			}
+		} else if code == "" {
+			code = "script_sync_failed"
+		}
+		message := errorMessage
+		if message == "" {
+			message = "执行服务器未能同步中央脚本版本"
+		}
+		if err := s.alerts.Raise(ctx, alert.Event{
+			ResourceType: "script_sync", ResourceID: serverID + "/" + result.VersionID,
+			Code: code, Severity: alert.SeverityWarning, Title: title, Message: message,
+		}); err != nil {
+			return fmt.Errorf("生成脚本同步告警：%w", err)
+		}
 	}
 	return nil
 }

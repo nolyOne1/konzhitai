@@ -2,9 +2,12 @@ package logstream
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"testing"
 	"time"
+
+	"yunling.local/platform/internal/secret"
 )
 
 func TestAcceptAcknowledgesNextMissingSequence(t *testing.T) {
@@ -54,6 +57,29 @@ func TestAcceptRejectsOversizedChunk(t *testing.T) {
 	if _, err := service.Accept(context.Background(), chunk); !errors.Is(err, ErrInvalidChunk) {
 		t.Fatalf("超过 64 KiB 的日志块必须拒绝，实际 %v", err)
 	}
+}
+
+func TestAcceptRedactsRunSecretsBeforePersistence(t *testing.T) {
+	store := newMemoryChunkStore()
+	value := []byte("very-secret")
+	service := NewService(store, WithRedaction(secret.NewRedactor(), staticSensitiveValues{values: [][]byte{value}}))
+	chunk := LogChunk{
+		RunID: "run-1", ExecutionToken: "token-1", Sequence: 1, Stream: StreamStdout,
+		Content: "pwd=very-secret encoded=" + base64.StdEncoding.EncodeToString(value),
+	}
+
+	if _, err := service.Accept(context.Background(), chunk); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.fullText(); got != "pwd=****** encoded=******" {
+		t.Fatalf("日志必须在持久化前完成脱敏：%q", got)
+	}
+}
+
+type staticSensitiveValues struct{ values [][]byte }
+
+func (s staticSensitiveValues) ValuesForRun(context.Context, string, string) ([][]byte, error) {
+	return s.values, nil
 }
 
 type memoryChunkStore struct {

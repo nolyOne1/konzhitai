@@ -5,14 +5,22 @@ import type { ServerView, UpdateServerInput } from '../../api/client'
 interface ServerDrawerProps {
   server: ServerView
   saving: boolean
+  securityBusy: boolean
+  isAdmin: boolean
   onClose: () => void
   onSave: (input: UpdateServerInput) => Promise<void>
+  onRotate: () => Promise<string>
+  onRevoke: () => Promise<void>
 }
 
-export function ServerDrawer({ server, saving, onClose, onSave }: ServerDrawerProps) {
+export function ServerDrawer({ server, saving, securityBusy, isAdmin, onClose, onSave, onRotate, onRevoke }: ServerDrawerProps) {
   const [name, setName] = useState(server.name)
   const [weight, setWeight] = useState(String(server.schedulingWeight))
   const [labels, setLabels] = useState(formatLabels(server.labels))
+  const [credential, setCredential] = useState('')
+  const [securityStatus, setSecurityStatus] = useState('')
+  const [securityError, setSecurityError] = useState('')
+  const [confirmRevoke, setConfirmRevoke] = useState(false)
 
   useEffect(() => {
     setName(server.name)
@@ -27,6 +35,23 @@ export function ServerDrawer({ server, saving, onClose, onSave }: ServerDrawerPr
       schedulingWeight: Number(weight),
       labels: parseLabels(labels),
     })
+  }
+
+  async function rotate() {
+    setSecurityError(''); setSecurityStatus(''); setCredential('')
+    try {
+      setCredential(await onRotate())
+      setSecurityStatus('新凭据已签发；代理首次使用它连接后，旧凭据会自动失效。')
+    } catch (reason) { setSecurityError(reason instanceof Error ? reason.message : '轮换代理凭据失败') }
+  }
+
+  async function revoke() {
+    setSecurityError(''); setSecurityStatus(''); setCredential('')
+    try {
+      await onRevoke()
+      setConfirmRevoke(false)
+      setSecurityStatus('代理凭据已全部吊销，节点连接已断开。')
+    } catch (reason) { setSecurityError(reason instanceof Error ? reason.message : '紧急吊销失败') }
   }
 
   return (
@@ -69,6 +94,8 @@ export function ServerDrawer({ server, saving, onClose, onSave }: ServerDrawerPr
           </label>
           <button type="submit" className="primary-action" disabled={saving}>{saving ? '保存中…' : '保存更改'}</button>
         </form>
+
+        {isAdmin ? <section className="credential-panel" aria-labelledby="credential-title"><div><p className="eyebrow">管理员安全操作</p><h3 id="credential-title">代理凭据</h3><p>轮换会等待新凭据确认连接；紧急吊销会立即断开该节点。</p></div>{securityError ? <div className="form-error" role="alert">{securityError}</div> : null}{securityStatus ? <div className="credential-status" role="status">{securityStatus}</div> : null}{credential ? <div className="one-time-credential"><strong>仅显示一次的新凭据</strong><code>{credential}</code><small>请立即写入代理的安全配置文件，不要通过聊天或工单传递。</small></div> : null}<div className="credential-actions"><button className="secondary-action" type="button" disabled={securityBusy} onClick={() => void rotate()}>轮换代理凭据</button><button className="danger-action" type="button" disabled={securityBusy} onClick={() => setConfirmRevoke(true)}>紧急吊销全部凭据</button></div>{confirmRevoke ? <div className="revoke-confirm" role="alertdialog" aria-labelledby="revoke-title" aria-describedby="revoke-description"><strong id="revoke-title">确认立即断开此节点？</strong><p id="revoke-description">全部现有凭据都会失效，恢复连接前必须重新签发并配置凭据。</p><div><button className="secondary-action" type="button" onClick={() => setConfirmRevoke(false)}>取消</button><button className="danger-action" type="button" disabled={securityBusy} onClick={() => void revoke()}>确认紧急吊销</button></div></div> : null}</section> : null}
       </aside>
     </div>
   )

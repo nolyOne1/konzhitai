@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"yunling.local/platform/internal/agentprotocol"
+	"yunling.local/platform/internal/alert"
 	"yunling.local/platform/internal/script"
 	"yunling.local/platform/internal/testpostgres"
 )
@@ -31,7 +32,8 @@ func TestSyncServiceSelectsCompatibleServersAndRecoversDrift(t *testing.T) {
 	incompatibleID := insertSyncServer(t, db, "运行环境不兼容", `["python3"]`, `{}`, true)
 	insertSyncServer(t, db, "已停用节点", `["bash"]`, `{}`, false)
 
-	service := script.NewSyncService(db, "https://control.example", fixedClock)
+	alerts := &syncAlertRecorder{}
+	service := script.NewSyncService(db, "https://control.example", fixedClock, script.WithAlertSink(alerts))
 	count, err := service.PrepareVersion(ctx, version.ID)
 	if err != nil || count != 1 {
 		t.Fatalf("应只为一台兼容服务器创建同步记录：count=%d err=%v", count, err)
@@ -66,6 +68,9 @@ func TestSyncServiceSelectsCompatibleServersAndRecoversDrift(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("记录漂移：%v", err)
 	}
+	if len(alerts.events) != 1 || alerts.events[0].ResourceType != "script_sync" || alerts.events[0].Code != "content_mismatch" {
+		t.Fatalf("版本漂移必须生成中文系统告警：%+v", alerts.events)
+	}
 	items, err = service.List(ctx, scriptID)
 	if err != nil || len(items) != 1 || items[0].State != agentprotocol.SyncDrifted || !items[0].Blocked {
 		t.Fatalf("漂移版本必须保持阻断：items=%+v err=%v", items, err)
@@ -90,6 +95,13 @@ func TestSyncServiceSelectsCompatibleServersAndRecoversDrift(t *testing.T) {
 	if err != nil || !ok || newServerCommand.VersionID != version.ID {
 		t.Fatalf("新服务器上线后应自动补齐最新兼容版本：command=%+v ok=%v err=%v", newServerCommand, ok, err)
 	}
+}
+
+type syncAlertRecorder struct{ events []alert.Event }
+
+func (r *syncAlertRecorder) Raise(_ context.Context, event alert.Event) error {
+	r.events = append(r.events, event)
+	return nil
 }
 
 func TestSyncServiceAppliesLabelDistribution(t *testing.T) {

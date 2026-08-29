@@ -20,6 +20,7 @@ func TestEnrollmentTokenIsHashedAndCanOnlyBeUsedOnce(t *testing.T) {
 	testpostgres.ApplyMigration(t, db, "000004_script_sync_states.up.sql")
 	testpostgres.ApplyMigration(t, db, "000005_task_scheduling.up.sql")
 	testpostgres.ApplyMigration(t, db, "000006_scheduler_resources.up.sql")
+	testpostgres.ApplyMigration(t, db, "000008_security_audit_alerts.up.sql")
 	ctx := context.Background()
 	now := time.Date(2026, 8, 28, 11, 0, 0, 0, time.UTC)
 	repository := server.NewPostgresRepository(db)
@@ -66,6 +67,41 @@ func TestEnrollmentTokenIsHashedAndCanOnlyBeUsedOnce(t *testing.T) {
 	}
 	if serverID != credentials.ServerID {
 		t.Fatalf("凭据应绑定服务器 %s，实际绑定 %s", credentials.ServerID, serverID)
+	}
+}
+
+func TestNewCredentialActivationRevokesPreviousCredential(t *testing.T) {
+	db := testpostgres.Start(t)
+	testpostgres.ApplyInitialMigration(t, db)
+	testpostgres.ApplyMigration(t, db, "000002_agent_enrollment.up.sql")
+	testpostgres.ApplyMigration(t, db, "000003_server_management.up.sql")
+	testpostgres.ApplyMigration(t, db, "000008_security_audit_alerts.up.sql")
+	ctx := context.Background()
+	now := time.Date(2026, 8, 29, 11, 0, 0, 0, time.UTC)
+	repository := server.NewPostgresRepository(db)
+	enrollment := server.NewEnrollmentService(repository, func() time.Time { return now })
+	issued, err := enrollment.CreateToken(ctx, server.EnrollmentTokenInput{Name: "凭据轮换节点"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCredentials, err := enrollment.Enroll(ctx, issued.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentialService := server.NewCredentialService(repository, nil, func() time.Time { return now })
+	newCredentials, err := credentialService.Rotate(ctx, oldCredentials.ServerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enrollment.Authenticate(ctx, oldCredentials.Credential); err != nil {
+		t.Fatalf("新凭据确认连接前，旧凭据必须继续有效：%v", err)
+	}
+	now = now.Add(time.Minute)
+	if _, err := enrollment.Authenticate(ctx, newCredentials.Credential); err != nil {
+		t.Fatalf("新凭据首次连接应激活身份：%v", err)
+	}
+	if _, err := enrollment.Authenticate(ctx, oldCredentials.Credential); !errors.Is(err, server.ErrAgentCredentialInvalid) {
+		t.Fatalf("新凭据确认后必须吊销旧凭据，实际错误：%v", err)
 	}
 }
 

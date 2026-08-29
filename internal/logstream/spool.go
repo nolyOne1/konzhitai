@@ -19,12 +19,25 @@ import (
 type Spool struct {
 	root      string
 	chunkSize int
+	maxBytes  int64
+	usedBytes int64
 	mu        sync.Mutex
 }
 
-const sequenceCursorName = ".next-sequence"
+const (
+	sequenceCursorName   = ".next-sequence"
+	DefaultSpoolMaxBytes = int64(512 << 20)
+)
 
-func NewSpool(root string, chunkSize int) (*Spool, error) {
+var ErrSpoolLimitExceeded = errors.New("日志缓冲已达到容量上限")
+
+type SpoolOption func(*Spool)
+
+func WithSpoolMaxBytes(maxBytes int64) SpoolOption {
+	return func(spool *Spool) { spool.maxBytes = maxBytes }
+}
+
+func NewSpool(root string, chunkSize int, options ...SpoolOption) (*Spool, error) {
 	root = strings.TrimSpace(root)
 	if root == "" || chunkSize <= 0 || chunkSize > DefaultChunkSize {
 		return nil, ErrInvalidChunk
@@ -36,7 +49,19 @@ func NewSpool(root string, chunkSize int) (*Spool, error) {
 	if err := os.MkdirAll(absolute, 0o750); err != nil {
 		return nil, fmt.Errorf("创建日志缓冲目录：%w", err)
 	}
-	return &Spool{root: absolute, chunkSize: chunkSize}, nil
+	spool := &Spool{root: absolute, chunkSize: chunkSize, maxBytes: DefaultSpoolMaxBytes}
+	for _, option := range options {
+		option(spool)
+	}
+	if spool.maxBytes <= 0 {
+		return nil, ErrInvalidChunk
+	}
+	used, err := bufferedBytes(absolute)
+	if err != nil {
+		return nil, fmt.Errorf("统计日志缓冲容量：%w", err)
+	}
+	spool.usedBytes = used
+	return spool, nil
 }
 
 func (s *Spool) Append(runID, token string, stream Stream, content []byte) ([]LogChunk, error) {
@@ -63,12 +88,25 @@ func (s *Spool) Append(runID, token string, stream Stream, content []byte) ([]Lo
 			length = min(len(content), s.chunkSize)
 		}
 		chunk := LogChunk{RunID: runID, ExecutionToken: token, Sequence: next, Stream: stream, Content: strings.ToValidUTF8(string(content[:length]), "�"), CreatedAt: time.Now().UTC()}
-		if err := s.write(chunk); err != nil {
-			return nil, err
-		}
 		result = append(result, chunk)
 		next++
 		content = content[length:]
+	}
+	var pendingBytes int64
+	for _, chunk := range result {
+		body, err := json.Marshal(chunk)
+		if err != nil {
+			return nil, fmt.Errorf("编码日志块：%w", err)
+		}
+		pendingBytes += int64(len(body))
+	}
+	if len(result) > 0 && (s.usedBytes >= s.maxBytes || pendingBytes > s.maxBytes-s.usedBytes) {
+		return nil, ErrSpoolLimitExceeded
+	}
+	for _, chunk := range result {
+		if err := s.write(chunk); err != nil {
+			return nil, err
+		}
 	}
 	if len(result) > 0 {
 		if err := s.writeSequenceCursor(s.directory(runID, token, stream), next); err != nil {
@@ -76,6 +114,15 @@ func (s *Spool) Append(runID, token string, stream Stream, content []byte) ([]Lo
 		}
 	}
 	return result, nil
+}
+
+func (s *Spool) Usage() (usedBytes, maxBytes int64) {
+	if s == nil {
+		return 0, 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.usedBytes, s.maxBytes
 }
 
 func (s *Spool) Pending(runID, token string, stream Stream) ([]LogChunk, error) {
@@ -152,8 +199,16 @@ func (s *Spool) Acknowledge(runID, token string, stream Stream, nextSequence uin
 		if !ok || sequence >= nextSequence {
 			continue
 		}
-		if err := os.Remove(filepath.Join(directory, entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+		filePath := filepath.Join(directory, entry.Name())
+		info, statErr := os.Stat(filePath)
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("统计待清理日志块：%w", statErr)
+		}
+		if err := os.Remove(filePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("清理已确认日志块：%w", err)
+		}
+		if statErr == nil {
+			s.usedBytes = max(0, s.usedBytes-info.Size())
 		}
 	}
 	return nil
@@ -224,7 +279,30 @@ func (s *Spool) write(chunk LogChunk) error {
 	if err := os.Rename(temporaryName, target); err != nil {
 		return fmt.Errorf("保存日志块：%w", err)
 	}
+	s.usedBytes += int64(len(body))
 	return nil
+}
+
+func bufferedBytes(root string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(root, func(filePath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if _, ok := sequenceFromName(entry.Name()); !ok {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
 }
 
 func (s *Spool) nextSequence(runID, token string, stream Stream, pending []LogChunk) (uint64, error) {

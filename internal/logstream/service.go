@@ -102,12 +102,37 @@ type ChunkStore interface {
 	Insert(ctx context.Context, chunk LogChunk) error
 }
 
-type Service struct {
-	store ChunkStore
-	mu    sync.Mutex
+type ContentRedactor interface {
+	Mask(text []byte, values [][]byte) []byte
 }
 
-func NewService(store ChunkStore) *Service { return &Service{store: store} }
+type SensitiveValueSource interface {
+	ValuesForRun(ctx context.Context, runID, executionToken string) ([][]byte, error)
+}
+
+type ServiceOption func(*Service)
+
+func WithRedaction(redactor ContentRedactor, values SensitiveValueSource) ServiceOption {
+	return func(service *Service) {
+		service.redactor = redactor
+		service.values = values
+	}
+}
+
+type Service struct {
+	store    ChunkStore
+	redactor ContentRedactor
+	values   SensitiveValueSource
+	mu       sync.Mutex
+}
+
+func NewService(store ChunkStore, options ...ServiceOption) *Service {
+	service := &Service{store: store}
+	for _, option := range options {
+		option(service)
+	}
+	return service
+}
 
 func (s *Service) Accept(ctx context.Context, chunk LogChunk) (uint64, error) {
 	if s == nil || s.store == nil || !validChunk(chunk) {
@@ -115,6 +140,16 @@ func (s *Service) Accept(ctx context.Context, chunk LogChunk) (uint64, error) {
 	}
 	if chunk.CreatedAt.IsZero() {
 		chunk.CreatedAt = time.Now().UTC()
+	}
+	if s.redactor != nil && s.values != nil {
+		values, err := s.values.ValuesForRun(ctx, chunk.RunID, chunk.ExecutionToken)
+		if err != nil {
+			return 0, fmt.Errorf("读取任务敏感值用于日志脱敏：%w", err)
+		}
+		chunk.Content = string(s.redactor.Mask([]byte(chunk.Content), values))
+		for _, value := range values {
+			clear(value)
+		}
 	}
 
 	// NextSequence + Insert 必须作为一个临界区执行，避免同一进程内的并发接收

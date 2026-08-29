@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -124,5 +125,104 @@ func toRoleNames(values []string) []RoleName {
 	return roles
 }
 
+func (r *PostgresRepository) ListMembers(ctx context.Context) ([]Member, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT u.id::text, u.email, u.display_name, u.enabled, u.created_at,
+		       COALESCE(array_agg(role.name ORDER BY role.name) FILTER (WHERE role.name IS NOT NULL), ARRAY[]::text[])
+		FROM users AS u
+		LEFT JOIN user_roles AS user_role ON user_role.user_id=u.id
+		LEFT JOIN roles AS role ON role.id=user_role.role_id
+		GROUP BY u.id ORDER BY u.created_at, u.id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("读取团队成员：%w", err)
+	}
+	defer rows.Close()
+	members := []Member{}
+	for rows.Next() {
+		var member Member
+		var roles []string
+		if err := rows.Scan(&member.ID, &member.Email, &member.DisplayName, &member.Enabled, &member.CreatedAt, &roles); err != nil {
+			return nil, err
+		}
+		member.Roles = toRoleNames(roles)
+		members = append(members, member)
+	}
+	return members, rows.Err()
+}
+
+func (r *PostgresRepository) ReplaceMemberRoles(ctx context.Context, userID string, roles []RoleName) (Member, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return Member{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 FOR UPDATE)`, userID).Scan(&exists); err != nil {
+		return Member{}, err
+	}
+	if !exists {
+		return Member{}, ErrMemberNotFound
+	}
+	for _, role := range roles {
+		permissions, ok := permissionsForRole(role)
+		if !ok {
+			return Member{}, ErrInvalidRoles
+		}
+		encodedPermissions, err := json.Marshal(permissions)
+		if err != nil {
+			return Member{}, err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO roles (name, permissions) VALUES ($1,$2)
+			ON CONFLICT (name) DO NOTHING
+		`, role, encodedPermissions); err != nil {
+			return Member{}, err
+		}
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM user_roles WHERE user_id=$1`, userID); err != nil {
+		return Member{}, err
+	}
+	roleNames := make([]string, len(roles))
+	for index, role := range roles {
+		roleNames[index] = string(role)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO user_roles (user_id, role_id)
+		SELECT $1, id FROM roles WHERE name=ANY($2::text[])
+	`, userID, roleNames); err != nil {
+		return Member{}, err
+	}
+	var member Member
+	var storedRoles []string
+	if err := tx.QueryRow(ctx, `
+		SELECT u.id::text, u.email, u.display_name, u.enabled, u.created_at,
+		       array_agg(role.name ORDER BY role.name)
+		FROM users AS u
+		JOIN user_roles AS user_role ON user_role.user_id=u.id
+		JOIN roles AS role ON role.id=user_role.role_id
+		WHERE u.id=$1 GROUP BY u.id
+	`, userID).Scan(&member.ID, &member.Email, &member.DisplayName, &member.Enabled, &member.CreatedAt, &storedRoles); err != nil {
+		return Member{}, err
+	}
+	member.Roles = toRoleNames(storedRoles)
+	if err := tx.Commit(ctx); err != nil {
+		return Member{}, err
+	}
+	return member, nil
+}
+
+func permissionsForRole(role RoleName) ([]string, bool) {
+	values := map[RoleName][]string{
+		RoleAdmin:     {PermissionAdmin, PermissionExecute, PermissionPublishScript, PermissionRead},
+		RoleOperator:  {PermissionExecute, PermissionRead},
+		RoleDeveloper: {PermissionPublishScript, PermissionRead},
+		RoleViewer:    {PermissionRead},
+	}
+	permissions, ok := values[role]
+	return permissions, ok
+}
+
 var _ UserRepository = (*PostgresRepository)(nil)
 var _ SessionRepository = (*PostgresRepository)(nil)
+var _ TeamRepository = (*PostgresRepository)(nil)

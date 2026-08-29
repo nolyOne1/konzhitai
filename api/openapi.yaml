@@ -827,6 +827,220 @@ paths:
                     format: uuid
         "409":
           description: 不满足安全重试条件
+  /api/secrets:
+    get:
+      operationId: listSecrets
+      summary: 获取敏感参数元数据
+      description: 永远不返回明文、密文、nonce 或数据密钥。
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: 当前用户可引用的敏感参数元数据
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [secrets]
+                properties:
+                  secrets:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SecretMetadata"
+    post:
+      operationId: createSecret
+      summary: 创建加密敏感参数
+      description: 仅管理员可用；响应只返回元数据，实际值不会再次显示。
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, value]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                value:
+                  type: string
+                  minLength: 1
+                  writeOnly: true
+      responses:
+        "201":
+          description: 已使用信封加密保存
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SecretMetadata"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/members:
+    get:
+      operationId: listMembers
+      summary: 获取团队成员与角色
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: 团队成员列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [members]
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Member"
+  /api/members/{id}/roles:
+    put:
+      operationId: updateMemberRoles
+      summary: 替换成员角色
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [roles]
+              properties:
+                roles:
+                  type: array
+                  minItems: 1
+                  uniqueItems: true
+                  items:
+                    $ref: "#/components/schemas/Role"
+      responses:
+        "200":
+          description: 成员角色已更新并写入审计日志
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Member"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/audit:
+    get:
+      operationId: listAuditEvents
+      summary: 获取只追加审计日志
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: 最近的关键操作审计记录
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditEvent"
+  /api/alerts:
+    get:
+      operationId: listAlerts
+      summary: 获取系统告警
+      description: 同一资源与错误码在五分钟窗口内合并计数。
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: 系统告警列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [alerts]
+                properties:
+                  alerts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Alert"
+  /api/alerts/{id}/acknowledge:
+    post:
+      operationId: acknowledgeAlert
+      summary: 确认系统告警
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: 告警已确认
+  /api/servers/{id}/credentials/rotate:
+    post:
+      operationId: rotateServerCredential
+      summary: 轮换代理凭据
+      description: 新凭据首次成功连接前旧凭据保持有效，确认新连接后旧凭据自动吊销。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "201":
+          description: 新凭据已签发，明文仅在本次响应显示
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentCredentials"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/servers/{id}/credentials/revoke:
+    post:
+      operationId: revokeServerCredentials
+      summary: 紧急吊销代理凭据
+      description: 立即吊销该服务器全部代理身份、断开连接并标记离线。
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: 全部代理凭据已吊销
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /api/agent/enroll:
     post:
       operationId: enrollAgent
@@ -1044,6 +1258,14 @@ components:
         running_tasks:
           type: integer
           minimum: 0
+        log_spool_used_bytes:
+          type: integer
+          minimum: 0
+          description: 代理本地待上传日志缓冲已用字节数。
+        log_spool_limit_bytes:
+          type: integer
+          minimum: 0
+          description: 代理本地日志缓冲容量上限；旧版代理可省略。
         runtimes:
           type: array
           items:
@@ -1784,6 +2006,108 @@ components:
             updatedAt:
               type: string
               format: date-time
+    SecretMetadata:
+      type: object
+      additionalProperties: false
+      required: [id, name, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    Member:
+      type: object
+      required: [id, email, displayName, enabled, roles, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        enabled:
+          type: boolean
+        roles:
+          type: array
+          items:
+            $ref: "#/components/schemas/Role"
+        createdAt:
+          type: string
+          format: date-time
+    AuditEvent:
+      type: object
+      required: [id, action, targetType, targetId, details, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        actorId:
+          type: string
+          format: uuid
+        action:
+          type: string
+        targetType:
+          type: string
+        targetId:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+        ipAddress:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    Alert:
+      type: object
+      required: [id, resourceType, resourceId, code, severity, title, message, status, occurrences, firstOccurredAt, lastOccurredAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        resourceType:
+          type: string
+        resourceId:
+          type: string
+        code:
+          type: string
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        title:
+          type: string
+        message:
+          type: string
+        status:
+          type: string
+          enum: [open, acknowledged, resolved]
+        occurrences:
+          type: integer
+          minimum: 1
+        firstOccurredAt:
+          type: string
+          format: date-time
+        lastOccurredAt:
+          type: string
+          format: date-time
+        acknowledgedBy:
+          type: string
+          format: uuid
+        acknowledgedAt:
+          type: string
+          format: date-time
     ServerUpdate:
       type: object
       additionalProperties: false
@@ -1812,13 +2136,13 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     Forbidden:
-      description: 当前用户没有脚本发布权限
+      description: 当前用户没有执行该操作所需的权限
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     NotFound:
-      description: 脚本或脚本版本不存在
+      description: 请求的资源不存在
       content:
         application/json:
           schema:

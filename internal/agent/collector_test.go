@@ -14,7 +14,7 @@ func TestCollectorReportsConfiguredRuntimes(t *testing.T) {
 		DiskTotalBytes:   100 << 30,
 		DiskFreeBytes:    20 << 30,
 		RunningTasks:     2,
-	}}, []string{"bash", "python3"})
+	}}, []string{"bash", "python3"}, WithLogSpool(fakeSpoolUsage{used: 80, limit: 100}))
 
 	got, err := collector.Snapshot(context.Background())
 	if err != nil {
@@ -32,6 +32,9 @@ func TestCollectorReportsConfiguredRuntimes(t *testing.T) {
 	if len(got.Runtimes) != 2 || got.Runtimes[0] != "bash" || got.Runtimes[1] != "python3" {
 		t.Fatalf("运行环境应为 bash、python3，实际为 %#v", got.Runtimes)
 	}
+	if got.LogSpoolUsedBytes != 80 || got.LogSpoolLimitBytes != 100 {
+		t.Fatalf("日志缓冲容量未完整上报：%+v", got)
+	}
 }
 
 type fakeStats struct {
@@ -42,3 +45,7 @@ type fakeStats struct {
 func (f fakeStats) Snapshot(context.Context) (Stats, error) {
 	return f.snapshot, f.err
 }
+
+type fakeSpoolUsage struct{ used, limit int64 }
+
+func (f fakeSpoolUsage) Usage() (int64, int64) { return f.used, f.limit }

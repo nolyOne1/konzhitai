@@ -2,6 +2,7 @@ package logstream
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 	"time"
 )
@@ -91,5 +92,22 @@ func TestSpoolUploadsEachStreamInSequenceOrderWhenClockMovesBackward(t *testing.
 	pending, err := spool.AllPending()
 	if err != nil || len(pending) != 2 || pending[0].Sequence != 1 || pending[1].Sequence != 2 {
 		t.Fatalf("系统时钟回拨时仍必须按日志序号上传：pending=%+v err=%v", pending, err)
+	}
+}
+
+func TestSpoolEnforcesLimitAndReportsUsage(t *testing.T) {
+	spool, err := NewSpool(t.TempDir(), DefaultChunkSize, WithSpoolMaxBytes(512))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := spool.Append("run-1", "token-1", StreamStdout, []byte("第一段日志")); err != nil {
+		t.Fatal(err)
+	}
+	used, limit := spool.Usage()
+	if used <= 0 || limit != 512 {
+		t.Fatalf("日志缓冲容量统计错误：used=%d limit=%d", used, limit)
+	}
+	if _, err := spool.Append("run-1", "token-1", StreamStdout, bytes.Repeat([]byte("x"), 512)); !errors.Is(err, ErrSpoolLimitExceeded) {
+		t.Fatalf("超过缓冲上限必须被拒绝：%v", err)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"yunling.local/platform/internal/alert"
 	"yunling.local/platform/internal/scheduler"
 	"yunling.local/platform/internal/server"
 	"yunling.local/platform/internal/task"
@@ -64,7 +65,8 @@ func TestScheduleOneExpiresRunPastMaximumWait(t *testing.T) {
 	run := schedulableRun("run-expired", 1000, 1<<30, 1<<30)
 	run.QueuedAt, run.MaxWaitSeconds = now.Add(-time.Hour-time.Second), 3600
 	runs := newMemoryRuns(run)
-	svc := scheduler.NewService(runs, staticServers{items: []server.Snapshot{schedulableServer("server-a")}}, newMemoryLeases(task.Resources{}), func() time.Time { return now })
+	alerts := &schedulerAlertRecorder{}
+	svc := scheduler.NewService(runs, staticServers{items: []server.Snapshot{schedulableServer("server-a")}}, newMemoryLeases(task.Resources{}), func() time.Time { return now }, scheduler.WithAlertSink(alerts))
 
 	outcome, err := svc.ScheduleOne(context.Background(), run.ID)
 	if err != nil {
@@ -73,6 +75,16 @@ func TestScheduleOneExpiresRunPastMaximumWait(t *testing.T) {
 	if outcome != scheduler.OutcomeExpired || runs.mustGet(run.ID).State != task.Expired {
 		t.Fatalf("超过最大等待必须进入 expired，outcome=%s state=%s", outcome, runs.mustGet(run.ID).State)
 	}
+	if len(alerts.events) != 1 || alerts.events[0].Code != "task_queue_timeout" || alerts.events[0].ResourceID != run.ID {
+		t.Fatalf("排队超过最大等待时间必须生成告警：%+v", alerts.events)
+	}
+}
+
+type schedulerAlertRecorder struct{ events []alert.Event }
+
+func (r *schedulerAlertRecorder) Raise(_ context.Context, event alert.Event) error {
+	r.events = append(r.events, event)
+	return nil
 }
 
 type memoryRuns struct {

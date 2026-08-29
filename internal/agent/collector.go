@@ -23,13 +23,28 @@ type StatsSource interface {
 type Collector struct {
 	source   StatsSource
 	runtimes []string
+	logSpool LogSpoolUsage
 }
 
-func NewCollector(source StatsSource, runtimes []string) *Collector {
-	return &Collector{
+type LogSpoolUsage interface {
+	Usage() (usedBytes, maxBytes int64)
+}
+
+type CollectorOption func(*Collector)
+
+func WithLogSpool(spool LogSpoolUsage) CollectorOption {
+	return func(collector *Collector) { collector.logSpool = spool }
+}
+
+func NewCollector(source StatsSource, runtimes []string, options ...CollectorOption) *Collector {
+	collector := &Collector{
 		source:   source,
 		runtimes: append([]string(nil), runtimes...),
 	}
+	for _, option := range options {
+		option(collector)
+	}
+	return collector
 }
 
 func (c *Collector) Snapshot(ctx context.Context) (agentprotocol.Heartbeat, error) {
@@ -37,7 +52,7 @@ func (c *Collector) Snapshot(ctx context.Context) (agentprotocol.Heartbeat, erro
 	if err != nil {
 		return agentprotocol.Heartbeat{}, err
 	}
-	return agentprotocol.Heartbeat{
+	heartbeat := agentprotocol.Heartbeat{
 		CPUTotalMilli:    stats.CPUTotalMilli,
 		CPUUsedMilli:     stats.CPUUsedMilli,
 		MemoryTotalBytes: stats.MemoryTotalBytes,
@@ -46,5 +61,9 @@ func (c *Collector) Snapshot(ctx context.Context) (agentprotocol.Heartbeat, erro
 		DiskFreeBytes:    stats.DiskFreeBytes,
 		RunningTasks:     stats.RunningTasks,
 		Runtimes:         append([]string(nil), c.runtimes...),
-	}, nil
+	}
+	if c.logSpool != nil {
+		heartbeat.LogSpoolUsedBytes, heartbeat.LogSpoolLimitBytes = c.logSpool.Usage()
+	}
+	return heartbeat, nil
 }

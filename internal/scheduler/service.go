@@ -2,9 +2,11 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"yunling.local/platform/internal/alert"
 	"yunling.local/platform/internal/task"
 )
 
@@ -14,13 +16,28 @@ type Service struct {
 	leases  LeaseStore
 	queue   *Queue
 	now     func() time.Time
+	alerts  schedulerAlertSink
 }
 
-func NewService(runs RunStore, servers ServerSource, leases LeaseStore, now func() time.Time) *Service {
+type schedulerAlertSink interface {
+	Raise(context.Context, alert.Event) error
+}
+
+type ServiceOption func(*Service)
+
+func WithAlertSink(sink schedulerAlertSink) ServiceOption {
+	return func(service *Service) { service.alerts = sink }
+}
+
+func NewService(runs RunStore, servers ServerSource, leases LeaseStore, now func() time.Time, options ...ServiceOption) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{runs: runs, servers: servers, leases: leases, queue: NewQueue(), now: now}
+	service := &Service{runs: runs, servers: servers, leases: leases, queue: NewQueue(), now: now}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 func (s *Service) ScheduleOne(ctx context.Context, runID string) (Outcome, error) {
@@ -42,6 +59,15 @@ func (s *Service) ScheduleOne(ctx context.Context, runID string) (Outcome, error
 		}
 		if expired {
 			s.queue.Remove(run.ID)
+			if s.alerts != nil {
+				if err := s.alerts.Raise(ctx, alert.Event{
+					ResourceType: "task_run", ResourceID: run.ID, Code: "task_queue_timeout",
+					Severity: alert.SeverityWarning, Title: "任务排队超时",
+					Message: "在最大等待时间内没有可分配的服务器，任务已停止排队",
+				}); err != nil {
+					return OutcomeExpired, fmt.Errorf("生成任务排队告警：%w", err)
+				}
+			}
 			return OutcomeExpired, nil
 		}
 	}

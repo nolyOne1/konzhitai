@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"yunling.local/platform/internal/agentprotocol"
+	"yunling.local/platform/internal/alert"
 )
 
 func TestRegistryIgnoresOlderHeartbeat(t *testing.T) {
@@ -56,6 +57,26 @@ func TestRegistryMarksServerOfflineAfterFifteenSeconds(t *testing.T) {
 	}
 	if publisher.events[0].Type != "server.offline" || publisher.events[0].ServerID != "server-1" {
 		t.Fatalf("离线事件内容错误：%+v", publisher.events[0])
+	}
+}
+
+func TestRegistryRaisesAlertWhenLogSpoolNearLimit(t *testing.T) {
+	repository := newMemoryServerRepository()
+	sink := &memoryAlertSink{}
+	registry := NewRegistry(repository, time.Now, WithAlertSink(sink))
+	heartbeat := heartbeat(1, 1000)
+	heartbeat.LogSpoolUsedBytes = 800
+	heartbeat.LogSpoolLimitBytes = 1000
+
+	if err := registry.AcceptHeartbeat(context.Background(), heartbeat); err != nil {
+		t.Fatalf("接收日志缓冲告警心跳：%v", err)
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("达到 80%% 时应生成一个告警，实际为 %d", len(sink.events))
+	}
+	event := sink.events[0]
+	if event.ResourceType != "server" || event.ResourceID != "server-1" || event.Code != "log_spool_near_limit" {
+		t.Fatalf("日志缓冲告警内容错误：%+v", event)
 	}
 }
 
@@ -116,6 +137,13 @@ func (r *memoryServerRepository) MarkOfflineBefore(_ context.Context, cutoff tim
 
 type memoryEventPublisher struct {
 	events []Event
+}
+
+type memoryAlertSink struct{ events []alert.Event }
+
+func (s *memoryAlertSink) Raise(_ context.Context, event alert.Event) error {
+	s.events = append(s.events, event)
+	return nil
 }
 
 func (p *memoryEventPublisher) Publish(_ context.Context, event Event) error {

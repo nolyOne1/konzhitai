@@ -257,6 +257,64 @@ export interface TaskScheduleInput {
   enabled: boolean
 }
 
+export type RoleName = 'admin' | 'operator' | 'developer' | 'viewer'
+
+export interface SessionUser {
+  id: string
+  displayName: string
+  email: string
+  roles: RoleName[]
+}
+
+export interface SecretMetadata {
+  id: string
+  name: string
+  createdBy?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Member {
+  id: string
+  email: string
+  displayName: string
+  enabled: boolean
+  roles: RoleName[]
+  createdAt: string
+}
+
+export interface AuditEvent {
+  id: string
+  actorId?: string
+  action: string
+  targetType: string
+  targetId: string
+  details: Record<string, unknown>
+  ipAddress?: string
+  createdAt: string
+}
+
+export interface SystemAlert {
+  id: string
+  resourceType: string
+  resourceId: string
+  code: string
+  severity: 'info' | 'warning' | 'critical'
+  title: string
+  message: string
+  status: 'open' | 'acknowledged' | 'resolved'
+  occurrences: number
+  firstOccurredAt: string
+  lastOccurredAt: string
+  acknowledgedBy?: string
+  acknowledgedAt?: string
+}
+
+export interface AgentCredentials {
+  server_id: string
+  credential: string
+}
+
 export async function getDashboard(): Promise<DashboardData> {
   return request<DashboardData>('/api/dashboard')
 }
@@ -421,6 +479,55 @@ export async function validateTaskCron(input: Pick<TaskScheduleInput, 'cronExpre
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
+}
+
+export async function getSession(): Promise<SessionUser> {
+  const response = await request<{ user: { user_id: string; display_name: string; email: string; roles: RoleName[] } }>('/api/auth/session')
+  return { id: response.user.user_id, displayName: response.user.display_name, email: response.user.email, roles: response.user.roles }
+}
+
+export async function getSecrets(): Promise<SecretMetadata[]> {
+  const response = await request<{ secrets: SecretMetadata[] }>('/api/secrets')
+  return response.secrets
+}
+
+export async function createSecret(name: string, value: string): Promise<SecretMetadata> {
+  return request<SecretMetadata>('/api/secrets', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, value }),
+  })
+}
+
+export async function getMembers(): Promise<Member[]> {
+  const response = await request<{ members: Member[] }>('/api/members')
+  return response.members
+}
+
+export async function updateMemberRoles(id: string, roles: RoleName[]): Promise<Member> {
+  return request<Member>(`/api/members/${encodeURIComponent(id)}/roles`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roles }),
+  })
+}
+
+export async function getAuditEvents(): Promise<AuditEvent[]> {
+  const response = await request<{ events: AuditEvent[] }>('/api/audit')
+  return response.events
+}
+
+export async function getAlerts(): Promise<SystemAlert[]> {
+  const response = await request<{ alerts: SystemAlert[] }>('/api/alerts')
+  return response.alerts
+}
+
+export async function acknowledgeAlert(id: string): Promise<void> {
+  await request<void>(`/api/alerts/${encodeURIComponent(id)}/acknowledge`, { method: 'POST' })
+}
+
+export async function rotateServerCredential(id: string): Promise<AgentCredentials> {
+  return request<AgentCredentials>(`/api/servers/${encodeURIComponent(id)}/credentials/rotate`, { method: 'POST' })
+}
+
+export async function revokeServerCredentials(id: string): Promise<void> {
+  await request<void>(`/api/servers/${encodeURIComponent(id)}/credentials/revoke`, { method: 'POST' })
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

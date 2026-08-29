@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -70,7 +71,17 @@ func main() {
 		log.Fatalf("连接云令中央服务失败：%v", err)
 	}
 	defer sender.Close()
-	spool, err := logstream.NewSpool(filepath.Join(diskPath, "log-spool"), logstream.DefaultChunkSize)
+	spoolMaxBytes := logstream.DefaultSpoolMaxBytes
+	if configured := strings.TrimSpace(os.Getenv("YUNLING_LOG_SPOOL_MAX_BYTES")); configured != "" {
+		spoolMaxBytes, err = strconv.ParseInt(configured, 10, 64)
+		if err != nil || spoolMaxBytes <= 0 {
+			log.Fatal("YUNLING_LOG_SPOOL_MAX_BYTES 必须是正整数")
+		}
+	}
+	spool, err := logstream.NewSpool(
+		filepath.Join(diskPath, "log-spool"), logstream.DefaultChunkSize,
+		logstream.WithSpoolMaxBytes(spoolMaxBytes),
+	)
 	if err != nil {
 		log.Fatalf("初始化本地日志缓冲失败：%v", err)
 	}
@@ -87,7 +98,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("初始化系统资源采集失败：%v", err)
 	}
-	collector := agent.NewCollector(stats, runtimes)
+	collector := agent.NewCollector(stats, runtimes, agent.WithLogSpool(spool))
 	allowedRoots := agent.ParseAllowedScriptRoots(os.Getenv("YUNLING_ALLOWED_SCRIPT_ROOTS"))
 	if len(allowedRoots) > 0 {
 		discovered, err := executor.NewDiscovery().List(context.Background(), allowedRoots)

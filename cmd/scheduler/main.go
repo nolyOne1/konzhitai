@@ -13,6 +13,7 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
+	"yunling.local/platform/internal/alert"
 	"yunling.local/platform/internal/scheduler"
 	"yunling.local/platform/internal/store/postgres"
 	redisstore "yunling.local/platform/internal/store/redis"
@@ -51,7 +52,8 @@ func main() {
 		log.Fatalf("连接调度 Redis 失败：%v", err)
 	}
 	store := scheduler.NewPostgresStore(db)
-	service := scheduler.NewService(store, store, redisstore.NewLeaseStore(redisClient), time.Now)
+	alertService := alert.NewService(alert.NewPostgresRepository(db), time.Now)
+	service := scheduler.NewService(store, store, redisstore.NewLeaseStore(redisClient), time.Now, scheduler.WithAlertSink(alertService))
 	log.Printf("云令调度器已启动，排队扫描间隔 %s", config.ScanInterval)
 	if err := scan(ctx, service); err != nil {
 		log.Printf("首次排队扫描失败：%v", err)

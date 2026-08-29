@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 
-import { getServers, updateServer, type ServerView, type UpdateServerInput } from '../../api/client'
+import { getServers, getSession, revokeServerCredentials, rotateServerCredential, updateServer, type ServerView, type UpdateServerInput } from '../../api/client'
 import { ServerDrawer } from './ServerDrawer'
 
 export function ServersPage() {
@@ -9,6 +9,8 @@ export function ServersPage() {
   const [pendingID, setPendingID] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [securityBusy, setSecurityBusy] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -16,6 +18,12 @@ export function ServersPage() {
       .then((items) => { if (active) setServers(items) })
       .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : '服务器加载失败') })
       .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    getSession().then((session) => { if (active) setIsAdmin(session.roles.includes('admin')) }).catch(() => undefined)
     return () => { active = false }
   }, [])
 
@@ -32,6 +40,20 @@ export function ServersPage() {
     } finally {
       setPendingID(null)
     }
+  }
+
+  async function rotateCredential(server: ServerView) {
+    setSecurityBusy(true)
+    try { return (await rotateServerCredential(server.id)).credential }
+    finally { setSecurityBusy(false) }
+  }
+
+  async function revokeCredentials(server: ServerView) {
+    setSecurityBusy(true)
+    try {
+      await revokeServerCredentials(server.id)
+      setServers((items) => items.map((item) => item.id === server.id ? { ...item, status: 'offline' } : item))
+    } finally { setSecurityBusy(false) }
   }
 
   return (
@@ -83,7 +105,7 @@ export function ServersPage() {
         )}
       </section>
 
-      {selected && <ServerDrawer server={selected} saving={pendingID === selected.id} onClose={() => setSelectedID(null)} onSave={(input) => saveServer(selected, input)} />}
+      {selected && <ServerDrawer server={selected} saving={pendingID === selected.id} securityBusy={securityBusy} isAdmin={isAdmin} onClose={() => setSelectedID(null)} onSave={(input) => saveServer(selected, input)} onRotate={() => rotateCredential(selected)} onRevoke={() => revokeCredentials(selected)} />}
     </>
   )
 }

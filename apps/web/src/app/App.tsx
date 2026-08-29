@@ -10,6 +10,9 @@ import { TaskEditorPage } from '../features/tasks/TaskEditorPage'
 import { TasksPage } from '../features/tasks/TasksPage'
 import { RunDetailPage } from '../features/runs/RunDetailPage'
 import { RunsPage } from '../features/runs/RunsPage'
+import { AuditPage } from '../features/settings/AuditPage'
+import { MembersPage } from '../features/settings/MembersPage'
+import { SecretsPage } from '../features/settings/SecretsPage'
 
 const navigation = [
   { label: '运行总览', href: '/' },
@@ -38,6 +41,9 @@ export function App() {
           <Route path="/runs" element={<RunsPage />} />
           <Route path="/runs/:id" element={<RunDetailPage />} />
           <Route path="/servers" element={<ServersPage />} />
+          <Route path="/secrets" element={<SecretsPage />} />
+          <Route path="/members" element={<MembersPage />} />
+          <Route path="/settings" element={<AuditPage />} />
           <Route path="*" element={<PlaceholderPage />} />
         </Route>
       </Routes>
