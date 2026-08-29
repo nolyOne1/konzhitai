@@ -932,7 +932,7 @@ git commit -m "feat: 添加任务状态对账和实时日志"
 - Produces: `alert.Service.Raise(ctx, alert.Event) error`，同一资源与错误代码在 5 分钟窗口内合并。
 - Produces: `POST /api/servers/{id}/credentials/rotate` 和 `POST /api/servers/{id}/credentials/revoke`。
 
-- [ ] **Step 1: 写密文与日志脱敏失败测试**
+- [x] **Step 1: 写密文与日志脱敏失败测试**
 
 ```go
 func TestCreateNeverStoresPlaintext(t *testing.T) {
@@ -960,24 +960,24 @@ func TestRaiseMergesDuplicateAlertWithinWindow(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 Run: `go test ./internal/secret ./internal/audit -v`  
 Expected: FAIL，缺少加密、脱敏和审计实现。
 
-- [ ] **Step 3: 实现信封加密和不可回显接口**
+- [x] **Step 3: 实现信封加密和不可回显接口**
 
 主密钥从 `YUNLING_MASTER_KEY_FILE` 指向的文件读取，不放入数据库和环境变量。每个敏感值使用随机数据密钥经 AES-256-GCM 加密，数据密钥再由主密钥加密。API 永远只返回 ID、名称、创建人和更新时间。
 
-- [ ] **Step 4: 实现日志脱敏、关键操作审计和系统告警**
+- [x] **Step 4: 实现日志脱敏、关键操作审计和系统告警**
 
 日志进入持久化前对明文、Base64 和 URL 编码形式执行脱敏。登录、脚本发布、回滚、同步、执行、终止、重试、密钥创建、成员与权限变更均写入只追加审计表。服务器离线、脚本连续同步失败、版本漂移、任务长时间排队和日志缓冲接近上限时生成中文告警，同一资源与错误代码在 5 分钟内合并计数。代理凭据轮换时先签发新凭据，代理确认新连接后吊销旧凭据；紧急吊销立即断开当前代理并把节点标记离线。
 
-- [ ] **Step 5: 实现成员、密钥和审计页面**
+- [x] **Step 5: 实现成员、密钥和审计页面**
 
 只读成员不可看到创建密钥按钮；脚本开发者可引用密钥但不可读取值；运维人员可执行使用密钥的任务；管理员可创建、轮换和吊销密钥。
 
-- [ ] **Step 6: 运行安全测试**
+- [x] **Step 6: 运行安全测试**
 
 Run: `go test ./internal/secret ./internal/audit ./internal/alert ./internal/auth -v`  
 Expected: PASS。
@@ -985,7 +985,7 @@ Expected: PASS。
 Run: `npm --workspace apps/web test -- --run src/features/settings`  
 Expected: PASS。
 
-- [ ] **Step 7: 提交安全与审计**
+- [x] **Step 7: 提交安全与审计**
 
 ```bash
 git add internal/secret internal/audit internal/alert internal/auth apps/web/src/features/settings api/openapi.yaml
@@ -1015,7 +1015,7 @@ git commit -m "feat: 添加敏感参数和审计日志"
 - Produces: `docker compose -f deploy/docker-compose.yml up -d` 可启动 Web、API、Scheduler、PostgreSQL、Redis、MinIO 和 Caddy。
 - Produces: `make test`、`make test-integration`、`make test-e2e`、`make build`。
 
-- [ ] **Step 1: 先写排队唤醒端到端失败测试**
+- [x] **Step 1: 先写排队唤醒端到端失败测试**
 
 ```ts
 test('资源不足时排队，服务器释放资源后自动运行', async ({ page }) => {
@@ -1029,7 +1029,7 @@ test('资源不足时排队，服务器释放资源后自动运行', async ({ pa
 })
 ```
 
-- [ ] **Step 2: 写中央服务重启恢复失败测试**
+- [x] **Step 2: 写中央服务重启恢复失败测试**
 
 ```go
 func TestSchedulerRebuildsQueueAndLeasesAfterRedisFlush(t *testing.T) {
@@ -1041,11 +1041,11 @@ func TestSchedulerRebuildsQueueAndLeasesAfterRedisFlush(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: 实现 Docker Compose 和 TLS 入口**
+- [x] **Step 3: 实现 Docker Compose 和 TLS 入口**
 
 Compose 为每个服务设置健康检查、只读容器文件系统和命名卷。PostgreSQL、Redis、MinIO 不暴露公网端口；只有 Caddy 暴露 80/443。`.env.example` 只列变量名和生成方式，不包含任何真实 IP、账号、密码或密钥。
 
-- [ ] **Step 4: 实现 Makefile 验证入口**
+- [x] **Step 4: 实现 Makefile 验证入口**
 
 ```make
 test:
@@ -1059,11 +1059,13 @@ build:
 
 `test-integration` 启动临时 PostgreSQL、Redis 和 MinIO 后运行 `go test ./tests/integration -v`；`test-e2e` 启动完整 Compose 测试栈后运行 Playwright。
 
-- [ ] **Step 5: 完成首次部署文档**
+- [x] **Step 5: 完成首次部署文档**
 
 部署文档明确：腾讯云安全组只开放 80/443；代理服务器使用一次性注册令牌；正式接入创建 `yunling-agent` 与 `yunling-runner` 专用账号；用户此前提供的 root 密码不得写入任何配置文件，完成代理安装后必须轮换。
 
 - [ ] **Step 6: 运行全量验证**
+
+> 交付记录（2026-08-29）：Go 全量测试、集成测试、`go vet`、四个 Go 可执行文件构建、Vitest、Web 生产构建及 Playwright 两条端到端用例均已通过。当前开发机未安装 Docker，因此完整 Compose 测试栈的实际启动与容器健康检查仍需在腾讯云测试环境完成。
 
 Run: `make test`  
 Expected: 所有 Go 单元测试、React/Vitest 测试通过。
@@ -1077,7 +1079,7 @@ Expected: 登录、脚本发布、同步、手动执行、资源不足排队、�
 Run: `make build`  
 Expected: 生成三个 Go 可执行文件和 `apps/web/dist`，命令退出码为 0。
 
-- [ ] **Step 7: 提交部署与验收**
+- [x] **Step 7: 提交部署与验收**
 
 ```bash
 git add deploy tests/integration apps/web/e2e apps/web/playwright.config.ts Makefile README.md
