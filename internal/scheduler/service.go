@@ -132,6 +132,9 @@ func (s *Service) HandleEvent(ctx context.Context, event Event) error {
 }
 
 func (s *Service) Scan(ctx context.Context) error {
+	if err := s.restoreActiveLeases(ctx); err != nil {
+		return err
+	}
 	runs, err := s.runs.ListQueued(ctx)
 	if err != nil {
 		return err
@@ -147,6 +150,25 @@ func (s *Service) Scan(ctx context.Context) error {
 		}
 		if _, err := s.ScheduleOne(ctx, run.ID); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) restoreActiveLeases(ctx context.Context) error {
+	source, sourceOK := s.runs.(ActiveLeaseSource)
+	restorer, restorerOK := s.leases.(LeaseRestorer)
+	if !sourceOK || !restorerOK {
+		return nil
+	}
+	now := s.now()
+	leases, err := source.ListActiveLeases(ctx, now)
+	if err != nil {
+		return fmt.Errorf("读取待恢复资源租约：%w", err)
+	}
+	for _, lease := range leases {
+		if err := restorer.Restore(ctx, lease, now); err != nil {
+			return fmt.Errorf("恢复运行实例 %s 的资源租约：%w", lease.RunID, err)
 		}
 	}
 	return nil

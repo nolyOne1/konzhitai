@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-const DefaultCredentialsPath = "/etc/yunling-agent/credentials.json"
+const DefaultCredentialsPath = "/var/lib/yunling-agent/credentials.json"
 
 var ErrInvalidCredentialsFile = errors.New("代理凭据文件内容无效")
 

@@ -92,3 +92,16 @@ type LeaseStore interface {
 	TryReserve(context.Context, LeaseRequest) (Lease, bool, error)
 	Release(context.Context, Lease) error
 }
+
+// ActiveLeaseSource exposes the durable leases that must survive scheduler or
+// Redis restarts. Implementations should only return unreleased, unexpired
+// leases for runs that are still active.
+type ActiveLeaseSource interface {
+	ListActiveLeases(context.Context, time.Time) ([]Lease, error)
+}
+
+// LeaseRestorer rebuilds an active lease in the fast allocation store. Restore
+// must be idempotent because every scheduler scan may repeat the operation.
+type LeaseRestorer interface {
+	Restore(context.Context, Lease, time.Time) error
+}

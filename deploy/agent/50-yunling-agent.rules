@@ -1,0 +1,21 @@
+polkit.addRule(function(action, subject) {
+    if (action.id != "org.freedesktop.systemd1.manage-units" || subject.user != "yunling-agent") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var trustedAgent = subject.user == "yunling-agent" &&
+        subject.system_unit == "yunling-agent.service" &&
+        subject.no_new_privileges;
+    if (!trustedAgent) {
+        return polkit.Result.NO;
+    }
+
+    var unit = action.lookup("unit");
+    var verb = action.lookup("verb");
+    var allowedUnit = /^yunling-run@[A-Za-z0-9_-]+\.service$/;
+    var allowedVerbs = ["start", "stop", "kill"];
+    if (typeof unit == "string" && allowedUnit.test(unit) && allowedVerbs.indexOf(verb) >= 0) {
+        return polkit.Result.YES;
+    }
+
+    return polkit.Result.NO;
+});

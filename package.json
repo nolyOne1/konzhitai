@@ -6,6 +6,7 @@
   ],
   "scripts": {
     "test:web": "npm --workspace apps/web test -- --run",
+    "test:e2e": "npm --workspace apps/web run test:e2e",
     "build:web": "npm --workspace apps/web run build"
   },
   "engines": {

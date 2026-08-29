@@ -80,6 +80,34 @@ func TestScheduleOneExpiresRunPastMaximumWait(t *testing.T) {
 	}
 }
 
+func TestScanRestoresActiveLeasesBeforeSchedulingQueuedRuns(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	waiting := schedulableRun("run-waiting", 2000, 2<<30, 2<<30)
+	waiting.QueuedAt, waiting.MaxWaitSeconds = now.Add(-time.Minute), 3600
+	runs := &recoveringMemoryRuns{
+		memoryRuns: newMemoryRuns(waiting),
+		activeLeases: []scheduler.Lease{{
+			ID: "lease-running", RunID: "run-running", ServerID: "server-a",
+			Resources: task.Resources{CPUMillicores: 3000, MemoryBytes: 3 << 30, DiskBytes: 3 << 30},
+			ExpiresAt: now.Add(time.Hour),
+		}},
+	}
+	item := schedulableServer("server-a")
+	item.CPUAvailableMillicores, item.MemoryAvailableBytes, item.DiskAvailableBytes = 4000, 4<<30, 4<<30
+	leases := &recoveringMemoryLeases{memoryLeases: newMemoryLeases(task.Resources{CPUMillicores: 4000, MemoryBytes: 4 << 30, DiskBytes: 4 << 30})}
+	svc := scheduler.NewService(runs, staticServers{items: []server.Snapshot{item}}, leases, func() time.Time { return now })
+
+	if err := svc.Scan(context.Background()); err != nil {
+		t.Fatalf("恢复后扫描排队任务：%v", err)
+	}
+	if len(leases.restored) != 1 || leases.restored[0].RunID != "run-running" {
+		t.Fatalf("调度前必须恢复数据库中的活动租约：%+v", leases.restored)
+	}
+	if len(runs.assignments) != 0 || runs.mustGet(waiting.ID).State != task.Queued {
+		t.Fatalf("恢复的资源占用必须阻止超额分配：assignments=%+v state=%s", runs.assignments, runs.mustGet(waiting.ID).State)
+	}
+}
+
 type schedulerAlertRecorder struct{ events []alert.Event }
 
 func (r *schedulerAlertRecorder) Raise(_ context.Context, event alert.Event) error {
@@ -91,6 +119,15 @@ type memoryRuns struct {
 	mu          sync.Mutex
 	items       map[string]task.Run
 	assignments []scheduler.Assignment
+}
+
+type recoveringMemoryRuns struct {
+	*memoryRuns
+	activeLeases []scheduler.Lease
+}
+
+func (r *recoveringMemoryRuns) ListActiveLeases(context.Context, time.Time) ([]scheduler.Lease, error) {
+	return append([]scheduler.Lease(nil), r.activeLeases...), nil
 }
 
 func newMemoryRuns(items ...task.Run) *memoryRuns {
@@ -177,6 +214,26 @@ func (s staticServers) Snapshots(context.Context, task.Run) ([]server.Snapshot, 
 type memoryLeases struct {
 	mu        sync.Mutex
 	available task.Resources
+}
+
+type recoveringMemoryLeases struct {
+	*memoryLeases
+	restored []scheduler.Lease
+}
+
+func (s *recoveringMemoryLeases) Restore(_ context.Context, lease scheduler.Lease, _ time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, restored := range s.restored {
+		if restored.RunID == lease.RunID {
+			return nil
+		}
+	}
+	s.available.CPUMillicores -= lease.Resources.CPUMillicores
+	s.available.MemoryBytes -= lease.Resources.MemoryBytes
+	s.available.DiskBytes -= lease.Resources.DiskBytes
+	s.restored = append(s.restored, lease)
+	return nil
 }
 
 func newMemoryLeases(available task.Resources) *memoryLeases {

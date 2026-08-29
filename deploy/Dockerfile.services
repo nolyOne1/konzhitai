@@ -1,0 +1,21 @@
+FROM golang:1.27.0-alpine3.24 AS builder
+
+WORKDIR /src
+RUN apk add --no-cache ca-certificates git
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/yunling-api ./cmd/api && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/yunling-scheduler ./cmd/scheduler && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/yunling-bootstrap ./cmd/bootstrap
+
+FROM alpine:3.24
+
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -S -g 10001 yunling && \
+    adduser -S -D -H -u 10001 -G yunling yunling
+COPY --from=builder /out/yunling-api /usr/local/bin/yunling-api
+COPY --from=builder /out/yunling-scheduler /usr/local/bin/yunling-scheduler
+COPY --from=builder /out/yunling-bootstrap /usr/local/bin/yunling-bootstrap
+USER 10001:10001
+ENTRYPOINT ["/usr/local/bin/yunling-api"]

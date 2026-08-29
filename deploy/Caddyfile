@@ -1,0 +1,29 @@
+{
+    admin off
+    email {$YUNLING_TLS_EMAIL}
+}
+{$YUNLING_DOMAIN} {
+    encode zstd gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        -Server
+    }
+
+    handle /api/* {
+        reverse_proxy api:8080
+    }
+
+    handle {
+        reverse_proxy web:8080
+    }
+
+    log {
+        output stdout
+        format json
+    }
+}

@@ -6,8 +6,9 @@ After=network-online.target systemd-user-sessions.service
 
 [Service]
 Type=simple
-User=root
-Group=yunling-runner
+User=yunling-agent
+Group=yunling-agent
+SupplementaryGroups=yunling-runner
 EnvironmentFile=-/etc/yunling-agent/agent.env
 ExecStart=/usr/local/bin/yunling-agent
 Restart=always
@@ -16,12 +17,12 @@ TimeoutStopSec=30s
 KillMode=control-group
 UMask=0007
 
-# 代理需要调用 systemd-run 创建以 yunling-runner 身份运行的临时单元。
-NoNewPrivileges=false
+# polkit 仅授权管理 root 预装的 yunling-run@.service 实例。
+NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/etc/yunling-agent /var/lib/yunling-agent
+ReadWritePaths=/var/lib/yunling-agent
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

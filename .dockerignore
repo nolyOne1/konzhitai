@@ -1,0 +1,12 @@
+.git
+.worktrees
+.tools
+node_modules
+apps/web/dist
+bin
+coverage
+deploy/.env
+deploy/secrets
+work
+outputs
+*.log

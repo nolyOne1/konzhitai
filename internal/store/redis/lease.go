@@ -3,6 +3,7 @@ package redisstore
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
@@ -66,6 +67,27 @@ redis.call('DEL', KEYS[4])
 return 1
 `
 
+const restoreScript = `
+local packed = redis.call('HGET', KEYS[2], ARGV[1])
+if not packed then
+  redis.call('HINCRBY', KEYS[1], 'cpu', ARGV[2])
+  redis.call('HINCRBY', KEYS[1], 'memory', ARGV[3])
+  redis.call('HINCRBY', KEYS[1], 'disk', ARGV[4])
+else
+  local old_cpu, old_memory, old_disk = string.match(packed, '^(%d+):(%d+):(%d+)$')
+  if not old_cpu then
+    return redis.error_reply('invalid stored lease amounts')
+  end
+  redis.call('HINCRBY', KEYS[1], 'cpu', tonumber(ARGV[2]) - tonumber(old_cpu))
+  redis.call('HINCRBY', KEYS[1], 'memory', tonumber(ARGV[3]) - tonumber(old_memory))
+  redis.call('HINCRBY', KEYS[1], 'disk', tonumber(ARGV[4]) - tonumber(old_disk))
+end
+redis.call('HSET', KEYS[2], ARGV[1], ARGV[2] .. ':' .. ARGV[3] .. ':' .. ARGV[4])
+redis.call('ZADD', KEYS[3], ARGV[5], ARGV[1])
+redis.call('SET', KEYS[4], ARGV[6], 'PX', ARGV[7])
+return 1
+`
+
 type LeaseStore struct {
 	client goredis.UniversalClient
 }
@@ -102,6 +124,26 @@ func (s *LeaseStore) Release(ctx context.Context, lease scheduler.Lease) error {
 	}
 	if _, err := s.client.Eval(ctx, releaseScript, leaseKeys(lease.ServerID, lease.RunID), lease.RunID).Result(); err != nil {
 		return fmt.Errorf("释放 Redis 资源租约：%w", err)
+	}
+	return nil
+}
+
+// Restore rebuilds a database-backed active lease after Redis state loss. The
+// operation is idempotent for a run so scheduler scans can safely repeat it.
+func (s *LeaseStore) Restore(ctx context.Context, lease scheduler.Lease, now time.Time) error {
+	if lease.ID == "" || lease.RunID == "" || lease.ServerID == "" || now.IsZero() ||
+		lease.Resources.CPUMillicores <= 0 || lease.Resources.MemoryBytes <= 0 || lease.Resources.DiskBytes <= 0 {
+		return scheduler.ErrInvalidLeaseRequest
+	}
+	ttl := lease.ExpiresAt.Sub(now)
+	if ttl <= 0 {
+		return nil
+	}
+	if _, err := s.client.Eval(ctx, restoreScript, leaseKeys(lease.ServerID, lease.RunID),
+		lease.RunID, lease.Resources.CPUMillicores, lease.Resources.MemoryBytes,
+		lease.Resources.DiskBytes, lease.ExpiresAt.UnixMilli(), lease.ID, ttl.Milliseconds(),
+	).Result(); err != nil {
+		return fmt.Errorf("恢复 Redis 资源租约：%w", err)
 	}
 	return nil
 }

@@ -60,6 +60,39 @@ func (s *PostgresStore) CountActive(ctx context.Context, definitionID string) (i
 	return count, nil
 }
 
+func (s *PostgresStore) ListActiveLeases(ctx context.Context, now time.Time) ([]Lease, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT lease.id, lease.task_run_id, lease.server_id,
+		       lease.cpu_millicores, lease.memory_bytes, lease.disk_bytes,
+		       lease.expires_at
+		FROM resource_leases AS lease
+		JOIN task_runs AS run ON run.id=lease.task_run_id
+		WHERE lease.released_at IS NULL AND lease.expires_at>$1
+		  AND run.state IN ('assigned','syncing','running')
+		ORDER BY lease.created_at, lease.id
+	`, now)
+	if err != nil {
+		return nil, fmt.Errorf("读取活动资源租约：%w", err)
+	}
+	defer rows.Close()
+	leases := []Lease{}
+	for rows.Next() {
+		var lease Lease
+		if err := rows.Scan(
+			&lease.ID, &lease.RunID, &lease.ServerID,
+			&lease.Resources.CPUMillicores, &lease.Resources.MemoryBytes,
+			&lease.Resources.DiskBytes, &lease.ExpiresAt,
+		); err != nil {
+			return nil, fmt.Errorf("解析活动资源租约：%w", err)
+		}
+		leases = append(leases, lease)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历活动资源租约：%w", err)
+	}
+	return leases, nil
+}
+
 func (s *PostgresStore) Snapshots(ctx context.Context, run task.Run) ([]server.Snapshot, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT server.id, server.status, server.enabled, server.drain_requested,

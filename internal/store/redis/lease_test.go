@@ -76,3 +76,48 @@ func TestFailedReservationDoesNotDeductAnyResource(t *testing.T) {
 		t.Fatalf("失败申请不得残留部分扣减，ok=%v err=%v", ok, err)
 	}
 }
+
+func TestRestoreRebuildsLeaseIdempotently(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := goredis.NewClient(&goredis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	store := redisstore.NewLeaseStore(client)
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	recovered := scheduler.Lease{
+		ID: "lease-running", RunID: "run-running", ServerID: "server-a",
+		Resources: task.Resources{CPUMillicores: 2000, MemoryBytes: 2 << 30, DiskBytes: 4 << 30},
+		ExpiresAt: now.Add(time.Hour),
+	}
+	// 模拟 Redis 在崩溃前只留下了同一运行实例的一部分旧占用。
+	_, ok, err := store.TryReserve(context.Background(), scheduler.LeaseRequest{
+		RunID: recovered.RunID, ServerID: recovered.ServerID, Now: now, TTL: time.Minute,
+		Available: task.Resources{CPUMillicores: 4000, MemoryBytes: 4 << 30, DiskBytes: 8 << 30},
+		Required:  task.Resources{CPUMillicores: 1000, MemoryBytes: 1 << 30, DiskBytes: 2 << 30},
+	})
+	if err != nil || !ok {
+		t.Fatalf("准备残留 Redis 租约：ok=%v err=%v", ok, err)
+	}
+
+	if err := store.Restore(context.Background(), recovered, now); err != nil {
+		t.Fatalf("首次恢复资源租约：%v", err)
+	}
+	if err := store.Restore(context.Background(), recovered, now); err != nil {
+		t.Fatalf("重复恢复资源租约必须幂等：%v", err)
+	}
+	available := task.Resources{CPUMillicores: 4000, MemoryBytes: 4 << 30, DiskBytes: 8 << 30}
+	required := task.Resources{CPUMillicores: 2000, MemoryBytes: 2 << 30, DiskBytes: 4 << 30}
+	_, ok, err = store.TryReserve(context.Background(), scheduler.LeaseRequest{
+		RunID: "run-second", ServerID: "server-a", Now: now, TTL: time.Minute,
+		Available: available, Required: required,
+	})
+	if err != nil || !ok {
+		t.Fatalf("恢复后应只扣减一次，剩余资源应可分配：ok=%v err=%v", ok, err)
+	}
+	_, ok, err = store.TryReserve(context.Background(), scheduler.LeaseRequest{
+		RunID: "run-overflow", ServerID: "server-a", Now: now, TTL: time.Minute,
+		Available: available, Required: task.Resources{CPUMillicores: 1, MemoryBytes: 1, DiskBytes: 1},
+	})
+	if err != nil || ok {
+		t.Fatalf("恢复后的占用必须阻止超额分配：ok=%v err=%v", ok, err)
+	}
+}

@@ -1,0 +1,38 @@
+[Unit]
+Description=云令隔离任务 %i
+After=network-online.target
+CollectMode=inactive-or-failed
+
+[Service]
+Type=exec
+User=yunling-runner
+Group=yunling-runner
+WorkingDirectory=/var/lib/yunling-agent/runs/%i
+ExecStart=/usr/local/bin/yunling-agent run-spec /var/lib/yunling-agent/runs/%i/systemd-run-spec.json
+StandardOutput=append:/var/lib/yunling-agent/runs/%i/stdout.log
+StandardError=append:/var/lib/yunling-agent/runs/%i/stderr.log
+UMask=0007
+
+# 固定模板确保代理即使遭入侵，也不能借创建临时单元把业务命令改为 root 执行。
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/yunling-agent/runs/%i
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+
+# 调度器按任务声明值做资源分配；此处是执行节点的第二道硬上限。
+CPUQuota=1600%
+MemoryMax=64G
+TasksMax=1024
+RuntimeMaxSec=7d
+
+KillMode=control-group
+TimeoutStopSec=15s

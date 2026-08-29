@@ -22,6 +22,16 @@ import (
 const agentVersion = "0.1.0"
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "run-spec" {
+		exitCode, err := executor.RunSystemdSpec(os.Args[2])
+		if err != nil {
+			log.Printf("执行隔离任务失败：%v", err)
+		}
+		if exitCode < 0 {
+			exitCode = 1
+		}
+		os.Exit(exitCode)
+	}
 	credentialsPath := os.Getenv("YUNLING_CREDENTIALS_PATH")
 	if credentialsPath == "" {
 		credentialsPath = agent.DefaultCredentialsPath

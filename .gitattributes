@@ -1,0 +1,7 @@
+* text=auto
+
+# Linux 部署文件必须保持 LF，避免从 Windows 检出后 shebang 和 systemd 解析失败。
+*.sh text eol=lf
+*.service text eol=lf
+Makefile text eol=lf
+Dockerfile* text eol=lf
