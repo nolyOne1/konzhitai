@@ -15,6 +15,7 @@ import (
 	"yunling.local/platform/internal/artifact"
 	"yunling.local/platform/internal/audit"
 	"yunling.local/platform/internal/auth"
+	"yunling.local/platform/internal/dispatch"
 	"yunling.local/platform/internal/health"
 	"yunling.local/platform/internal/logstream"
 	"yunling.local/platform/internal/script"
@@ -78,6 +79,7 @@ func main() {
 		)
 		logOptions := []logstream.ServiceOption{}
 		var secretManager securityhttp.SecretManager
+		var dispatchSecretResolver *secret.Service
 		if keyPath := os.Getenv("YUNLING_MASTER_KEY_FILE"); keyPath != "" {
 			keyVersion := 1
 			if configured := strings.TrimSpace(os.Getenv("YUNLING_MASTER_KEY_VERSION")); configured != "" {
@@ -98,6 +100,7 @@ func main() {
 				} else {
 					secretService := secret.NewService(secret.NewPostgresRepository(pool), keyProvider)
 					secretManager = secretService
+					dispatchSecretResolver = secretService
 					logOptions = append(logOptions, logstream.WithRedaction(secret.NewRedactor(), secret.NewRunValueSource(pool, secretService)))
 				}
 			}
@@ -142,6 +145,16 @@ func main() {
 			scriptHandler = protect(script.Handler(scriptService, script.WithSyncManager(syncService)))
 		}
 		protectedServerHandler = auth.Authenticate(authService)(serverHandler)
+		dispatchService := dispatch.NewService(
+			dispatch.NewPostgresStore(pool),
+			connections,
+			dispatchSecretResolver,
+			eventService,
+			time.Now,
+		)
+		go dispatch.RunLoop(context.Background(), dispatchService, dispatch.DefaultScanInterval, func(err error) {
+			log.Printf("任务派发扫描失败：%v", err)
+		})
 		go func() {
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()

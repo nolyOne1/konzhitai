@@ -57,6 +57,36 @@ func NewService(store Store, sender CommandSender, resolver SecretResolver, fail
 	return &Service{store: store, sender: sender, resolver: resolver, failures: failures, now: now}
 }
 
+func RunLoop(
+	ctx context.Context,
+	service interface{ Dispatch(context.Context) error },
+	interval time.Duration,
+	logError func(error),
+) {
+	if service == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = DefaultScanInterval
+	}
+	dispatchOnce := func() {
+		if err := service.Dispatch(ctx); err != nil && logError != nil {
+			logError(err)
+		}
+	}
+	dispatchOnce()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			dispatchOnce()
+		}
+	}
+}
+
 func (s *Service) Dispatch(ctx context.Context) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("任务派发存储不可用")
