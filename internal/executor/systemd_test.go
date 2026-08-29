@@ -158,11 +158,52 @@ func TestSystemdProcessStreamsLogsBeforeTaskFinishes(t *testing.T) {
 	}
 }
 
+func TestSystemdProcessReportsBoundedSystemctlDiagnostic(t *testing.T) {
+	directory := t.TempDir()
+	specPath := filepath.Join(directory, systemdSpecFileName)
+	stdoutPath := filepath.Join(directory, systemdStdoutFileName)
+	stderrPath := filepath.Join(directory, systemdStderrFileName)
+	for _, path := range []string{specPath, stdoutPath, stderrPath} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	diagnostic := newBoundedBuffer(64)
+	_, _ = diagnostic.Write([]byte("Failed to start yunling-run@run-1.service: Access denied.\n" + strings.Repeat("x", 128)))
+	process := &systemdProcess{
+		Process:       instantSystemdTestProcess{exitCode: 4, err: errors.New("exit status 4")},
+		specPath:      specPath,
+		stdoutPath:    stdoutPath,
+		stderrPath:    stderrPath,
+		controlOutput: diagnostic,
+	}
+
+	exitCode, err := process.Wait()
+	if exitCode != 4 || err == nil {
+		t.Fatalf("systemctl 失败结果不完整：exit=%d err=%v", exitCode, err)
+	}
+	if !strings.Contains(err.Error(), "systemctl：Failed to start yunling-run@run-1.service: Access denied.") {
+		t.Fatalf("systemctl 诊断未进入运行错误：%v", err)
+	}
+	if strings.Contains(err.Error(), strings.Repeat("x", 65)) {
+		t.Fatalf("systemctl 诊断没有按上限截断：%v", err)
+	}
+}
+
 type blockingSystemdTestProcess struct{ done chan struct{} }
 
 func (p *blockingSystemdTestProcess) Wait() (int, error) { <-p.done; return 0, nil }
 func (p *blockingSystemdTestProcess) Terminate() error   { return nil }
 func (p *blockingSystemdTestProcess) KillGroup() error   { return nil }
+
+type instantSystemdTestProcess struct {
+	exitCode int
+	err      error
+}
+
+func (p instantSystemdTestProcess) Wait() (int, error) { return p.exitCode, p.err }
+func (p instantSystemdTestProcess) Terminate() error   { return nil }
+func (p instantSystemdTestProcess) KillGroup() error   { return nil }
 
 type synchronizedBuffer struct {
 	mu sync.Mutex

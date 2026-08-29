@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,6 +20,7 @@ const (
 	systemdStdoutFileName = "stdout.log"
 	systemdStderrFileName = "stderr.log"
 	systemctlPath         = "/usr/bin/systemctl"
+	systemctlOutputLimit  = 4 << 10
 )
 
 type systemdRunSpec struct {
@@ -41,22 +45,24 @@ func (l *SystemdLauncher) Start(ctx context.Context, spec LaunchSpec) (Process, 
 	systemdSpec := spec
 	systemdSpec.Command = command
 	systemdSpec.Environment = nil
-	// 任务输出由固定模板写入每次运行的独立文件，systemctl 本身的输出不是业务日志。
-	systemdSpec.Stdout = nil
-	systemdSpec.Stderr = nil
+	// 任务输出由固定模板写入每次运行的独立文件；systemctl 输出只用于受限错误诊断。
+	controlOutput := newBoundedBuffer(systemctlOutputLimit)
+	systemdSpec.Stdout = controlOutput
+	systemdSpec.Stderr = controlOutput
 	process, err := l.processes.Start(ctx, systemdSpec)
 	if err != nil {
 		_ = os.Remove(filepath.Join(spec.WorkingDirectory, systemdSpecFileName))
 		return nil, err
 	}
 	return &systemdProcess{
-		Process:    process,
-		unitName:   systemdUnitName(spec.RunID),
-		specPath:   filepath.Join(spec.WorkingDirectory, systemdSpecFileName),
-		stdoutPath: filepath.Join(spec.WorkingDirectory, systemdStdoutFileName),
-		stderrPath: filepath.Join(spec.WorkingDirectory, systemdStderrFileName),
-		stdout:     spec.Stdout,
-		stderr:     spec.Stderr,
+		Process:       process,
+		unitName:      systemdUnitName(spec.RunID),
+		specPath:      filepath.Join(spec.WorkingDirectory, systemdSpecFileName),
+		stdoutPath:    filepath.Join(spec.WorkingDirectory, systemdStdoutFileName),
+		stderrPath:    filepath.Join(spec.WorkingDirectory, systemdStderrFileName),
+		stdout:        spec.Stdout,
+		stderr:        spec.Stderr,
+		controlOutput: controlOutput,
 	}, nil
 }
 
@@ -66,6 +72,7 @@ type systemdProcess struct {
 	specPath               string
 	stdoutPath, stderrPath string
 	stdout, stderr         io.Writer
+	controlOutput          *boundedBuffer
 }
 
 func (p *systemdProcess) Wait() (int, error) {
@@ -83,6 +90,12 @@ func (p *systemdProcess) Wait() (int, error) {
 		select {
 		case result := <-finished:
 			streamErr = errors.Join(streamErr, stdoutTail.copyAvailable(), stderrTail.copyAvailable())
+			if result.err != nil && p.controlOutput != nil {
+				diagnostic := strings.Join(strings.Fields(strings.ToValidUTF8(p.controlOutput.String(), "�")), " ")
+				if diagnostic != "" {
+					result.err = fmt.Errorf("%w；systemctl：%s", result.err, diagnostic)
+				}
+			}
 			removeErr := os.Remove(p.specPath)
 			if errors.Is(removeErr, os.ErrNotExist) {
 				removeErr = nil
@@ -94,6 +107,37 @@ func (p *systemdProcess) Wait() (int, error) {
 			streamErr = errors.Join(streamErr, stdoutTail.copyAvailable(), stderrTail.copyAvailable())
 		}
 	}
+}
+
+type boundedBuffer struct {
+	mu        sync.Mutex
+	buffer    bytes.Buffer
+	remaining int
+}
+
+func newBoundedBuffer(limit int) *boundedBuffer {
+	return &boundedBuffer{remaining: max(limit, 0)}
+}
+
+func (buffer *boundedBuffer) Write(value []byte) (int, error) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	written := len(value)
+	if buffer.remaining == 0 {
+		return written, nil
+	}
+	if len(value) > buffer.remaining {
+		value = value[:buffer.remaining]
+	}
+	_, err := buffer.buffer.Write(value)
+	buffer.remaining -= len(value)
+	return written, err
+}
+
+func (buffer *boundedBuffer) String() string {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.String()
 }
 
 func (p *systemdProcess) Terminate() error {
