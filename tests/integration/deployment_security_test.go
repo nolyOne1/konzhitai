@@ -30,7 +30,8 @@ func TestMinIOUsesFixedSecurityReleaseBuiltFromSource(t *testing.T) {
 		t.Fatal("MinIO 必须从固定的安全源码版本构建")
 	}
 	if !strings.Contains(dockerfile, "github.com/minio/minio@${MINIO_VERSION}") ||
-		!strings.Contains(dockerfile, "ARG MINIO_VERSION="+release) {
+		!strings.Contains(dockerfile, "ARG MINIO_VERSION="+release) ||
+		!strings.Contains(dockerfile, "GOSUMDB=\"${GOSUMDB}\"") {
 		t.Fatal("MinIO 构建文件必须固定官方安全源码版本")
 	}
 }
