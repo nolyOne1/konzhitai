@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -68,6 +69,9 @@ func (c *ExecutionClient) Run(ctx context.Context) error {
 					return fmt.Errorf("任务分配命令缺少执行信息")
 				}
 				events, err := c.runner.Start(ctx, *command.Assignment)
+				if errors.Is(err, executor.ErrRunAlreadyActive) {
+					continue
+				}
 				if err != nil {
 					report := agentprotocol.RunEvent{
 						RunID:          command.Assignment.RunID,

@@ -79,6 +79,36 @@ func TestExecutionClientReportsStartFailureAndContinuesReceiving(t *testing.T) {
 	}
 }
 
+func TestExecutionClientIgnoresDuplicateAssignmentAndContinuesReceiving(t *testing.T) {
+	transport := &fakeExecutionTransport{
+		commands: make(chan agentprotocol.ExecutionCommand, 2),
+		events:   make(chan agentprotocol.RunEvent, 2),
+	}
+	runner := &failsOnceExecutionRunner{err: executor.ErrRunAlreadyActive}
+	client := NewExecutionClient(runner, transport)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+
+	transport.commands <- assignmentCommand("run-1", "token-1")
+	transport.commands <- assignmentCommand("run-2", "token-2")
+	started := receiveRunEvent(t, transport.events)
+	succeeded := receiveRunEvent(t, transport.events)
+	if started.RunID != "run-2" || started.Type != string(executor.EventStarted) || succeeded.RunID != "run-2" || succeeded.Type != string(executor.EventSucceeded) {
+		t.Fatalf("重复派发不得产生失败事件且后续任务必须继续：started=%+v succeeded=%+v", started, succeeded)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("取消执行客户端应正常退出：%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("执行客户端未在 1 秒内退出")
+	}
+}
+
 func assignmentCommand(runID, token string) agentprotocol.ExecutionCommand {
 	return agentprotocol.ExecutionCommand{
 		Type: agentprotocol.CommandAssign,

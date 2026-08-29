@@ -121,6 +121,30 @@ func TestRunnerConnectsStdoutAndStderrToOutputSink(t *testing.T) {
 	_ = runner.Cancel(context.Background(), assignment.RunID, assignment.ExecutionToken)
 }
 
+func TestRunnerDistinguishesDuplicateAndConflictingAssignment(t *testing.T) {
+	launcher := newFakeLauncher(true)
+	runner, assignment := newTestRunner(t, launcher, time.Second)
+	events, err := runner.Start(context.Background(), assignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Start(context.Background(), assignment); !errors.Is(err, executor.ErrRunAlreadyActive) {
+		t.Fatalf("同令牌重复派发必须幂等拒绝：%v", err)
+	}
+	conflicting := assignment
+	conflicting.ExecutionToken = "token-2"
+	if _, err := runner.Start(context.Background(), conflicting); !errors.Is(err, executor.ErrExecutionTokenMismatch) {
+		t.Fatalf("不同令牌重复派发必须拒绝：%v", err)
+	}
+	if launcher.starts != 1 {
+		t.Fatalf("重复派发不得启动第二个进程：%d", launcher.starts)
+	}
+	if err := runner.Cancel(context.Background(), assignment.RunID, assignment.ExecutionToken); err != nil {
+		t.Fatalf("清理测试任务：%v", err)
+	}
+	_ = collectEventTypes(t, events)
+}
+
 func newTestRunner(t *testing.T, launcher *fakeLauncher, grace time.Duration, extra ...executor.RunnerOption) (*executor.Runner, agentprotocol.Assignment) {
 	t.Helper()
 	root := t.TempDir()
@@ -195,6 +219,7 @@ func containsEventType(types []executor.EventType, want executor.EventType) bool
 type fakeLauncher struct {
 	process *fakeProcess
 	spec    executor.LaunchSpec
+	starts  int
 }
 
 func newFakeLauncher(exitOnTerminate bool) *fakeLauncher {
@@ -203,6 +228,7 @@ func newFakeLauncher(exitOnTerminate bool) *fakeLauncher {
 
 func (l *fakeLauncher) Start(_ context.Context, spec executor.LaunchSpec) (executor.Process, error) {
 	l.spec = spec
+	l.starts++
 	return l.process, nil
 }
 

@@ -151,6 +151,15 @@ func (r *Runner) Start(ctx context.Context, assignment agentprotocol.Assignment)
 	if err := r.validateAssignment(assignment); err != nil {
 		return nil, err
 	}
+	r.mu.Lock()
+	if active, exists := r.active[assignment.RunID]; exists {
+		r.mu.Unlock()
+		if active.token == assignment.ExecutionToken {
+			return nil, ErrRunAlreadyActive
+		}
+		return nil, ErrExecutionTokenMismatch
+	}
+	r.mu.Unlock()
 	scriptPath, err := r.resolveScriptPath(assignment.ScriptPath)
 	if err != nil {
 		return nil, err
@@ -178,9 +187,12 @@ func (r *Runner) Start(ctx context.Context, assignment agentprotocol.Assignment)
 	}
 
 	r.mu.Lock()
-	if _, exists := r.active[assignment.RunID]; exists {
+	if active, exists := r.active[assignment.RunID]; exists {
 		r.mu.Unlock()
-		return nil, ErrRunAlreadyActive
+		if active.token == assignment.ExecutionToken {
+			return nil, ErrRunAlreadyActive
+		}
+		return nil, ErrExecutionTokenMismatch
 	}
 	process, err := r.launcher.Start(ctx, spec)
 	if err != nil {
