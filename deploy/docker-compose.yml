@@ -182,7 +182,12 @@ services:
 
   minio:
     <<: *service-security
-    image: quay.io/minio/minio:RELEASE.2025-10-15T17-29-55Z
+    image: yunling-minio:RELEASE.2025-10-15T17-29-55Z
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.minio
+      args:
+        MINIO_VERSION: RELEASE.2025-10-15T17-29-55Z
     command: ["server", "/data"]
     environment:
       MINIO_ROOT_USER: ${YUNLING_MINIO_ROOT_USER}

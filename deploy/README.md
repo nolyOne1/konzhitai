@@ -2,6 +2,8 @@
 
 本目录提供从零部署的单机控制面：Caddy、中文 Web 控制台、API、调度器、PostgreSQL、Redis 和 MinIO。只有 Caddy 映射宿主机的 80/443，其他服务仅在 Docker 内部网络通信。
 
+MinIO 固定到修复安全问题的 `RELEASE.2025-10-15T17-29-55Z`。该版本官方不提供预构建容器，部署文件会按照官方发布说明从固定源码标签编译镜像；不要改回更早的历史容器标签。
+
 ## 一、部署前准备
 
 控制面服务器建议至少 4 核 CPU、8 GB 内存和 80 GB SSD，并安装 Docker Engine 与 Compose v2。为控制面域名添加指向腾讯云公网 IP 的 A/AAAA 记录。

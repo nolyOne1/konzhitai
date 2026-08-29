@@ -19,3 +19,18 @@ func TestControlPlaneMasterKeyOwnershipMatchesNonRootService(t *testing.T) {
 		t.Fatal("部署手册必须让非 root 服务 UID 能读取且只有它能读取主密钥")
 	}
 }
+
+func TestMinIOUsesFixedSecurityReleaseBuiltFromSource(t *testing.T) {
+	root := testpostgres.RepositoryRoot(t)
+	compose := mustReadDeploymentFile(t, root, "deploy", "docker-compose.yml")
+	dockerfile := mustReadDeploymentFile(t, root, "deploy", "Dockerfile.minio")
+	const release = "RELEASE.2025-10-15T17-29-55Z"
+	if !strings.Contains(compose, "dockerfile: deploy/Dockerfile.minio") ||
+		!strings.Contains(compose, "MINIO_VERSION: "+release) {
+		t.Fatal("MinIO 必须从固定的安全源码版本构建")
+	}
+	if !strings.Contains(dockerfile, "github.com/minio/minio@${MINIO_VERSION}") ||
+		!strings.Contains(dockerfile, "ARG MINIO_VERSION="+release) {
+		t.Fatal("MinIO 构建文件必须固定官方安全源码版本")
+	}
+}
