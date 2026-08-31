@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"yunling.local/platform/internal/alert"
+	"yunling.local/platform/internal/backup"
 	"yunling.local/platform/internal/notification"
 	"yunling.local/platform/internal/ops"
 	"yunling.local/platform/internal/secret"
@@ -27,15 +29,21 @@ type config struct {
 	MasterKeyVersion int
 	HTTPAddress      string
 	ScanInterval     time.Duration
+	Backup           backup.Config
 }
 
 func loadConfig(getenv func(string) string) (config, error) {
+	backupConfiguration, err := backup.LoadConfig(getenv)
+	if err != nil {
+		return config{}, err
+	}
 	value := config{
 		DatabaseURL:      strings.TrimSpace(getenv("YUNLING_DATABASE_URL")),
 		MasterKeyFile:    strings.TrimSpace(getenv("YUNLING_MASTER_KEY_FILE")),
 		MasterKeyVersion: 1,
 		HTTPAddress:      strings.TrimSpace(getenv("YUNLING_OPS_HTTP_ADDR")),
 		ScanInterval:     15 * time.Second,
+		Backup:           backupConfiguration,
 	}
 	if value.DatabaseURL == "" || value.MasterKeyFile == "" {
 		return config{}, errors.New("必须配置数据库和主密钥文件")
@@ -61,6 +69,12 @@ func loadConfig(getenv func(string) string) (config, error) {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--check-tools" {
+		if err := checkTools(context.Background(), os.Stdout, backup.NewCommandRunner(10*time.Second)); err != nil {
+			log.Fatal("备份工具检查失败")
+		}
+		return
+	}
 	configuration, err := loadConfig(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
@@ -123,6 +137,41 @@ func main() {
 	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelShutdown()
 	_ = server.Shutdown(shutdownContext)
+}
+
+type toolRunner interface {
+	Run(context.Context, string, []string, map[string]string) (backup.CommandResult, error)
+}
+
+func checkTools(ctx context.Context, output io.Writer, runner toolRunner) error {
+	checks := []struct {
+		name string
+		path string
+		args []string
+	}{
+		{name: "pg_dump", path: "/usr/bin/pg_dump", args: []string{"--version"}},
+		{name: "pg_restore", path: "/usr/bin/pg_restore", args: []string{"--version"}},
+		{name: "psql", path: "/usr/bin/psql", args: []string{"--version"}},
+		{name: "mc", path: "/usr/bin/mc", args: []string{"--version"}},
+		{name: "restic", path: "/usr/bin/restic", args: []string{"version"}},
+	}
+	for _, check := range checks {
+		result, err := runner.Run(ctx, check.path, check.args, nil)
+		if err != nil {
+			return err
+		}
+		version := strings.TrimSpace(result.Stdout)
+		if version == "" {
+			version = strings.TrimSpace(result.Stderr)
+		}
+		if line, _, found := strings.Cut(version, "\n"); found {
+			version = line
+		}
+		if _, err := fmt.Fprintf(output, "%s: %s\n", check.name, version); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type databasePinger interface {
