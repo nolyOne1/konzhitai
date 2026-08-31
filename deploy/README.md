@@ -130,6 +130,43 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
 
 更新前先执行测试与备份。不要使用 `docker compose down -v`，该命令会删除数据库、对象存储、Redis 和 Caddy 数据卷。
 
+### 管理员改密功能上线
+
+管理员改密涉及数据库加法迁移和会话撤销。生产升级必须按以下顺序执行，不得提前删除初始凭据文件。
+
+1. 在当前生产版本仍正常运行时创建 PostgreSQL 备份：
+
+```bash
+cd /opt/yunling
+mkdir -p backups
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml exec -T postgres \
+  sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' \
+  > backups/yunling-before-password-change-$(date +%F-%H%M).dump
+```
+
+2. 拉取已经过测试的提交，先执行仅新增表和索引的迁移，再重建并启动服务：
+
+```bash
+git pull --ff-only
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml exec -T postgres \
+  sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < migrations/000010_password_change_security.up.sql
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
+```
+
+3. 使用初始管理员凭据登录控制台，进入“运维中心—账号安全”，设置至少 12 位且不与旧密码相同的新密码，并保存到受控密码管理器。
+4. 确认当前会话仍可访问；再打开无痕窗口，使用新密码重新登录成功，并确认旧密码登录失败。
+5. 只有以上检查全部通过后，才删除服务器上的初始凭据文件，并立即验证文件已不存在：
+
+```bash
+sudo test -f /root/yunling-initial-admin.txt
+sudo rm -f /root/yunling-initial-admin.txt
+sudo test ! -e /root/yunling-initial-admin.txt
+```
+
+如果迁移、部署、改密或重新登录任一步失败，应保留初始凭据文件并停止后续操作，先使用备份和服务日志定位问题。
+
 ## 七、备份
 
 至少备份以下三项，并把副本保存到另一台服务器或对象存储：

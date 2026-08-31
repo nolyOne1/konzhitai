@@ -73,6 +73,19 @@ export async function mockQueueWakeup(page: Page) {
   return { releaseResources: () => { released = true } }
 }
 
+export async function mockPasswordChange(page: Page) {
+  let requestBody: unknown
+  await page.route('**/api/auth/password', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.fallback()
+      return
+    }
+    requestBody = route.request().postDataJSON()
+    await route.fulfill({ status: 204 })
+  })
+  return { requestBody: () => requestBody }
+}
+
 async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({
     status,
