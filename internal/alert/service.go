@@ -42,12 +42,14 @@ type Alert struct {
 	LastOccurredAt  time.Time  `json:"lastOccurredAt"`
 	AcknowledgedBy  string     `json:"acknowledgedBy,omitempty"`
 	AcknowledgedAt  *time.Time `json:"acknowledgedAt,omitempty"`
+	ResolvedAt      *time.Time `json:"resolvedAt,omitempty"`
 }
 
 type Repository interface {
 	MergeOrCreate(context.Context, Event, time.Time, time.Time) error
 	List(context.Context) ([]Alert, error)
 	Acknowledge(context.Context, string, string, time.Time) error
+	Resolve(context.Context, string, string, string, time.Time) error
 }
 
 type Service struct {
@@ -87,6 +89,14 @@ func (s *Service) Acknowledge(ctx context.Context, id, userID string) error {
 		return ErrInvalidEvent
 	}
 	return s.repository.Acknowledge(ctx, id, userID, s.now().UTC())
+}
+
+func (s *Service) Resolve(ctx context.Context, resourceType, resourceID, code string) error {
+	if s == nil || s.repository == nil || strings.TrimSpace(resourceType) == "" ||
+		strings.TrimSpace(resourceID) == "" || strings.TrimSpace(code) == "" {
+		return ErrInvalidEvent
+	}
+	return s.repository.Resolve(ctx, resourceType, resourceID, code, s.now().UTC())
 }
 
 func validEvent(event Event) bool {

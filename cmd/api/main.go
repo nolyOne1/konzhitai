@@ -81,7 +81,7 @@ func main() {
 		connections := server.NewAgentConnectionHub()
 		registry := server.NewRegistry(
 			serverRepository, time.Now,
-			server.WithEventPublisher(offlineRunPublisher{reconciler: reconciler, alerts: alertService}),
+			server.WithEventPublisher(offlineRunPublisher{reconciler: reconciler}),
 			server.WithAlertSink(alertService),
 		)
 		logOptions := []logstream.ServiceOption{}
@@ -230,21 +230,16 @@ func main() {
 }
 
 type offlineRunPublisher struct {
-	reconciler *task.Reconciler
-	alerts     *alert.Service
+	reconciler offlineReconciler
+}
+
+type offlineReconciler interface {
+	ServerOffline(context.Context, string) error
 }
 
 func (p offlineRunPublisher) Publish(ctx context.Context, event server.Event) error {
 	if event.Type == "server.offline" {
-		if err := p.reconciler.ServerOffline(ctx, event.ServerID); err != nil {
-			return err
-		}
-		if p.alerts != nil {
-			return p.alerts.Raise(ctx, alert.Event{
-				ResourceType: "server", ResourceID: event.ServerID, Code: "agent_offline",
-				Severity: alert.SeverityCritical, Title: "服务器离线", Message: "代理心跳已超过 15 秒未更新",
-			})
-		}
+		return p.reconciler.ServerOffline(ctx, event.ServerID)
 	}
 	return nil
 }
