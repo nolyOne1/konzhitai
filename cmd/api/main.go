@@ -48,6 +48,7 @@ func main() {
 	var taskHandler http.Handler = unavailableHandler
 	var runHandler http.Handler = unavailableHandler
 	var securityHandler http.Handler = unavailableHandler
+	var passwordHandler http.Handler = unavailableHandler
 	if dsn := os.Getenv("YUNLING_DATABASE_URL"); dsn != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pool, err := postgres.Open(ctx, dsn)
@@ -64,6 +65,9 @@ func main() {
 		protect := func(handler http.Handler) http.Handler {
 			return auth.Authenticate(authService)(audit.Middleware(auditService)(handler))
 		}
+		passwordStore := auth.NewPostgresPasswordChangeStore(pool)
+		passwordService := auth.NewPasswordChangeService(passwordStore, time.Now)
+		passwordHandler = protect(auth.PasswordHandler(passwordService, os.Getenv("YUNLING_PUBLIC_URL")))
 		taskService := task.NewService(pool, time.Now)
 		taskHandler = protect(task.Handler(taskService))
 
@@ -183,6 +187,7 @@ func main() {
 		log.Print("未设置 YUNLING_DATABASE_URL，认证和代理接口将返回暂不可用")
 	}
 	router.Handle("/api/auth/", authHandler)
+	router.Handle("POST /api/auth/password", passwordHandler)
 	router.Handle("/api/servers/enrollment-tokens", protectedServerHandler)
 	router.Handle("/api/dashboard", managementHandler)
 	router.Handle("/api/servers", managementHandler)

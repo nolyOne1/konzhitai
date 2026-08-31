@@ -44,3 +44,25 @@ func TestServiceBuildUsesReachableVerifiedGoModuleMirror(t *testing.T) {
 		t.Fatal("腾讯云服务镜像构建必须使用可达的 Go 模块镜像并保留校验数据库")
 	}
 }
+
+func TestPasswordChangeTrustsOnlyCaddyOwnedForwardedIP(t *testing.T) {
+	root := testpostgres.RepositoryRoot(t)
+	compose := mustReadDeploymentFile(t, root, "deploy", "docker-compose.yml")
+	caddy := mustReadDeploymentFile(t, root, "deploy", "Caddyfile")
+	apiStart := strings.Index(compose, "\n  api:")
+	schedulerStart := strings.Index(compose, "\n  scheduler:")
+	if apiStart < 0 || schedulerStart <= apiStart {
+		t.Fatal("无法定位 Compose API 服务")
+	}
+	apiService := compose[apiStart:schedulerStart]
+	if strings.Contains(apiService, "\n    ports:") {
+		t.Fatal("API 不得直接发布宿主机端口")
+	}
+	if !strings.Contains(compose, `YUNLING_TRUST_PROXY: "true"`) {
+		t.Fatal("受控 Compose 网络中的 API 必须显式启用可信代理来源")
+	}
+	if !strings.Contains(caddy, "header_up -X-Forwarded-For") ||
+		!strings.Contains(caddy, "header_up X-Forwarded-For {remote_host}") {
+		t.Fatal("Caddy 必须丢弃客户端转发头并写入直接连接地址")
+	}
+}
