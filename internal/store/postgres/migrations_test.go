@@ -116,3 +116,31 @@ func TestNotificationMigrationCreatesAtomicAlertOutbox(t *testing.T) {
 		t.Fatalf("恢复告警应原子生成一项通知，实际 %d", recoveredCount)
 	}
 }
+
+func TestBackupRecoveryMigrationCreatesOperationalTables(t *testing.T) {
+	db := startPostgres(t)
+	applyMigrations(t, db)
+
+	for _, table := range []string{"backup_runs", "restore_verifications"} {
+		if !tableExists(t, db, table) {
+			t.Fatalf("备份恢复迁移后应存在数据表 %q", table)
+		}
+	}
+
+	for _, index := range []string{
+		"backup_runs_due_idx",
+		"backup_runs_active_lease_idx",
+		"restore_verifications_due_idx",
+		"restore_verifications_active_lease_idx",
+	} {
+		var exists bool
+		if err := db.QueryRow(context.Background(), `
+			SELECT to_regclass('public.' || $1) IS NOT NULL
+		`, index).Scan(&exists); err != nil {
+			t.Fatalf("检查索引 %s：%v", index, err)
+		}
+		if !exists {
+			t.Fatalf("备份恢复迁移后应存在索引 %q", index)
+		}
+	}
+}
