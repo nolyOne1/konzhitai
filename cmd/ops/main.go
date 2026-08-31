@@ -98,6 +98,17 @@ func main() {
 	secretService := secret.NewService(secret.NewPostgresRepository(pool), keyProvider)
 	notificationRepository := notification.NewPostgresRepository(pool)
 	alertService := alert.NewService(alert.NewPostgresRepository(pool), time.Now)
+	backupRepository := backup.NewPostgresRepository(pool)
+	backupRunner := backup.NewCommandRunner(configuration.Backup.CommandTimeout)
+	backupPaths := backup.NewRunPaths(configuration.Backup.Root)
+	resticRepository := backup.NewResticRepository(configuration.Backup, backupRunner)
+	backupExporter := backup.NewExporter(configuration.Backup, backupRunner, backupPaths, backup.DeploymentMetadata{
+		GitRevision: os.Getenv("YUNLING_GIT_REVISION"), MigrationVersion: "12", ImageDigests: map[string]string{},
+	}, time.Now)
+	backupVerifier := backup.NewVerifier(configuration.Backup, resticRepository, backupRunner, backupPaths)
+	backupService := backup.NewService(backupRepository, backupExporter, resticRepository, time.Now).
+		WithRemote(resticRepository, backup.NewRetention(resticRepository), alertService).
+		WithVerifier(backupRepository, backupVerifier)
 	ruleEngine := ops.NewRuleEngine(ops.NewPostgresRepository(pool), alertService, time.Now)
 	outboxService := notification.NewOutboxService(
 		notificationRepository,
@@ -108,7 +119,7 @@ func main() {
 	health := newHealthState(pool, time.Now)
 	loop := ops.NewLoop(ruleEngine, outboxService, configuration.ScanInterval, 10*time.Second, health, func(err error) {
 		log.Printf("运维扫描失败")
-	})
+	}).WithBackup(backupService)
 
 	server := &http.Server{
 		Addr:              configuration.HTTPAddress,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,6 +150,90 @@ func TestServiceResumesDegradedCOSCopyWithoutExportingAgain(t *testing.T) {
 	}
 	if len(alerts.raised) == 0 || alerts.raised[0].Code != "backup_cos_degraded" {
 		t.Fatalf("COS 降级必须告警：%+v", alerts.raised)
+	}
+}
+
+type verificationServiceStore struct {
+	backup       BackupRun
+	verification RestoreVerification
+	completed    VerificationResult
+}
+
+func (s *verificationServiceStore) ClaimBackup(context.Context, time.Time, time.Duration) (BackupRun, bool, error) {
+	return BackupRun{}, false, nil
+}
+func (s *verificationServiceStore) MarkLocalSnapshot(context.Context, string, SnapshotResult, time.Time) error {
+	return nil
+}
+func (s *verificationServiceStore) MarkBackupFailed(context.Context, string, string, time.Time) error {
+	return nil
+}
+func (s *verificationServiceStore) MarkBackupDegraded(context.Context, string, string, time.Time) error {
+	return nil
+}
+func (s *verificationServiceStore) MarkBackupSucceeded(context.Context, string, string, time.Time) error {
+	return nil
+}
+func (s *verificationServiceStore) ListBackups(context.Context, int) ([]BackupRun, error) {
+	return []BackupRun{s.backup}, nil
+}
+func (s *verificationServiceStore) ClaimVerification(context.Context, time.Time, time.Duration) (RestoreVerification, bool, error) {
+	return s.verification, true, nil
+}
+func (s *verificationServiceStore) CompleteVerification(_ context.Context, result VerificationResult, _ time.Time) error {
+	s.completed = result
+	return nil
+}
+
+type serviceVerifier struct{ err error }
+
+func (v serviceVerifier) Verify(_ context.Context, verification RestoreVerification, _ BackupRun) (VerificationResult, error) {
+	result := VerificationResult{
+		VerificationID: verification.ID, TemporaryDatabase: "yunling_verify_" + strings.Repeat("a", 32),
+		MigrationVersion: "12", CheckedObjects: 2,
+	}
+	if v.err != nil {
+		result.ErrorMessage = "恢复校验失败"
+	}
+	return result, v.err
+}
+
+func TestServicePersistsVerificationAndRaisesLifecycleAlerts(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success", true: "failure"}[failed], func(t *testing.T) {
+			backupRun := BackupRun{ID: uuid.NewString(), Status: StatusSucceeded, COSSnapshotID: "cos"}
+			verification := RestoreVerification{ID: uuid.NewString(), BackupRunID: backupRun.ID}
+			store := &verificationServiceStore{backup: backupRun, verification: verification}
+			alerts := &recordingAlerts{}
+			var verifyErr error
+			if failed {
+				verifyErr = errors.New("verification failed")
+			}
+			service := NewService(store, localServiceExporter{}, &localServiceSnapshotter{}, time.Now).
+				WithRemote(nil, nil, alerts).
+				WithVerifier(store, serviceVerifier{err: verifyErr})
+			err := service.RunVerification(context.Background())
+			if failed && err == nil {
+				t.Fatal("失败校验必须返回错误")
+			}
+			if !failed && err != nil {
+				t.Fatal(err)
+			}
+			if store.completed.VerificationID != verification.ID {
+				t.Fatalf("恢复校验结果未持久化：%+v", store.completed)
+			}
+			wantCode := "backup_verification_succeeded"
+			if failed {
+				wantCode = "backup_verification_failed"
+			}
+			found := false
+			for _, event := range alerts.raised {
+				found = found || event.Code == wantCode
+			}
+			if !found {
+				t.Fatalf("恢复校验缺少生命周期告警 %s：%+v", wantCode, alerts.raised)
+			}
+		})
 	}
 }
 

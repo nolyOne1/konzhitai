@@ -24,17 +24,28 @@ type AlertSink interface {
 	Resolve(context.Context, string, string, string) error
 }
 
+type VerificationStateStore interface {
+	ClaimVerification(context.Context, time.Time, time.Duration) (RestoreVerification, bool, error)
+	CompleteVerification(context.Context, VerificationResult, time.Time) error
+}
+
+type ScheduleStore interface {
+	EnsureSchedules(context.Context, time.Time) error
+}
+
 type Service struct {
-	store          BackupStateStore
-	exporter       DataExporter
-	snapshotter    LocalSnapshotter
-	now            func() time.Time
-	availableBytes func(string) (int64, error)
-	lease          time.Duration
-	root           string
-	remote         RemoteSnapshotter
-	retention      RetentionPolicy
-	alerts         AlertSink
+	store             BackupStateStore
+	exporter          DataExporter
+	snapshotter       LocalSnapshotter
+	now               func() time.Time
+	availableBytes    func(string) (int64, error)
+	lease             time.Duration
+	root              string
+	remote            RemoteSnapshotter
+	retention         RetentionPolicy
+	alerts            AlertSink
+	verificationStore VerificationStateStore
+	verifier          BackupVerifier
 }
 
 func (s *Service) WithRemote(remote RemoteSnapshotter, retention RetentionPolicy, alerts AlertSink) *Service {
@@ -44,6 +55,22 @@ func (s *Service) WithRemote(remote RemoteSnapshotter, retention RetentionPolicy
 		s.alerts = alerts
 	}
 	return s
+}
+
+func (s *Service) WithVerifier(store VerificationStateStore, verifier BackupVerifier) *Service {
+	if s != nil {
+		s.verificationStore = store
+		s.verifier = verifier
+	}
+	return s
+}
+
+func (s *Service) EnsureSchedules(ctx context.Context, now time.Time) error {
+	scheduler, ok := s.store.(ScheduleStore)
+	if !ok {
+		return ErrUnavailable
+	}
+	return scheduler.EnsureSchedules(ctx, now)
 }
 
 func NewService(store BackupStateStore, exporter DataExporter, snapshotter LocalSnapshotter, now func() time.Time) *Service {
@@ -134,6 +161,57 @@ func (s *Service) RunBackup(ctx context.Context) error {
 		s.resolve(ctx, "backup_retention_failed")
 	}
 	return nil
+}
+
+func (s *Service) RunVerification(ctx context.Context) error {
+	if s == nil || s.verificationStore == nil || s.verifier == nil {
+		return ErrUnavailable
+	}
+	now := s.now().UTC()
+	verification, ok, err := s.verificationStore.ClaimVerification(ctx, now, s.lease)
+	if err != nil || !ok {
+		return err
+	}
+	backups, err := s.store.ListBackups(ctx, 100)
+	if err != nil {
+		return s.completeVerificationFailure(ctx, verification, "恢复校验读取备份失败")
+	}
+	var selected BackupRun
+	for _, run := range backups {
+		if run.ID == verification.BackupRunID {
+			selected = run
+			break
+		}
+	}
+	if selected.ID == "" {
+		return s.completeVerificationFailure(ctx, verification, "恢复校验对应备份不存在")
+	}
+	result, verifyErr := s.verifier.Verify(ctx, verification, selected)
+	if verifyErr != nil {
+		if result.ErrorMessage == "" {
+			result.ErrorMessage = "恢复校验失败"
+		}
+		if err := s.verificationStore.CompleteVerification(ctx, result, s.now().UTC()); err != nil {
+			return err
+		}
+		s.raise(ctx, "backup_verification_failed", alert.SeverityCritical, "备份恢复校验失败", result.ErrorMessage)
+		return errors.New("备份恢复校验失败")
+	}
+	if err := s.verificationStore.CompleteVerification(ctx, result, s.now().UTC()); err != nil {
+		return err
+	}
+	s.resolve(ctx, "backup_verification_failed")
+	s.raise(ctx, "backup_verification_succeeded", alert.SeverityInfo, "备份恢复校验成功", "COS 快照已通过隔离恢复与完整性检查")
+	return nil
+}
+
+func (s *Service) completeVerificationFailure(ctx context.Context, verification RestoreVerification, message string) error {
+	result := VerificationResult{VerificationID: verification.ID, ErrorMessage: message}
+	if err := s.verificationStore.CompleteVerification(ctx, result, s.now().UTC()); err != nil {
+		return err
+	}
+	s.raise(ctx, "backup_verification_failed", alert.SeverityCritical, "备份恢复校验失败", message)
+	return errors.New(message)
 }
 
 func (s *Service) latestSuccessfulBytes(ctx context.Context) (int64, error) {

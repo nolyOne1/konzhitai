@@ -18,6 +18,12 @@ type SuccessRecorder interface {
 	MarkSuccessfulScan(time.Time)
 }
 
+type OperationalScanner interface {
+	EnsureSchedules(context.Context, time.Time) error
+	RunBackup(context.Context) error
+	RunVerification(context.Context) error
+}
+
 type Loop struct {
 	rules    RuleScanner
 	outbox   OutboxScanner
@@ -26,6 +32,14 @@ type Loop struct {
 	health   SuccessRecorder
 	onError  func(error)
 	now      func() time.Time
+	backup   OperationalScanner
+}
+
+func (l *Loop) WithBackup(scanner OperationalScanner) *Loop {
+	if l != nil {
+		l.backup = scanner
+	}
+	return l
 }
 
 func NewLoop(
@@ -69,6 +83,31 @@ func (l *Loop) Run(ctx context.Context) error {
 
 func (l *Loop) runOnce(parent context.Context) {
 	succeeded := false
+	if l.backup != nil {
+		scheduleContext, cancelSchedule := context.WithTimeout(parent, l.timeout)
+		if err := l.backup.EnsureSchedules(scheduleContext, l.now().UTC()); err != nil {
+			l.onError(err)
+		} else {
+			succeeded = true
+		}
+		cancelSchedule()
+
+		backupContext, cancelBackup := context.WithTimeout(parent, 30*time.Minute)
+		if err := l.backup.RunBackup(backupContext); err != nil {
+			l.onError(err)
+		} else {
+			succeeded = true
+		}
+		cancelBackup()
+
+		verificationContext, cancelVerification := context.WithTimeout(parent, 30*time.Minute)
+		if err := l.backup.RunVerification(verificationContext); err != nil {
+			l.onError(err)
+		} else {
+			succeeded = true
+		}
+		cancelVerification()
+	}
 	ruleContext, cancelRules := context.WithTimeout(parent, l.timeout)
 	if err := l.rules.Scan(ruleContext); err != nil {
 		l.onError(err)

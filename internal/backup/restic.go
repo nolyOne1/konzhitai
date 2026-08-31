@@ -143,6 +143,55 @@ func (r *ResticRepository) CopyToCOS(ctx context.Context, localSnapshotID, runID
 	return matches[0].ID, nil
 }
 
+func (r *ResticRepository) RestoreFromCOS(ctx context.Context, runID, destination string) error {
+	if r == nil || r.runner == nil || destination == "" {
+		return ErrInvalidRequest
+	}
+	if _, err := uuid.Parse(runID); err != nil {
+		return ErrInvalidRequest
+	}
+	if err := r.validateRepositoryFiles(); err != nil {
+		return err
+	}
+	accessKey, err := readSecretFile(r.configuration.COSSecretIDFile)
+	if err != nil {
+		return errors.New("COS 访问凭据不可用")
+	}
+	secretKey, err := readSecretFile(r.configuration.COSSecretKeyFile)
+	if err != nil {
+		clearString(&accessKey)
+		return errors.New("COS 访问凭据不可用")
+	}
+	environment := map[string]string{"AWS_ACCESS_KEY_ID": accessKey, "AWS_SECRET_ACCESS_KEY": secretKey}
+	defer func() {
+		clearString(&accessKey)
+		clearString(&secretKey)
+		clear(environment)
+	}()
+	global := r.cosGlobalArguments()
+	if _, err := r.runWithEnvironment(ctx, environment, global, "check", "--read-data-subset=5%"); err != nil {
+		return errors.New("COS 仓库完整性检查失败")
+	}
+	snapshots, err := r.runWithEnvironment(ctx, environment, global,
+		"snapshots", "--json", "--tag", "backup-run="+runID,
+	)
+	if err != nil {
+		return errors.New("查询 COS 恢复快照失败")
+	}
+	var matches []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(snapshots.Stdout), &matches); err != nil || len(matches) != 1 || matches[0].ID == "" {
+		return errors.New("COS 恢复快照数量异常")
+	}
+	if _, err := r.runWithEnvironment(ctx, environment, global,
+		"restore", matches[0].ID, "--target", destination,
+	); err != nil {
+		return errors.New("从 COS 恢复快照失败")
+	}
+	return nil
+}
+
 func (r *ResticRepository) ForgetLocal(ctx context.Context, keepWithin string) error {
 	if _, err := r.run(ctx, []string{
 		"--repository-file", r.configuration.LocalRepositoryFile,
@@ -218,3 +267,4 @@ func (r *ResticRepository) validateRepositoryFiles() error {
 
 var _ LocalSnapshotter = (*ResticRepository)(nil)
 var _ RemoteSnapshotter = (*ResticRepository)(nil)
+var _ COSRestorer = (*ResticRepository)(nil)
