@@ -18,3 +18,12 @@ func TestInitialMigrationCreatesCoreTables(t *testing.T) {
 		}
 	}
 }
+
+func TestPasswordChangeMigrationCreatesRateLimitTable(t *testing.T) {
+	db := startPostgres(t)
+	applyMigrations(t, db)
+
+	if !tableExists(t, db, "auth_rate_limits") {
+		t.Fatal("改密安全迁移后应存在 auth_rate_limits")
+	}
+}
