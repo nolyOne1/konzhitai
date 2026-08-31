@@ -8,9 +8,11 @@ import (
 )
 
 var (
-	ErrInvalidWebhook = errors.New("飞书 Webhook 地址无效")
-	ErrInvalidConfig  = errors.New("飞书通知配置无效")
-	ErrUnavailable    = errors.New("飞书通知服务尚未配置")
+	ErrInvalidWebhook   = errors.New("飞书 Webhook 地址无效")
+	ErrInvalidConfig    = errors.New("飞书通知配置无效")
+	ErrUnavailable      = errors.New("飞书通知服务尚未配置")
+	ErrNotConfigured    = errors.New("飞书通知尚未启用")
+	ErrDeliveryNotFound = errors.New("通知发送记录不存在")
 )
 
 type FeishuConfigInput struct {

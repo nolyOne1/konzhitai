@@ -77,6 +77,63 @@ func TestPostgresConfigStoresOnlySecretReferencesAndAuditsUpdate(t *testing.T) {
 	}
 }
 
+func TestPostgresOutboxClaimsOnceAndExpiredLeaseCanBeTakenOver(t *testing.T) {
+	db := notificationDatabase(t)
+	ctx := context.Background()
+	actorID := insertNotificationUser(t, db)
+	repository := notification.NewPostgresRepository(db)
+	secretService := secret.NewService(secret.NewPostgresRepository(db), notificationKeyProvider())
+	configService := notification.NewConfigService(repository, secretService)
+	if _, err := configService.Update(ctx, actorID, "127.0.0.1", notification.FeishuConfigInput{
+		Enabled: true, Webhook: validWebhook, SigningSecret: "signing-secret-value",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `
+		INSERT INTO notification_outbox (event_type, payload, idempotency_key)
+		VALUES ('test', $1, 'claim-test')
+	`, `{"code":"test","severity":"info","title":"并发领取测试","sourceType":"system","sourceId":"yunling","occurrenceCount":1,"occurredAt":"2026-08-31T12:00:00Z"}`); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	type result struct {
+		claim notification.ClaimedDelivery
+		ok    bool
+		err   error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			claim, ok, err := repository.ClaimDue(ctx, now, 30*time.Second)
+			results <- result{claim: claim, ok: ok, err: err}
+		}()
+	}
+	claimed := 0
+	var first notification.ClaimedDelivery
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.ok {
+			claimed++
+			first = result.claim
+		}
+	}
+	if claimed != 1 || first.Attempts != 1 {
+		t.Fatalf("同一发件箱项只能领取一次：claimed=%d delivery=%+v", claimed, first)
+	}
+
+	takenOver, ok, err := repository.ClaimDue(ctx, now.Add(31*time.Second), 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || takenOver.ID != first.ID || takenOver.Attempts != 2 {
+		t.Fatalf("租约过期后应接管同一项：ok=%v delivery=%+v", ok, takenOver)
+	}
+}
+
 func notificationDatabase(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	db := testpostgres.Start(t)

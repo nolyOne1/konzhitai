@@ -106,10 +106,18 @@ func main() {
 					log.Printf("主密钥不可用，敏感参数接口将返回暂不可用：%v", err)
 				} else {
 					secretService := secret.NewService(secret.NewPostgresRepository(pool), keyProvider)
+					notificationRepository := notification.NewPostgresRepository(pool)
+					outboxService := notification.NewOutboxService(
+						notificationRepository,
+						secretService,
+						notification.NewFeishuClient(nil, time.Now),
+						time.Now,
+					)
 					secretManager = secretService
 					dispatchSecretResolver = secretService
 					operationsHandler = protect(operationshttp.NewHandler(operationshttp.Services{
-						Notifications: notification.NewConfigService(notification.NewPostgresRepository(pool), secretService),
+						Notifications: notification.NewConfigService(notificationRepository, secretService),
+						Deliveries:    outboxService,
 					}, os.Getenv("YUNLING_PUBLIC_URL")))
 					logOptions = append(logOptions, logstream.WithRedaction(secret.NewRedactor(), secret.NewRunValueSource(pool, secretService)))
 				}

@@ -78,10 +78,49 @@ func TestFeishuConfigPUTRequiresAdminSameOriginJSONAndExactFields(t *testing.T) 
 	}
 }
 
+func TestFeishuTestMessageAndDeliveryStatusAPI(t *testing.T) {
+	deliveries := &deliveryManager{delivery: notification.Delivery{
+		ID: "delivery-1", Status: notification.DeliveryPending, Attempts: 0,
+	}}
+	handler := operationshttp.NewHandler(operationshttp.Services{Deliveries: deliveries}, "https://aiwise.top")
+	request := httptest.NewRequest(http.MethodPost, "/api/operations/notifications/feishu/test", strings.NewReader(`{}`))
+	request.Header.Set("Origin", "https://aiwise.top")
+	request.Header.Set("Content-Type", "application/json")
+	request = request.WithContext(auth.WithPrincipal(request.Context(), adminPrincipal()))
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusAccepted || deliveries.actorID != "admin-1" {
+		t.Fatalf("测试消息入队失败：status=%d actor=%q body=%s", recorder.Code, deliveries.actorID, recorder.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/operations/notifications/delivery-1", nil)
+	request = request.WithContext(auth.WithPrincipal(request.Context(), viewerPrincipal()))
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"status":"pending"`) {
+		t.Fatalf("读取测试消息状态失败：status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 type notificationManager struct {
 	view      notification.FeishuConfigView
 	lastInput notification.FeishuConfigInput
 	actorID   string
+}
+
+type deliveryManager struct {
+	delivery notification.Delivery
+	actorID  string
+}
+
+func (m *deliveryManager) EnqueueTest(_ context.Context, actorID string) (notification.Delivery, error) {
+	m.actorID = actorID
+	return m.delivery, nil
+}
+
+func (m *deliveryManager) GetDelivery(context.Context, string) (notification.Delivery, error) {
+	return m.delivery, nil
 }
 
 func (m *notificationManager) Get(context.Context) (notification.FeishuConfigView, error) {
