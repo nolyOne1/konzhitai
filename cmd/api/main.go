@@ -18,6 +18,8 @@ import (
 	"yunling.local/platform/internal/dispatch"
 	"yunling.local/platform/internal/health"
 	"yunling.local/platform/internal/logstream"
+	"yunling.local/platform/internal/notification"
+	"yunling.local/platform/internal/operationshttp"
 	"yunling.local/platform/internal/script"
 	"yunling.local/platform/internal/secret"
 	"yunling.local/platform/internal/securityhttp"
@@ -49,6 +51,7 @@ func main() {
 	var runHandler http.Handler = unavailableHandler
 	var securityHandler http.Handler = unavailableHandler
 	var passwordHandler http.Handler = unavailableHandler
+	var operationsHandler http.Handler = unavailableHandler
 	if dsn := os.Getenv("YUNLING_DATABASE_URL"); dsn != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pool, err := postgres.Open(ctx, dsn)
@@ -105,6 +108,9 @@ func main() {
 					secretService := secret.NewService(secret.NewPostgresRepository(pool), keyProvider)
 					secretManager = secretService
 					dispatchSecretResolver = secretService
+					operationsHandler = protect(operationshttp.NewHandler(operationshttp.Services{
+						Notifications: notification.NewConfigService(notification.NewPostgresRepository(pool), secretService),
+					}, os.Getenv("YUNLING_PUBLIC_URL")))
 					logOptions = append(logOptions, logstream.WithRedaction(secret.NewRedactor(), secret.NewRunValueSource(pool, secretService)))
 				}
 			}
@@ -204,6 +210,7 @@ func main() {
 	router.Handle("/api/audit", securityHandler)
 	router.Handle("/api/alerts", securityHandler)
 	router.Handle("/api/alerts/", securityHandler)
+	router.Handle("/api/operations/", operationsHandler)
 	router.Handle("/api/servers/{id}/credentials/rotate", securityHandler)
 	router.Handle("/api/servers/{id}/credentials/revoke", securityHandler)
 	router.Handle("/api/agent/", serverHandler)
