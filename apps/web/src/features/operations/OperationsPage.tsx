@@ -1,4 +1,5 @@
 import { AccountSecurityPanel } from './AccountSecurityPanel'
+import { NotificationSettingsPanel } from './NotificationSettingsPanel'
 
 export function OperationsPage() {
   return (
@@ -12,6 +13,7 @@ export function OperationsPage() {
       </div>
 
       <div className="operations-stack">
+        <NotificationSettingsPanel />
         <AccountSecurityPanel />
       </div>
     </>

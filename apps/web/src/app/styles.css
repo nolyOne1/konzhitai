@@ -2733,6 +2733,100 @@ h1 {
   margin-top: 24px;
 }
 
+.notification-settings-body {
+  padding: 18px;
+}
+
+.notification-settings-body > .form-error,
+.notification-status {
+  margin: 0 0 16px;
+}
+
+.notification-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  background: #f7f9f8;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.notification-state.is-enabled {
+  border-color: #b7dbc9;
+  color: #17613f;
+  background: var(--success-soft);
+}
+
+.notification-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f9fbfa;
+}
+
+.notification-overview > div {
+  min-width: 0;
+  padding: 14px 16px;
+  border-right: 1px solid var(--border);
+}
+
+.notification-overview > div:last-child { border-right: 0; }
+.notification-overview span,
+.notification-overview small { display: block; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.notification-overview strong { display: block; margin: 6px 0 4px; font-size: 14px; overflow-wrap: anywhere; }
+
+.notification-form {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.notification-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  width: fit-content;
+  min-height: 44px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.notification-toggle:has(input:checked) { border-color: #9ccdb6; background: #f0f8f4; }
+.notification-toggle input { width: 20px; height: 20px; flex: 0 0 auto; margin: 1px 0 0; accent-color: var(--success); }
+.notification-toggle strong,
+.notification-toggle small { display: block; }
+.notification-toggle strong { font-size: 13px; }
+.notification-toggle small { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+
+.notification-secret-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(240px, 1fr);
+  gap: 14px;
+}
+
+.notification-secret-grid .form-field { margin-top: 0; }
+.notification-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.notification-actions button { min-width: 132px; }
+
+.notification-readonly-note {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-left: 3px solid #91aa9e;
+  color: #355248;
+  background: #f3f7f5;
+}
+
+.notification-readonly-note strong { font-size: 13px; }
+.notification-readonly-note p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
 .account-security-body {
   padding: 18px;
 }
@@ -2884,6 +2978,12 @@ h1 {
   .compact-filter select { width: 100%; }
   .password-form-grid { grid-template-columns: 1fr; }
   .password-form-actions .primary-action { width: 100%; }
+  .notification-overview { grid-template-columns: 1fr; }
+  .notification-overview > div { border-right: 0; border-bottom: 1px solid var(--border); }
+  .notification-overview > div:last-child { border-bottom: 0; }
+  .notification-secret-grid { grid-template-columns: 1fr; }
+  .notification-actions { display: grid; }
+  .notification-actions button { width: 100%; }
 }
 
 @media (max-width: 560px) {

@@ -10,6 +10,8 @@ const actionLabels: Record<string, string> = {
   'run.retry': '重新执行', 'secret.create': '创建敏感参数', 'member.roles.update': '调整成员角色',
   'server.credential.rotate': '轮换代理凭据', 'server.credential.revoke': '吊销代理凭据',
   'alert.acknowledge': '确认系统告警',
+  'operations.feishu.update': '更新飞书通知', 'operations.feishu.disable': '停用飞书通知',
+  'operations.feishu.test': '发送飞书测试消息',
 }
 
 export function AuditPage() {

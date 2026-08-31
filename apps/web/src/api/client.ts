@@ -486,12 +486,55 @@ export async function getSession(): Promise<SessionUser> {
   return { id: response.user.user_id, displayName: response.user.display_name, email: response.user.email, roles: response.user.roles }
 }
 
+export interface FeishuNotificationConfig {
+  configured: boolean
+  enabled: boolean
+  maskedDestination: string
+  updatedAt?: string
+}
+
+export interface FeishuNotificationInput {
+  enabled: boolean
+  webhook: string
+  signingSecret: string
+}
+
+export interface NotificationDelivery {
+  id: string
+  status: 'pending' | 'sending' | 'retrying' | 'sent' | 'failed'
+  attempts: number
+  lastError?: string
+  sentAt?: string
+}
+
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
   await request<void>('/api/auth/password', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ currentPassword, newPassword }),
   })
+}
+
+export async function getFeishuNotificationConfig(): Promise<FeishuNotificationConfig> {
+  return request<FeishuNotificationConfig>('/api/operations/notifications/feishu')
+}
+
+export async function updateFeishuNotificationConfig(input: FeishuNotificationInput): Promise<FeishuNotificationConfig> {
+  return request<FeishuNotificationConfig>('/api/operations/notifications/feishu', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: input.enabled, webhook: input.webhook, signingSecret: input.signingSecret }),
+  })
+}
+
+export async function testFeishuNotification(): Promise<NotificationDelivery> {
+  return request<NotificationDelivery>('/api/operations/notifications/feishu/test', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  })
+}
+
+export async function getNotificationDelivery(id: string): Promise<NotificationDelivery> {
+  return request<NotificationDelivery>(`/api/operations/notifications/${encodeURIComponent(id)}`)
 }
 
 export async function getSecrets(): Promise<SecretMetadata[]> {

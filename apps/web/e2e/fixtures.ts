@@ -86,6 +86,28 @@ export async function mockPasswordChange(page: Page) {
   return { requestBody: () => requestBody }
 }
 
+export async function mockOperationsNotifications(page: Page) {
+  let config = { configured: false, enabled: false, maskedDestination: '' }
+  let updateBody: unknown
+  await page.route('**/api/auth/session', async (route) => {
+    await json(route, { user: { user_id: 'admin-1', display_name: '管理员', email: 'admin@example.com', roles: ['admin'] } })
+  })
+  await page.route('**/api/operations/notifications/feishu', async (route) => {
+    if (route.request().method() === 'PUT') {
+      updateBody = route.request().postDataJSON()
+      config = { configured: true, enabled: true, maskedDestination: '飞书机器人 …cdef' }
+    }
+    await json(route, config)
+  })
+  await page.route('**/api/operations/notifications/feishu/test', async (route) => {
+    await json(route, { id: 'delivery-1', status: 'pending', attempts: 0 }, 202)
+  })
+  await page.route('**/api/operations/notifications/delivery-1', async (route) => {
+    await json(route, { id: 'delivery-1', status: 'sent', attempts: 1, sentAt: '2026-08-31T12:00:00Z' })
+  })
+  return { updateBody: () => updateBody }
+}
+
 async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({
     status,

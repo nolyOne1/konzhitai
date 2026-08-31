@@ -130,6 +130,19 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
 
 更新前先执行测试与备份。不要使用 `docker compose down -v`，该命令会删除数据库、对象存储、Redis 和 Caddy 数据卷。
 
+### 飞书通知配置
+
+在目标飞书群中添加“自定义机器人”，使用 V2 Webhook，并务必启用签名校验。由管理员在云令控制台进入“运维中心—飞书通知”，同时录入 Webhook 和签名密钥，保存后先发送测试消息；控制台只会继续显示机器人 token 的脱敏尾号。
+
+Webhook 和签名密钥属于生产凭据。只允许在控制台的加密表单中录入，禁止粘贴到终端命令或历史、工单、聊天记录、部署文档、环境文件和代码仓库。轮换时也必须在控制台同时提交新的 Webhook 与签名密钥。
+
+测试消息成功后，确认 `ops` 服务健康，并检查其日志中没有持续重试：
+
+```bash
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps ops
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml logs --tail=100 ops
+```
+
 ### 管理员改密功能上线
 
 管理员改密涉及数据库加法迁移和会话撤销。生产升级必须按以下顺序执行，不得提前删除初始凭据文件。
