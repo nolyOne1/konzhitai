@@ -486,6 +486,14 @@ export async function getSession(): Promise<SessionUser> {
   return { id: response.user.user_id, displayName: response.user.display_name, email: response.user.email, roles: response.user.roles }
 }
 
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  await request<void>('/api/auth/password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ currentPassword, newPassword }),
+  })
+}
+
 export async function getSecrets(): Promise<SecretMetadata[]> {
   const response = await request<{ secrets: SecretMetadata[] }>('/api/secrets')
   return response.secrets

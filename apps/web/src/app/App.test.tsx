@@ -16,6 +16,17 @@ describe('云令应用壳', () => {
     expect(screen.getByRole('link', { name: '任务调度' })).toBeVisible()
     expect(screen.getByRole('link', { name: '执行记录' })).toBeVisible()
     expect(screen.getByRole('link', { name: '服务器' })).toBeVisible()
+    expect(screen.getByRole('link', { name: '运维中心' })).toBeVisible()
+  })
+
+  it('访问运维中心地址时显示账号安全页面', () => {
+    window.history.pushState({}, '', '/operations')
+
+    render(<App />)
+
+    expect(screen.getByRole('heading', { level: 1, name: '运维中心' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: '账号安全' })).toBeVisible()
+    window.history.pushState({}, '', '/')
   })
 
   it('访问登录地址时显示中文登录页', () => {

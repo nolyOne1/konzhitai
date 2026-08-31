@@ -13,6 +13,7 @@ import { RunsPage } from '../features/runs/RunsPage'
 import { AuditPage } from '../features/settings/AuditPage'
 import { MembersPage } from '../features/settings/MembersPage'
 import { SecretsPage } from '../features/settings/SecretsPage'
+import { OperationsPage } from '../features/operations/OperationsPage'
 
 const navigation = [
   { label: '运行总览', href: '/' },
@@ -20,6 +21,7 @@ const navigation = [
   { label: '任务调度', href: '/tasks' },
   { label: '执行记录', href: '/runs' },
   { label: '服务器', href: '/servers' },
+  { label: '运维中心', href: '/operations' },
   { label: '脚本同步', href: '/sync' },
   { label: '参数与密钥', href: '/secrets' },
   { label: '团队与权限', href: '/members' },
@@ -41,6 +43,7 @@ export function App() {
           <Route path="/runs" element={<RunsPage />} />
           <Route path="/runs/:id" element={<RunDetailPage />} />
           <Route path="/servers" element={<ServersPage />} />
+          <Route path="/operations" element={<OperationsPage />} />
           <Route path="/secrets" element={<SecretsPage />} />
           <Route path="/members" element={<MembersPage />} />
           <Route path="/settings" element={<AuditPage />} />
