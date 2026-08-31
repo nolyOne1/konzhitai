@@ -56,6 +56,36 @@ func TestPostgresRepositoryPersistsOnlyEnvelopeCiphertext(t *testing.T) {
 	}
 }
 
+func TestPostgresSystemSecretsAreHiddenFromListAndResolvable(t *testing.T) {
+	db := secretDatabase(t)
+	ctx := context.Background()
+	repository := secret.NewPostgresRepository(db)
+	service := secret.NewService(repository, fixedKeyProvider())
+	if _, err := service.Create(ctx, "用户可见秘密", []byte("user-secret")); err != nil {
+		t.Fatal(err)
+	}
+	systemSecret, err := service.CreateSystem(ctx, "notification/feishu/webhook/test", []byte("system-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := service.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Name != "用户可见秘密" {
+		t.Fatalf("系统秘密不应出现在用户列表：%+v", listed)
+	}
+	resolved, err := service.Resolve(ctx, []secret.ID{systemSecret.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(resolved[systemSecret.ID])
+	if string(resolved[systemSecret.ID]) != "system-secret" {
+		t.Fatalf("系统秘密解密失败：%q", resolved[systemSecret.ID])
+	}
+}
+
 func TestRunValueSourceRequiresMatchingExecutionTokenAndTaskBinding(t *testing.T) {
 	db := secretDatabase(t)
 	ctx := context.Background()
@@ -99,6 +129,8 @@ func secretDatabase(t *testing.T) *pgxpool.Pool {
 	testpostgres.ApplyMigration(t, db, "000006_scheduler_resources.up.sql")
 	testpostgres.ApplyMigration(t, db, "000007_run_observability.up.sql")
 	testpostgres.ApplyMigration(t, db, "000008_security_audit_alerts.up.sql")
+	testpostgres.ApplyMigration(t, db, "000010_password_change_security.up.sql")
+	testpostgres.ApplyMigration(t, db, "000011_notifications.up.sql")
 	return db
 }
 
