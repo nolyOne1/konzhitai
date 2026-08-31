@@ -66,3 +66,37 @@ func TestPasswordChangeTrustsOnlyCaddyOwnedForwardedIP(t *testing.T) {
 		t.Fatal("Caddy 必须丢弃客户端转发头并写入直接连接地址")
 	}
 }
+
+func TestOpsDeploymentUsesMinimumPrivilegesAndControlledEgress(t *testing.T) {
+	root := testpostgres.RepositoryRoot(t)
+	compose := mustReadDeploymentFile(t, root, "deploy", "docker-compose.yml")
+	start := strings.Index(compose, "\n  ops:")
+	if start < 0 {
+		t.Fatal("Compose 必须定义独立 ops 服务")
+	}
+	end := strings.Index(compose[start+1:], "\n  bootstrap:")
+	if end < 0 {
+		t.Fatal("无法定位 Ops 服务边界")
+	}
+	opsService := compose[start : start+1+end]
+	for _, required := range []string{
+		"dockerfile: deploy/Dockerfile.ops",
+		"read_only: true",
+		"no-new-privileges:true",
+		"user: \"10001:10001\"",
+		"/run/secrets/yunling-master-key:ro",
+		"/tmp:size=32m",
+		"- backend",
+		"- egress",
+	} {
+		if !strings.Contains(opsService, required) {
+			t.Fatalf("Ops 服务缺少安全配置 %q：\n%s", required, opsService)
+		}
+	}
+	if strings.Contains(opsService, "\n    ports:") || strings.Contains(opsService, "docker.sock") {
+		t.Fatal("Ops 不得发布宿主机端口或挂载 Docker Socket")
+	}
+	if !strings.Contains(compose, "\n  egress:\n") {
+		t.Fatal("Compose 必须定义 Ops 专用外网网络")
+	}
+}
