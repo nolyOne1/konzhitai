@@ -68,11 +68,31 @@ if [ -e "$recovery_file" ]; then
     exit 1
 fi
 
-openssl rand -base64 48 | tr -d '\r\n' > "${secret_dir}/restic-password"
-openssl rand -hex 48 > "${secret_dir}/backup-postgres-password"
-openssl rand -hex 48 > "${secret_dir}/verify-postgres-password"
-openssl rand -hex 10 > "${secret_dir}/backup-minio-access-key"
-openssl rand -base64 30 | tr -d '\r\n' > "${secret_dir}/backup-minio-secret-key"
+generation_dir="$(mktemp -d "${secret_dir}/.generation.XXXXXX")"
+cleanup_generation() {
+    for generated_secret in $generated_secrets; do
+        rm -f "${generation_dir}/${generated_secret}"
+    done
+    rmdir "$generation_dir" 2>/dev/null || true
+}
+trap cleanup_generation EXIT HUP INT TERM
+
+openssl rand -base64 48 | tr -d '\r\n' > "${generation_dir}/restic-password"
+openssl rand -hex 48 > "${generation_dir}/backup-postgres-password"
+openssl rand -hex 48 > "${generation_dir}/verify-postgres-password"
+openssl rand -hex 10 > "${generation_dir}/backup-minio-access-key"
+openssl rand -base64 30 | tr -d '\r\n' > "${generation_dir}/backup-minio-secret-key"
+
+for generated_secret in $generated_secrets; do
+    if [ ! -s "${generation_dir}/${generated_secret}" ]; then
+        echo "生成密钥失败：${generated_secret}" >&2
+        exit 1
+    fi
+    install -m 0600 -o root -g root \
+        "${generation_dir}/${generated_secret}" "${secret_dir}/${generated_secret}"
+done
+cleanup_generation
+trap - EXIT HUP INT TERM
 
 for secret_path in "$secret_dir"/*; do
     chown root:root "$secret_path"

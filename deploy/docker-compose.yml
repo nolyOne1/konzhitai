@@ -72,7 +72,7 @@ services:
       dockerfile: deploy/Dockerfile.services
     environment: *api-environment
     volumes:
-      - yunling_ops_secrets:/run/secrets:ro
+      - yunling_api_secrets:/run/secrets:ro
     tmpfs:
       - /tmp:size=64m,uid=10001,gid=10001,mode=1770
     expose:
@@ -131,6 +131,11 @@ services:
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - >-
+        install -m 0400 -o 10001 -g 10001 /source/yunling-master-key /api-target/yunling-master-key;
+        install -m 0400 -o 10001 -g 10001 /source/backup-postgres-password /database-target/backup-postgres-password;
+        install -m 0400 -o 10001 -g 10001 /source/verify-postgres-password /database-target/verify-postgres-password;
+        install -m 0400 -o 10001 -g 10001 /source/backup-minio-access-key /minio-target/backup-minio-access-key;
+        install -m 0400 -o 10001 -g 10001 /source/backup-minio-secret-key /minio-target/backup-minio-secret-key;
         for source in /source/*; do
           name="$${source##*/}";
           install -m 0400 -o 10001 -g 10001 "$$source" "/target/$$name";
@@ -145,6 +150,9 @@ services:
       - ./secrets/backup-minio-access-key:/source/backup-minio-access-key:ro
       - ./secrets/backup-minio-secret-key:/source/backup-minio-secret-key:ro
       - yunling_ops_secrets:/target
+      - yunling_api_secrets:/api-target
+      - yunling_database_secrets:/database-target
+      - yunling_minio_backup_secrets:/minio-target
     tmpfs:
       - /tmp:size=8m,mode=0700
 
@@ -181,6 +189,9 @@ services:
       YUNLING_RESTIC_PASSWORD_FILE: /run/secrets/restic-password
       YUNLING_BACKUP_ROOT: /var/lib/yunling-ops
       YUNLING_GIT_REVISION: ${YUNLING_GIT_REVISION:-unknown}
+      HOME: /var/lib/yunling-ops/home
+      XDG_CACHE_HOME: /var/lib/yunling-ops/cache
+      MC_CONFIG_DIR: /var/lib/yunling-ops/mc
     volumes:
       - yunling_ops_secrets:/run/secrets:ro
       - ./config/local-repository:/run/config/local-repository:ro
@@ -267,7 +278,7 @@ services:
     entrypoint: ["/bin/sh", "/opt/yunling/database-roles-init.sh"]
     volumes:
       - ./database-roles-init.sh:/opt/yunling/database-roles-init.sh:ro
-      - yunling_ops_secrets:/run/secrets:ro
+      - yunling_database_secrets:/run/secrets:ro
     tmpfs:
       - /tmp:size=8m,uid=10001,gid=10001,mode=0700
     depends_on:
@@ -344,7 +355,7 @@ services:
         mc admin policy attach local yunling-backup-readonly --user "$$backup_access_key"
     volumes:
       - ./minio-backup-policy.json:/opt/yunling/minio-backup-policy.json:ro
-      - yunling_ops_secrets:/run/secrets:ro
+      - yunling_minio_backup_secrets:/run/secrets:ro
     tmpfs:
       - /tmp:size=16m,mode=1777
     depends_on:
@@ -360,6 +371,9 @@ volumes:
   caddy_data:
   caddy_config:
   yunling_ops_secrets:
+  yunling_api_secrets:
+  yunling_database_secrets:
+  yunling_minio_backup_secrets:
   yunling_ops_data:
 
 networks:

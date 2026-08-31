@@ -15,8 +15,14 @@ func TestControlPlaneMasterKeyOwnershipMatchesNonRootService(t *testing.T) {
 	if !strings.Contains(dockerfile, "USER 10001:10001") {
 		t.Fatal("控制面服务镜像必须以非 root UID 10001 运行")
 	}
-	if !strings.Contains(compose, "yunling_ops_secrets:/run/secrets:ro") {
-		t.Fatal("非 root 控制面只能通过只读专用密钥卷读取主密钥")
+	apiStart := strings.Index(compose, "\n  api:")
+	schedulerStart := strings.Index(compose, "\n  scheduler:")
+	if apiStart < 0 || schedulerStart <= apiStart {
+		t.Fatal("无法定位 Compose API 服务")
+	}
+	apiService := compose[apiStart:schedulerStart]
+	if !strings.Contains(apiService, "yunling_api_secrets:/run/secrets:ro") || strings.Contains(apiService, "yunling_ops_secrets") {
+		t.Fatal("API 必须只读取单独的主密钥卷，不能获得 COS、Restic 或备份账号密钥")
 	}
 	if !strings.Contains(guide, "chown root:root deploy/secrets/yunling-master-key") ||
 		!strings.Contains(guide, "chmod 600 deploy/secrets/yunling-master-key") {
@@ -125,6 +131,9 @@ func TestOpsDeploymentUsesDedicatedSecretAndDataVolumes(t *testing.T) {
 		"YUNLING_COS_SECRET_ID_FILE: /run/secrets/cos-secret-id",
 		"YUNLING_COS_SECRET_KEY_FILE: /run/secrets/cos-secret-key",
 		"YUNLING_RESTIC_PASSWORD_FILE: /run/secrets/restic-password",
+		"HOME: /var/lib/yunling-ops/home",
+		"XDG_CACHE_HOME: /var/lib/yunling-ops/cache",
+		"MC_CONFIG_DIR: /var/lib/yunling-ops/mc",
 	} {
 		if !strings.Contains(opsService, required) {
 			t.Fatalf("Ops 缺少专用文件/卷配置 %q：\n%s", required, opsService)
@@ -151,8 +160,14 @@ func TestOpsSecretsInitIsOneShotOfflineAndCopiesOnlyToDedicatedVolume(t *testing
 	service := compose[start : start+1+endRelative]
 	for _, required := range []string{
 		`profiles: ["tools"]`, "network_mode: none", "restart: \"no\"",
-		"yunling_ops_secrets:/target", ":/source/", ":ro",
+		"yunling_ops_secrets:/target", "yunling_api_secrets:/api-target", ":/source/", ":ro",
+		"yunling_database_secrets:/database-target", "yunling_minio_backup_secrets:/minio-target",
 		"install -m 0400 -o 10001 -g 10001",
+		`/source/yunling-master-key /api-target/yunling-master-key`,
+		`/source/backup-postgres-password /database-target/backup-postgres-password`,
+		`/source/verify-postgres-password /database-target/verify-postgres-password`,
+		`/source/backup-minio-access-key /minio-target/backup-minio-access-key`,
+		`/source/backup-minio-secret-key /minio-target/backup-minio-secret-key`,
 	} {
 		if !strings.Contains(service, required) {
 			t.Fatalf("密钥初始化服务缺少 %q：\n%s", required, service)
@@ -173,7 +188,10 @@ func TestBackupToolchainAndSecretGeneratorArePinnedAndFailClosed(t *testing.T) {
 			t.Fatalf("Ops 工具链缺少固定版本 %q", required)
 		}
 	}
-	for _, required := range []string{"umask 077", "拒绝覆盖", "/root/yunling-recovery-key.txt", "chmod 600", "YUNLING_COS_ENDPOINT"} {
+	for _, required := range []string{
+		"umask 077", "拒绝覆盖", "/root/yunling-recovery-key.txt", "chmod 600", "YUNLING_COS_ENDPOINT",
+		"mktemp -d", "trap cleanup_generation", `[ ! -s "${generation_dir}/${generated_secret}" ]`,
+	} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("密钥初始化脚本缺少安全要求 %q", required)
 		}
@@ -211,5 +229,20 @@ func TestBackupSourceAccountsHaveOnlyRequiredPrivileges(t *testing.T) {
 	if !strings.Contains(compose, "./database-roles-init.sh:/opt/yunling/database-roles-init.sh:ro") ||
 		!strings.Contains(compose, "./minio-backup-policy.json:/opt/yunling/minio-backup-policy.json:ro") {
 		t.Fatal("Compose 必须通过只读文件加载数据库账号和 MinIO 策略")
+	}
+	databaseStart := strings.Index(compose, "\n  database-roles-init:")
+	redisStart := strings.Index(compose, "\n  redis:")
+	minioInitStart := strings.Index(compose, "\n  minio-init:")
+	volumesStart := strings.Index(compose, "\nvolumes:")
+	if databaseStart < 0 || redisStart <= databaseStart || minioInitStart < 0 || volumesStart <= minioInitStart {
+		t.Fatal("无法定位数据库或 MinIO 初始化服务")
+	}
+	databaseService := compose[databaseStart:redisStart]
+	minioInitService := compose[minioInitStart:volumesStart]
+	if !strings.Contains(databaseService, "yunling_database_secrets:/run/secrets:ro") || strings.Contains(databaseService, "yunling_ops_secrets") {
+		t.Fatal("数据库账号初始化只能读取数据库专用密钥卷")
+	}
+	if !strings.Contains(minioInitService, "yunling_minio_backup_secrets:/run/secrets:ro") || strings.Contains(minioInitService, "yunling_ops_secrets") {
+		t.Fatal("MinIO 初始化只能读取 MinIO 备份账号专用密钥卷")
 	}
 }

@@ -80,6 +80,25 @@ func TestFeishuConfigPUTRequiresAdminSameOriginJSONAndExactFields(t *testing.T) 
 	}
 }
 
+func TestFeishuAuditUsesCaddyOwnedForwardedAddress(t *testing.T) {
+	t.Setenv("YUNLING_TRUST_PROXY", "true")
+	service := &notificationManager{view: notification.FeishuConfigView{Configured: true, Enabled: true}}
+	handler := operationshttp.NewHandler(operationshttp.Services{Notifications: service}, "https://aiwise.top")
+	request := httptest.NewRequest(http.MethodPut, "/api/operations/notifications/feishu", strings.NewReader(validUpdateBody()))
+	request.RemoteAddr = "172.20.0.2:43210"
+	request.Header.Set("Origin", "https://aiwise.top")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Forwarded-For", "203.0.113.25")
+	request = request.WithContext(auth.WithPrincipal(request.Context(), adminPrincipal()))
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || service.ipAddress != "203.0.113.25" {
+		t.Fatalf("飞书配置审计必须记录 Caddy 写入的客户端地址：status=%d ip=%q", recorder.Code, service.ipAddress)
+	}
+}
+
 func TestFeishuTestMessageAndDeliveryStatusAPI(t *testing.T) {
 	deliveries := &deliveryManager{delivery: notification.Delivery{
 		ID: "delivery-1", Status: notification.DeliveryPending, Attempts: 0,
@@ -190,6 +209,7 @@ type notificationManager struct {
 	view      notification.FeishuConfigView
 	lastInput notification.FeishuConfigInput
 	actorID   string
+	ipAddress string
 }
 
 type deliveryManager struct {
@@ -238,8 +258,8 @@ func (m *notificationManager) Get(context.Context) (notification.FeishuConfigVie
 	return m.view, nil
 }
 
-func (m *notificationManager) Update(_ context.Context, actorID, _ string, input notification.FeishuConfigInput) (notification.FeishuConfigView, error) {
-	m.actorID, m.lastInput = actorID, input
+func (m *notificationManager) Update(_ context.Context, actorID, ipAddress string, input notification.FeishuConfigInput) (notification.FeishuConfigView, error) {
+	m.actorID, m.ipAddress, m.lastInput = actorID, ipAddress, input
 	return m.view, nil
 }
 

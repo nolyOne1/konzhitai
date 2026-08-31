@@ -55,7 +55,7 @@ sudo rm -f /root/yunling-recovery-key.txt
 sudo test ! -e /root/yunling-recovery-key.txt
 ```
 
-主密钥与 Restic 密码都属于灾难恢复必需材料，丢失任意一项都无法完整恢复。宿主机源密钥保持 `root:root`、权限 `0600`；一次性离线容器只会把副本以 UID/GID 10001、权限 `0400` 写入专用 Docker 卷：
+主密钥与 Restic 密码都属于灾难恢复必需材料，丢失任意一项都无法完整恢复。宿主机源密钥保持 `root:root`、权限 `0600`；一次性离线容器会把全部运维凭据写入 Ops 专用卷，同时分别生成只含主密钥、数据库备份账号密钥、MinIO 备份账号密钥的三个最小权限卷，副本统一使用 UID/GID 10001、权限 `0400`。因此 API 和初始化服务都无法读取无关密钥：
 
 ```bash
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml --profile tools run --rm ops-secrets-init

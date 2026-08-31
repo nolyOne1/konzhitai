@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -368,6 +370,13 @@ func normalizeOrigin(value string) (string, bool) {
 }
 
 func sourceIP(r *http.Request) string {
+	trustProxy, _ := strconv.ParseBool(os.Getenv("YUNLING_TRUST_PROXY"))
+	if trustProxy {
+		forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+		if !strings.Contains(forwarded, ",") && net.ParseIP(forwarded) != nil {
+			return forwarded
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil && net.ParseIP(host) != nil {
 		return host

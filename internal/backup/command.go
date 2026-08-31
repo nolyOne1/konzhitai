@@ -76,17 +76,21 @@ func (r *CommandRunner) Run(ctx context.Context, name string, args []string, env
 	defer cancel()
 	command := exec.Command(executable, args...)
 	configureProcessGroup(command)
-	command.Env = append([]string{}, os.Environ()...)
-	keys := make([]string, 0, len(environment))
-	for key := range environment {
+	environmentValues := allowedParentEnvironment()
+	for key, value := range environment {
+		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, '\x00') {
+			return CommandResult{ExitCode: -1}, ErrInvalidRequest
+		}
+		environmentValues[key] = value
+	}
+	keys := make([]string, 0, len(environmentValues))
+	for key := range environmentValues {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	command.Env = make([]string, 0, len(keys))
 	for _, key := range keys {
-		if key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(environment[key], '\x00') {
-			return CommandResult{ExitCode: -1}, ErrInvalidRequest
-		}
-		command.Env = append(command.Env, key+"="+environment[key])
+		command.Env = append(command.Env, key+"="+environmentValues[key])
 	}
 	stdout := &boundedBuffer{maximum: commandOutputLimit}
 	stderr := &boundedBuffer{maximum: commandOutputLimit}
@@ -119,6 +123,20 @@ func (r *CommandRunner) Run(ctx context.Context, name string, args []string, env
 		return result, fmt.Errorf("%w（退出码 %d）", ErrCommandFailed, exitCode)
 	}
 	return result, nil
+}
+
+func allowedParentEnvironment() map[string]string {
+	values := make(map[string]string)
+	for _, key := range []string{
+		"PATH", "HOME", "XDG_CACHE_HOME", "MC_CONFIG_DIR", "TMPDIR", "TEMP", "TMP",
+		"TZ", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR",
+		"SystemRoot", "WINDIR", "COMSPEC", "PATHEXT",
+	} {
+		if value, ok := os.LookupEnv(key); ok && !strings.ContainsRune(value, '\x00') {
+			values[key] = value
+		}
+	}
+	return values
 }
 
 type boundedBuffer struct {

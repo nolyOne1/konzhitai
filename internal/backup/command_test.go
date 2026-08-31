@@ -65,6 +65,18 @@ func TestCommandRunnerTimesOutAndKillsProcess(t *testing.T) {
 	}
 }
 
+func TestCommandRunnerDoesNotInheritUnrelatedParentSecrets(t *testing.T) {
+	t.Setenv("YUNLING_DATABASE_URL", "postgres://admin:parent-secret@postgres/yunling")
+	runner := NewCommandRunner(time.Second)
+	runner.commands["/usr/bin/pg_dump"] = os.Args[0]
+	result, err := runner.Run(context.Background(), "/usr/bin/pg_dump", []string{
+		"-test.run=TestBackupCommandHelperProcess", "--", "parent-environment",
+	}, map[string]string{"GO_WANT_BACKUP_COMMAND_HELPER": "1"})
+	if err != nil {
+		t.Fatalf("子进程不应继承父进程业务秘密：result=%+v err=%v", result, err)
+	}
+}
+
 func TestBackupCommandHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_BACKUP_COMMAND_HELPER") != "1" {
 		return
@@ -83,6 +95,10 @@ func TestBackupCommandHelperProcess(t *testing.T) {
 		os.Exit(3)
 	case "sleep":
 		time.Sleep(10 * time.Second)
+	case "parent-environment":
+		if os.Getenv("YUNLING_DATABASE_URL") != "" {
+			os.Exit(4)
+		}
 	}
 	os.Exit(0)
 }
