@@ -2,9 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   changePassword,
+  getBackups,
+  getBackupSummary,
   getDashboard,
   getFeishuNotificationConfig,
   getNotificationDelivery,
+  getRestoreVerifications,
+  requestBackup,
+  requestVerification,
   testFeishuNotification,
   updateFeishuNotificationConfig,
 } from './client'
@@ -59,6 +64,29 @@ describe('API 客户端', () => {
       method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}',
     })
     expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/operations/notifications/delivery-1', { credentials: 'same-origin' })
+  })
+
+  it('使用 UUID 幂等键请求备份和恢复校验', async () => {
+    vi.stubGlobal('crypto', { randomUUID: () => '33333333-3333-4333-8333-333333333333' })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ status: 'not_started', nextBackupAt: null, latestLocalBackup: null, latestCOSBackup: null, latestVerification: null }))
+      .mockResolvedValueOnce(response({ backups: [] }))
+      .mockResolvedValueOnce(response({ verifications: [] }))
+      .mockResolvedValueOnce(response({ id: 'backup-1', status: 'queued' }, 202))
+      .mockResolvedValueOnce(response({ id: 'verify-1', status: 'queued' }, 202))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getBackupSummary(); await getBackups(); await getRestoreVerifications(); await requestBackup(); await requestVerification('backup-1')
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/operations/summary', { credentials: 'same-origin' })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/operations/backups', { credentials: 'same-origin' })
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/operations/verifications', { credentials: 'same-origin' })
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/operations/backups', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': '33333333-3333-4333-8333-333333333333' }, body: '{}',
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(5, '/api/operations/verifications', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': '33333333-3333-4333-8333-333333333333' }, body: JSON.stringify({ backupRunId: 'backup-1' }),
+    })
   })
 })
 

@@ -110,7 +110,7 @@ func (r *PostgresRepository) RequestBackup(ctx context.Context, actorID, idempot
 			idempotencyKey, actorID, at), &run)
 	} else {
 		err = scanBackup(tx.QueryRow(ctx, backupInsert+`
-			VALUES ('scheduled', 'queued', $1, NULL, NULL, $1, $1, $1) RETURNING `+backupColumns,
+			VALUES ('scheduled', 'queued', $1, NULL, NULL, $1, now(), now()) RETURNING `+backupColumns,
 			at), &run)
 	}
 	if err != nil {
@@ -257,7 +257,7 @@ func (r *PostgresRepository) RequestVerification(ctx context.Context, actorID, b
 			backupRunID, idempotencyKey, actorID, at), &verification)
 	} else {
 		err = scanVerification(tx.QueryRow(ctx, verificationInsert+`
-			VALUES ($1, 'scheduled', 'queued', $2, NULL, NULL, $2, $2) RETURNING `+verificationColumns,
+			VALUES ($1, 'scheduled', 'queued', $2, NULL, NULL, now(), now()) RETURNING `+verificationColumns,
 			backupRunID, at), &verification)
 	}
 	if err != nil {
@@ -369,6 +369,58 @@ func (r *PostgresRepository) ListVerifications(ctx context.Context, limit int) (
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (r *PostgresRepository) Summary(ctx context.Context) (Summary, error) {
+	if r == nil || r.db == nil {
+		return Summary{}, ErrUnavailable
+	}
+	summary := Summary{Status: "not_started"}
+	if err := r.db.QueryRow(ctx, `
+		SELECT min(scheduled_for) FROM backup_runs
+		WHERE trigger_type='scheduled' AND status='queued' AND scheduled_for > now()
+	`).Scan(&summary.NextBackupAt); err != nil {
+		return Summary{}, fmt.Errorf("读取下一次备份时间：%w", err)
+	}
+	backups, err := r.ListBackups(ctx, 100)
+	if err != nil {
+		return Summary{}, err
+	}
+	for index := range backups {
+		run := backups[index]
+		if summary.LatestLocalBackup == nil && run.LocalSnapshotID != "" {
+			copy := run
+			summary.LatestLocalBackup = &copy
+		}
+		if summary.LatestCOSBackup == nil && run.COSSnapshotID != "" {
+			copy := run
+			summary.LatestCOSBackup = &copy
+		}
+	}
+	for _, run := range backups {
+		if run.Status == StatusQueued {
+			continue
+		}
+		switch run.Status {
+		case StatusSucceeded:
+			summary.Status = "healthy"
+		case StatusDegraded:
+			summary.Status = "degraded"
+		case StatusFailed:
+			summary.Status = "failed"
+		default:
+			summary.Status = "active"
+		}
+		break
+	}
+	verifications, err := r.ListVerifications(ctx, 1)
+	if err != nil {
+		return Summary{}, err
+	}
+	if len(verifications) == 1 {
+		summary.LatestVerification = &verifications[0]
+	}
+	return summary, nil
 }
 
 func (r *PostgresRepository) transition(ctx context.Context, query string, arguments ...any) error {

@@ -1,4 +1,6 @@
 import { AccountSecurityPanel } from './AccountSecurityPanel'
+import { BackupHistoryPanel } from './BackupHistoryPanel'
+import { BackupStatusPanel } from './BackupStatusPanel'
 import { NotificationSettingsPanel } from './NotificationSettingsPanel'
 
 export function OperationsPage() {
@@ -13,6 +15,8 @@ export function OperationsPage() {
       </div>
 
       <div className="operations-stack">
+        <BackupStatusPanel />
+        <BackupHistoryPanel />
         <NotificationSettingsPanel />
         <AccountSecurityPanel />
       </div>

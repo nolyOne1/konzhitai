@@ -86,6 +86,14 @@ type VerificationResult struct {
 	ErrorMessage      string
 }
 
+type Summary struct {
+	Status             string               `json:"status"`
+	NextBackupAt       *time.Time           `json:"nextBackupAt"`
+	LatestLocalBackup  *BackupRun           `json:"latestLocalBackup"`
+	LatestCOSBackup    *BackupRun           `json:"latestCOSBackup"`
+	LatestVerification *RestoreVerification `json:"latestVerification"`
+}
+
 type Repository interface {
 	EnsureSchedules(context.Context, time.Time) error
 	RequestBackup(context.Context, string, string, time.Time) (BackupRun, error)

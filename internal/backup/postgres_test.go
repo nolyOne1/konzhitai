@@ -210,6 +210,40 @@ func TestPostgresRepositoryVerificationLeaseAndCompletion(t *testing.T) {
 	}
 }
 
+func TestPostgresRepositorySummaryDistinguishesNotStartedAndDegraded(t *testing.T) {
+	db := backupDatabase(t)
+	repository := backup.NewPostgresRepository(db)
+	ctx := context.Background()
+	summary, err := repository.Summary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Status != "not_started" || summary.LatestLocalBackup != nil || summary.LatestCOSBackup != nil {
+		t.Fatalf("空备份摘要错误：%+v", summary)
+	}
+
+	run, err := repository.RequestBackup(ctx, "", "", time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `
+		UPDATE backup_runs SET status='degraded', local_snapshot_id='local-snapshot',
+		manifest_sha256=$2, byte_size=1024, object_count=2 WHERE id=$1
+	`, run.ID, strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.RequestBackup(ctx, "", "", time.Now().UTC().Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	summary, err = repository.Summary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Status != "degraded" || summary.NextBackupAt == nil || summary.LatestLocalBackup == nil || summary.LatestCOSBackup != nil {
+		t.Fatalf("降级备份摘要错误：%+v", summary)
+	}
+}
+
 func backupDatabase(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	db := testpostgres.Start(t)

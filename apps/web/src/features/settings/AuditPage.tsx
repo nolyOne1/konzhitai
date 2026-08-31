@@ -12,6 +12,7 @@ const actionLabels: Record<string, string> = {
   'alert.acknowledge': '确认系统告警',
   'operations.feishu.update': '更新飞书通知', 'operations.feishu.disable': '停用飞书通知',
   'operations.feishu.test': '发送飞书测试消息',
+  'operations.backup.request': '请求立即备份', 'operations.verification.request': '请求恢复校验',
 }
 
 export function AuditPage() {

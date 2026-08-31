@@ -15,6 +15,7 @@ import (
 	"yunling.local/platform/internal/artifact"
 	"yunling.local/platform/internal/audit"
 	"yunling.local/platform/internal/auth"
+	"yunling.local/platform/internal/backup"
 	"yunling.local/platform/internal/dispatch"
 	"yunling.local/platform/internal/health"
 	"yunling.local/platform/internal/logstream"
@@ -118,6 +119,7 @@ func main() {
 					operationsHandler = protect(operationshttp.NewHandler(operationshttp.Services{
 						Notifications: notification.NewConfigService(notificationRepository, secretService),
 						Deliveries:    outboxService,
+						Backups:       backup.NewPostgresRepository(pool),
 					}, os.Getenv("YUNLING_PUBLIC_URL")))
 					logOptions = append(logOptions, logstream.WithRedaction(secret.NewRedactor(), secret.NewRunValueSource(pool, secretService)))
 				}
