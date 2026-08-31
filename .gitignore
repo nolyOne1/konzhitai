@@ -17,6 +17,8 @@ playwright-report/
 !.env.example
 *.pem
 *.key
+deploy/secrets/
+deploy/config/
 
 # 编辑器与系统文件
 .DS_Store

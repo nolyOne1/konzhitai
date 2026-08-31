@@ -72,7 +72,7 @@ services:
       dockerfile: deploy/Dockerfile.services
     environment: *api-environment
     volumes:
-      - ./secrets/master.key:/run/secrets/yunling-master-key:ro
+      - yunling_ops_secrets:/run/secrets:ro
     tmpfs:
       - /tmp:size=64m,uid=10001,gid=10001,mode=1770
     expose:
@@ -119,6 +119,35 @@ services:
       timeout: 5s
       retries: 3
 
+  ops-secrets-init:
+    profiles: ["tools"]
+    image: alpine:3.23.3
+    user: "0:0"
+    read_only: true
+    restart: "no"
+    network_mode: none
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        for source in /source/*; do
+          name="$${source##*/}";
+          install -m 0400 -o 10001 -g 10001 "$$source" "/target/$$name";
+        done
+    volumes:
+      - ./secrets/yunling-master-key:/source/yunling-master-key:ro
+      - ./secrets/cos-secret-id:/source/cos-secret-id:ro
+      - ./secrets/cos-secret-key:/source/cos-secret-key:ro
+      - ./secrets/restic-password:/source/restic-password:ro
+      - ./secrets/backup-postgres-password:/source/backup-postgres-password:ro
+      - ./secrets/verify-postgres-password:/source/verify-postgres-password:ro
+      - ./secrets/backup-minio-access-key:/source/backup-minio-access-key:ro
+      - ./secrets/backup-minio-secret-key:/source/backup-minio-secret-key:ro
+      - yunling_ops_secrets:/target
+    tmpfs:
+      - /tmp:size=8m,mode=0700
+
   ops:
     build:
       context: ..
@@ -135,13 +164,37 @@ services:
       YUNLING_MASTER_KEY_VERSION: ${YUNLING_MASTER_KEY_VERSION:-1}
       YUNLING_OPS_HTTP_ADDR: :8081
       YUNLING_OPS_SCAN_INTERVAL: ${YUNLING_OPS_SCAN_INTERVAL:-15s}
+      YUNLING_BACKUP_DATABASE_URL: postgres://yunling_backup@postgres:5432/${YUNLING_POSTGRES_DB}?sslmode=disable
+      YUNLING_VERIFY_DATABASE_URL: postgres://yunling_verifier@postgres:5432/postgres?sslmode=disable
+      YUNLING_BACKUP_POSTGRES_PASSWORD_FILE: /run/secrets/backup-postgres-password
+      YUNLING_VERIFY_POSTGRES_PASSWORD_FILE: /run/secrets/verify-postgres-password
+      YUNLING_BACKUP_MINIO_ENDPOINT: http://minio:9000
+      YUNLING_BACKUP_MINIO_BUCKET: ${YUNLING_S3_BUCKET:-yunling-artifacts}
+      YUNLING_BACKUP_MINIO_ACCESS_KEY_FILE: /run/secrets/backup-minio-access-key
+      YUNLING_BACKUP_MINIO_SECRET_KEY_FILE: /run/secrets/backup-minio-secret-key
+      YUNLING_COS_ENDPOINT: ${YUNLING_COS_ENDPOINT}
+      YUNLING_COS_REGION: ${YUNLING_COS_REGION}
+      YUNLING_COS_BUCKET: ${YUNLING_COS_BUCKET}
+      YUNLING_COS_PREFIX: ${YUNLING_COS_PREFIX:-yunling}
+      YUNLING_COS_SECRET_ID_FILE: /run/secrets/cos-secret-id
+      YUNLING_COS_SECRET_KEY_FILE: /run/secrets/cos-secret-key
+      YUNLING_RESTIC_PASSWORD_FILE: /run/secrets/restic-password
+      YUNLING_BACKUP_ROOT: /var/lib/yunling-ops
+      YUNLING_GIT_REVISION: ${YUNLING_GIT_REVISION:-unknown}
     volumes:
-      - ./secrets/master.key:/run/secrets/yunling-master-key:ro
+      - yunling_ops_secrets:/run/secrets:ro
+      - ./config/local-repository:/run/config/local-repository:ro
+      - ./config/cos-repository:/run/config/cos-repository:ro
+      - yunling_ops_data:/var/lib/yunling-ops
     tmpfs:
       - /tmp:size=32m,uid=10001,gid=10001,mode=1770
     depends_on:
       postgres:
         condition: service_healthy
+      database-roles-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
     networks:
       - backend
       - egress
@@ -195,6 +248,33 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+
+  database-roles-init:
+    image: postgres:18.6-alpine
+    user: "10001:10001"
+    read_only: true
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: ${YUNLING_POSTGRES_DB}
+      PGUSER: ${YUNLING_POSTGRES_USER}
+      PGPASSWORD: ${YUNLING_POSTGRES_PASSWORD}
+      YUNLING_POSTGRES_DB: ${YUNLING_POSTGRES_DB}
+      YUNLING_POSTGRES_USER: ${YUNLING_POSTGRES_USER}
+    entrypoint: ["/bin/sh", "/opt/yunling/database-roles-init.sh"]
+    volumes:
+      - ./database-roles-init.sh:/opt/yunling/database-roles-init.sh:ro
+      - yunling_ops_secrets:/run/secrets:ro
+    tmpfs:
+      - /tmp:size=8m,uid=10001,gid=10001,mode=0700
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
 
   redis:
     <<: *service-security
@@ -254,7 +334,17 @@ services:
       - >-
         mc alias set local http://minio:9000 "$$YUNLING_MINIO_ROOT_USER" "$$YUNLING_MINIO_ROOT_PASSWORD" &&
         mc mb --ignore-existing "local/$$YUNLING_S3_BUCKET" &&
-        mc anonymous set none "local/$$YUNLING_S3_BUCKET"
+        mc anonymous set none "local/$$YUNLING_S3_BUCKET" &&
+        backup_access_key="$$(cat /run/secrets/backup-minio-access-key)" &&
+        backup_secret_key="$$(cat /run/secrets/backup-minio-secret-key)" &&
+        sed "s/__BUCKET__/$$YUNLING_S3_BUCKET/g" /opt/yunling/minio-backup-policy.json > /tmp/minio-backup-policy.json &&
+        mc admin user add local "$$backup_access_key" "$$backup_secret_key" ||
+        mc admin user enable local "$$backup_access_key" &&
+        mc admin policy create local yunling-backup-readonly /tmp/minio-backup-policy.json &&
+        mc admin policy attach local yunling-backup-readonly --user "$$backup_access_key"
+    volumes:
+      - ./minio-backup-policy.json:/opt/yunling/minio-backup-policy.json:ro
+      - yunling_ops_secrets:/run/secrets:ro
     tmpfs:
       - /tmp:size=16m,mode=1777
     depends_on:
@@ -269,6 +359,8 @@ volumes:
   minio_data:
   caddy_data:
   caddy_config:
+  yunling_ops_secrets:
+  yunling_ops_data:
 
 networks:
   frontend:
