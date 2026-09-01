@@ -1,11 +1,123 @@
 package integration_test
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"yunling.local/platform/internal/testpostgres"
 )
+
+func TestMinIOInitStopsAtTheFirstFailedPrerequisite(t *testing.T) {
+	root := testpostgres.RepositoryRoot(t)
+	tempDir := t.TempDir()
+	mcLog := filepath.Join(tempDir, "mc.log")
+	fakeMC := filepath.Join(tempDir, "mc")
+	if err := os.WriteFile(fakeMC, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> "$YUNLING_TEST_MC_LOG"
+if [ "$1 $2" = "alias set" ]; then
+    exit 23
+fi
+exit 0
+`), 0o700); err != nil {
+		t.Fatalf("写入假 mc 失败：%v", err)
+	}
+	secretDir := filepath.Join(tempDir, "secrets")
+	if err := os.Mkdir(secretDir, 0o700); err != nil {
+		t.Fatalf("创建测试密钥目录失败：%v", err)
+	}
+	for name, value := range map[string]string{
+		"backup-minio-access-key": "test-access-key",
+		"backup-minio-secret-key": "test-secret-key",
+	} {
+		if err := os.WriteFile(filepath.Join(secretDir, name), []byte(value), 0o600); err != nil {
+			t.Fatalf("写入测试密钥 %s 失败：%v", name, err)
+		}
+	}
+	policySource := filepath.Join(tempDir, "policy.json")
+	if err := os.WriteFile(policySource, []byte(`{"Resource":"arn:aws:s3:::__BUCKET__"}`), 0o600); err != nil {
+		t.Fatalf("写入测试策略失败：%v", err)
+	}
+
+	script := filepath.Join(root, "deploy", "minio-init.sh")
+	command := exec.Command("sh", script)
+	command.Env = append(os.Environ(),
+		"YUNLING_TEST_MC_LOG="+filepath.ToSlash(mcLog),
+		"YUNLING_MC_BIN="+filepath.ToSlash(fakeMC),
+		"YUNLING_MINIO_SECRET_DIR="+filepath.ToSlash(secretDir),
+		"YUNLING_MINIO_POLICY_SOURCE="+filepath.ToSlash(policySource),
+		"YUNLING_MINIO_POLICY_TARGET="+filepath.ToSlash(filepath.Join(tempDir, "rendered-policy.json")),
+		"YUNLING_MINIO_ROOT_USER=test-root",
+		"YUNLING_MINIO_ROOT_PASSWORD=test-root-password",
+		"YUNLING_S3_BUCKET=test-bucket",
+	)
+	if output, err := command.CombinedOutput(); err == nil {
+		t.Fatalf("mc alias 失败时初始化脚本必须失败，输出：%s", output)
+	}
+	invocations, err := os.ReadFile(mcLog)
+	if err != nil {
+		t.Fatalf("读取 mc 调用记录失败：%v", err)
+	}
+	got := strings.TrimSpace(string(invocations))
+	if got != "alias set local http://minio:9000 test-root test-root-password" {
+		t.Fatalf("前置步骤失败后必须立即停止，实际调用：%q", got)
+	}
+}
+
+func TestMinIOInitDoesNotRequireExternalTextUtilities(t *testing.T) {
+	root := testpostgres.RepositoryRoot(t)
+	tempDir := t.TempDir()
+	mcLog := filepath.Join(tempDir, "mc.log")
+	fakeMC := filepath.Join(tempDir, "mc")
+	if err := os.WriteFile(fakeMC, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> "$YUNLING_TEST_MC_LOG"
+exit 0
+`), 0o700); err != nil {
+		t.Fatalf("写入假 mc 失败：%v", err)
+	}
+	secretDir := filepath.Join(tempDir, "secrets")
+	if err := os.Mkdir(secretDir, 0o700); err != nil {
+		t.Fatalf("创建测试密钥目录失败：%v", err)
+	}
+	for name, value := range map[string]string{
+		"backup-minio-access-key": "test-access-key",
+		"backup-minio-secret-key": "test-secret-key",
+	} {
+		if err := os.WriteFile(filepath.Join(secretDir, name), []byte(value), 0o600); err != nil {
+			t.Fatalf("写入测试密钥 %s 失败：%v", name, err)
+		}
+	}
+	policySource := filepath.Join(tempDir, "policy.json")
+	policyTarget := filepath.Join(tempDir, "rendered-policy.json")
+	if err := os.WriteFile(policySource, []byte("bucket=__BUCKET__\n"), 0o600); err != nil {
+		t.Fatalf("写入测试策略失败：%v", err)
+	}
+
+	command := exec.Command("sh", filepath.Join(root, "deploy", "minio-init.sh"))
+	command.Env = append(os.Environ(),
+		"PATH="+filepath.ToSlash(tempDir),
+		"YUNLING_TEST_MC_LOG="+filepath.ToSlash(mcLog),
+		"YUNLING_MC_BIN="+filepath.ToSlash(fakeMC),
+		"YUNLING_MINIO_SECRET_DIR="+filepath.ToSlash(secretDir),
+		"YUNLING_MINIO_POLICY_SOURCE="+filepath.ToSlash(policySource),
+		"YUNLING_MINIO_POLICY_TARGET="+filepath.ToSlash(policyTarget),
+		"YUNLING_MINIO_ROOT_USER=test-root",
+		"YUNLING_MINIO_ROOT_PASSWORD=test-root-password",
+		"YUNLING_S3_BUCKET=test-bucket",
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("初始化脚本不得依赖 sed、tr 等外部文本工具：%v\n%s", err, output)
+	}
+	rendered, err := os.ReadFile(policyTarget)
+	if err != nil {
+		t.Fatalf("读取渲染策略失败：%v", err)
+	}
+	if got := string(rendered); got != "bucket=test-bucket\n" {
+		t.Fatalf("策略中的存储桶占位符替换错误：%q", got)
+	}
+}
 
 func TestControlPlaneMasterKeyOwnershipMatchesNonRootService(t *testing.T) {
 	root := testpostgres.RepositoryRoot(t)

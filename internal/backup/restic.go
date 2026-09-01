@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/google/uuid"
@@ -189,7 +191,58 @@ func (r *ResticRepository) RestoreFromCOS(ctx context.Context, runID, destinatio
 	); err != nil {
 		return errors.New("从 COS 恢复快照失败")
 	}
+	if err := flattenRestoredRun(destination, r.configuration.Root, runID); err != nil {
+		return errors.New("展开 COS 恢复路径失败")
+	}
 	return nil
+}
+
+func flattenRestoredRun(destination, backupRoot, runID string) error {
+	if _, err := uuid.Parse(runID); err != nil || !filepath.IsAbs(destination) {
+		return ErrInvalidRequest
+	}
+	root := path.Clean(strings.ReplaceAll(backupRoot, `\`, "/"))
+	if !strings.HasPrefix(root, "/") || root == "/" || root == "." {
+		return ErrInvalidRequest
+	}
+	relativeRoot := strings.TrimPrefix(root, "/")
+	source := filepath.Join(destination, filepath.FromSlash(relativeRoot), "staging", runID)
+	if err := ensureInside(destination, source); err != nil {
+		return err
+	}
+	info, err := os.Lstat(source)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("恢复快照的受控根目录不存在")
+	}
+	entries, err := os.ReadDir(source)
+	if err != nil || len(entries) == 0 {
+		return errors.New("恢复快照的受控根目录为空")
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New("恢复快照包含不允许的符号链接")
+		}
+		target := filepath.Join(destination, entry.Name())
+		if err := ensureInside(destination, target); err != nil {
+			return err
+		}
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			if err == nil {
+				return errors.New("恢复目标路径已经存在")
+			}
+			return err
+		}
+	}
+	for _, entry := range entries {
+		if err := os.Rename(filepath.Join(source, entry.Name()), filepath.Join(destination, entry.Name())); err != nil {
+			return err
+		}
+	}
+	prefix := filepath.Join(destination, strings.Split(relativeRoot, "/")[0])
+	if err := ensureInside(destination, prefix); err != nil {
+		return err
+	}
+	return os.RemoveAll(prefix)
 }
 
 func (r *ResticRepository) ForgetLocal(ctx context.Context, keepWithin string) error {

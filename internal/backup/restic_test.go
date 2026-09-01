@@ -15,6 +15,74 @@ type resticFakeRunner struct {
 	calls         []exportCommandCall
 	repositoryNew bool
 	snapshots     string
+	onRestore     func([]string) error
+}
+
+func TestResticRestoreFlattensTheControlledAbsoluteBackupPath(t *testing.T) {
+	directory := t.TempDir()
+	destination := filepath.Join(directory, "restore")
+	runID := uuid.NewString()
+	localRepositoryFile := filepath.Join(directory, "local-repository")
+	cosRepositoryFile := filepath.Join(directory, "cos-repository")
+	passwordFile := filepath.Join(directory, "restic-password")
+	secretIDFile := filepath.Join(directory, "cos-secret-id")
+	secretKeyFile := filepath.Join(directory, "cos-secret-key")
+	for path, value := range map[string]string{
+		localRepositoryFile: "/var/lib/yunling-ops/local-repo",
+		cosRepositoryFile:   "s3:https://cos.ap-guangzhou.myqcloud.com/bucket/yunling",
+		passwordFile:        "restic-password",
+		secretIDFile:        "secret-id",
+		secretKeyFile:       "secret-key",
+	} {
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := &resticFakeRunner{snapshots: `[{"id":"cos-snapshot"}]`}
+	runner.onRestore = func(args []string) error {
+		var target string
+		for index := range args {
+			if args[index] == "--target" && index+1 < len(args) {
+				target = args[index+1]
+			}
+		}
+		if target == "" {
+			return errors.New("restore target missing")
+		}
+		nested := filepath.Join(target, "var", "lib", "yunling-ops", "staging", runID)
+		if err := os.MkdirAll(filepath.Join(nested, "database"), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(nested, "manifest.json"), []byte("manifest"), 0o600); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(nested, "database", "yunling.dump"), []byte("dump"), 0o600)
+	}
+	repository := NewResticRepository(Config{
+		Root:                       "/var/lib/yunling-ops",
+		LocalRepositoryFile:        localRepositoryFile,
+		COSRepositoryFile:          cosRepositoryFile,
+		ResticPasswordFile:         passwordFile,
+		COSEndpoint:                "https://cos.ap-guangzhou.myqcloud.com",
+		COSRegion:                  "ap-guangzhou",
+		COSBucket:                  "bucket",
+		COSPrefix:                  "yunling",
+		COSSecretIDFile:            secretIDFile,
+		COSSecretKeyFile:           secretKeyFile,
+	}, runner)
+
+	if err := repository.RestoreFromCOS(context.Background(), runID, destination); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := os.ReadFile(filepath.Join(destination, "manifest.json")); err != nil || string(value) != "manifest" {
+		t.Fatalf("恢复清单必须位于隔离恢复根目录：value=%q err=%v", value, err)
+	}
+	if value, err := os.ReadFile(filepath.Join(destination, "database", "yunling.dump")); err != nil || string(value) != "dump" {
+		t.Fatalf("数据库备份必须移动到隔离恢复根目录：value=%q err=%v", value, err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "var")); !os.IsNotExist(err) {
+		t.Fatalf("绝对路径前缀必须在展开后清理：%v", err)
+	}
 }
 
 func TestResticCopyToCOSUsesDNSRegionRepositoryFilesAndCredentialEnvironment(t *testing.T) {
@@ -150,6 +218,14 @@ func (f *resticFakeRunner) Run(_ context.Context, name string, args []string, en
 	}
 	if strings.Contains(joined, "snapshots --json") {
 		return CommandResult{Stdout: f.snapshots, ExitCode: 0}, nil
+	}
+	for _, argument := range args {
+		if argument == "restore" && f.onRestore != nil {
+			if err := f.onRestore(args); err != nil {
+				return CommandResult{ExitCode: 1}, err
+			}
+			break
+		}
 	}
 	return CommandResult{ExitCode: 0}, nil
 }

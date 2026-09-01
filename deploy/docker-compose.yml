@@ -156,6 +156,23 @@ services:
     tmpfs:
       - /tmp:size=8m,mode=0700
 
+  ops-data-init:
+    image: alpine:3.23.3
+    user: "0:0"
+    read_only: true
+    restart: "no"
+    network_mode: none
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      YUNLING_OPS_DATA_DIR: /data
+    entrypoint: ["/bin/sh", "/opt/yunling/initialize-ops-data.sh"]
+    volumes:
+      - ./initialize-ops-data.sh:/opt/yunling/initialize-ops-data.sh:ro
+      - yunling_ops_data:/data
+    tmpfs:
+      - /tmp:size=8m,mode=0700
+
   ops:
     build:
       context: ..
@@ -202,6 +219,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      ops-data-init:
+        condition: service_completed_successfully
       database-roles-init:
         condition: service_completed_successfully
       minio-init:
@@ -340,20 +359,9 @@ services:
       YUNLING_MINIO_ROOT_USER: ${YUNLING_MINIO_ROOT_USER}
       YUNLING_MINIO_ROOT_PASSWORD: ${YUNLING_MINIO_ROOT_PASSWORD}
       YUNLING_S3_BUCKET: ${YUNLING_S3_BUCKET:-yunling-artifacts}
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - >-
-        mc alias set local http://minio:9000 "$$YUNLING_MINIO_ROOT_USER" "$$YUNLING_MINIO_ROOT_PASSWORD" &&
-        mc mb --ignore-existing "local/$$YUNLING_S3_BUCKET" &&
-        mc anonymous set none "local/$$YUNLING_S3_BUCKET" &&
-        backup_access_key="$$(cat /run/secrets/backup-minio-access-key)" &&
-        backup_secret_key="$$(cat /run/secrets/backup-minio-secret-key)" &&
-        sed "s/__BUCKET__/$$YUNLING_S3_BUCKET/g" /opt/yunling/minio-backup-policy.json > /tmp/minio-backup-policy.json &&
-        mc admin user add local "$$backup_access_key" "$$backup_secret_key" ||
-        mc admin user enable local "$$backup_access_key" &&
-        mc admin policy create local yunling-backup-readonly /tmp/minio-backup-policy.json &&
-        mc admin policy attach local yunling-backup-readonly --user "$$backup_access_key"
+    entrypoint: ["/bin/sh", "/opt/yunling/minio-init.sh"]
     volumes:
+      - ./minio-init.sh:/opt/yunling/minio-init.sh:ro
       - ./minio-backup-policy.json:/opt/yunling/minio-backup-policy.json:ro
       - yunling_minio_backup_secrets:/run/secrets:ro
     tmpfs:
