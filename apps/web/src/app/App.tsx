@@ -1,6 +1,8 @@
 import './styles.css'
-import { BrowserRouter, Link, NavLink, Outlet, Route, Routes, useLocation } from 'react-router-dom'
+import { useState } from 'react'
+import { BrowserRouter, Link, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 
+import { logout } from '../api/client'
 import { LoginPage } from '../features/auth/LoginPage'
 import { DashboardPage } from '../features/dashboard/DashboardPage'
 import { ServersPage } from '../features/servers/ServersPage'
@@ -56,7 +58,24 @@ export function App() {
 
 function ConsoleShell() {
   const location = useLocation()
+  const navigate = useNavigate()
+  const [loggingOut, setLoggingOut] = useState(false)
+  const [logoutError, setLogoutError] = useState('')
   const current = navigation.find((item) => item.href !== '/' && location.pathname.startsWith(item.href)) ?? navigation[0]
+
+  async function exitSession() {
+    if (loggingOut) return
+    setLogoutError('')
+    setLoggingOut(true)
+    try {
+      await logout()
+      navigate('/login', { replace: true })
+    } catch (error) {
+      setLogoutError(error instanceof Error ? error.message : '退出登录失败，请稍后重试')
+    } finally {
+      setLoggingOut(false)
+    }
+  }
 
   return (
     <div className="app-shell">
@@ -93,10 +112,16 @@ function ConsoleShell() {
       <div className="workspace">
         <header className="topbar">
           <span className="breadcrumb">工作台 / {current.label}</span>
-          <span className="system-health">
-            <span className="status-dot" aria-hidden="true" />
-            全部系统正常
-          </span>
+          <div className="topbar-actions">
+            <span className="system-health">
+              <span className="status-dot" aria-hidden="true" />
+              全部系统正常
+            </span>
+            {logoutError ? <span aria-label="退出登录失败" className="topbar-error" role="alert">{logoutError}</span> : null}
+            <button aria-busy={loggingOut} className="secondary-action" disabled={loggingOut} type="button" onClick={() => void exitSession()}>
+              {loggingOut ? '正在退出…' : '退出登录'}
+            </button>
+          </div>
         </header>
 
         <main className="page-content" id="main-content" tabIndex={-1}><Outlet /></main>

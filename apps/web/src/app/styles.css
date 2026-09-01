@@ -207,6 +207,25 @@ a {
   gap: 9px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.topbar-actions .secondary-action {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.topbar-error {
+  max-width: 240px;
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .page-content {
   padding: 28px;
 }
@@ -2497,10 +2516,28 @@ h1 {
   .topbar {
     min-height: 56px;
     padding: 0 16px;
+    position: relative;
   }
 
   .system-health {
     font-size: 0;
+  }
+
+  .topbar-actions {
+    gap: 8px;
+  }
+
+  .topbar-error {
+    position: absolute;
+    z-index: 10;
+    top: calc(100% + 8px);
+    right: 16px;
+    max-width: min(320px, calc(100vw - 32px));
+    padding: 10px 12px;
+    border: 1px solid #efc9c5;
+    border-radius: 8px;
+    background: var(--danger-soft);
+    box-shadow: 0 8px 22px rgba(29, 47, 39, .12);
   }
 
   .page-content {

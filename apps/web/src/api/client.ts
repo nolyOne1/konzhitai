@@ -486,6 +486,10 @@ export async function getSession(): Promise<SessionUser> {
   return { id: response.user.user_id, displayName: response.user.display_name, email: response.user.email, roles: response.user.roles }
 }
 
+export async function logout(): Promise<void> {
+  await request<void>('/api/auth/logout', { method: 'POST' })
+}
+
 export interface FeishuNotificationConfig {
   configured: boolean
   enabled: boolean
