@@ -7,10 +7,10 @@
 - 控制面地址：`https://aiwise.top`
 - 腾讯云主机：`134.175.131.19`
 - 部署目录：`/opt/yunling`
-- 生产代码提交：`f9ccd9d`
+- 生产代码提交：`6a49583`
 - TLS：Caddy 自动签发 Let's Encrypt 证书，首次验收有效期至 2026-11-27
 
-API、Scheduler、Web、Caddy、PostgreSQL、Redis、MinIO 和 Ops 八个长期服务均通过 Docker 健康检查。生产 HTTPS 验收结果：健康接口 200、登录 200、会话 200、退出 204。
+API、Scheduler、Web、Caddy、PostgreSQL、Redis、MinIO 和 Ops 八个长期服务均通过 Docker 健康检查。生产 HTTPS 验收结果：健康接口 200、登录 200、会话 200、退出 204。控制台顶部已部署全局“退出登录”按钮，成功时返回登录页，失败时保留当前页面并显示中文错误。
 
 ## 自动备份与恢复校验
 
@@ -22,6 +22,18 @@ API、Scheduler、Web、Caddy、PostgreSQL、Redis、MinIO 和 Ops 八个长期�
 - COS 凭据、Restic 密码和数据库备份凭据：仅通过 root-only 文件挂载，不写入环境变量或日志
 
 下一次定时备份计划为 2026-09-01 18:30（Asia/Shanghai）；需要再观察一次成功结果，形成连续两次定时备份证据。
+
+2026-09-01 15:42（Asia/Shanghai）只读核对结果：12:30 定时备份状态仍为 `succeeded`，18:30 及之后的计划记录均未到执行时间，数据库中“已到期但仍排队”的备份数量为 `0`。
+
+## 飞书通知
+
+- 飞书 V2 自定义机器人通知：已配置并启用
+- Webhook 与签名密钥：通过系统级秘密加密保存，控制台只显示脱敏机器人标识，保存后输入框立即清空
+- 生产测试消息：`sent`，首次投递成功，尝试次数 `1`
+- 群内验收：用户已确认收到“云令飞书测试消息”
+- 投递服务：`yunling-ops` 健康，使用持久化发件箱和分级退避重试
+
+测试消息未包含凭据或业务数据，生产验收期间只发送一次，没有重复投递。
 
 ## 可靠派发与真实执行验收
 
@@ -74,15 +86,16 @@ systemctl list-units 'yunling-run@*.service'
 
 ## 管理员凭据
 
-初始管理员邮箱是 `admin@aiwise.top`。随机初始密码仅保存在服务器 `/root/yunling-initial-admin.txt`，权限为 `0600 root:root`；`deploy/.env` 中的全部 `YUNLING_BOOTSTRAP_*` 临时变量已删除。
+初始管理员邮箱是 `admin@aiwise.top`。`deploy/.env` 中的全部 `YUNLING_BOOTSTRAP_*` 临时变量已删除。
 
-管理员改密接口与中文账号安全面板已部署到生产环境。生产初始凭据文件继续保留；在用户通过控制台修改密码、新密码重新登录成功且旧密码确认失效之前，不得删除该文件。恢复密钥也继续保存在 root-only 文件中，只有用户完成离线保存后才允许删除服务器副本。
+管理员已通过中文账号安全面板修改密码，使用新密码退出并重新登录成功。腾讯云本机将旧密码与数据库当前 Argon2id 哈希进行只读比对，结果为不匹配；初始密码没有通过网络发送，也没有写入命令输出。
 
-登录并把凭据保存到受控密码管理器后，应删除服务器上的初始凭据文件：
+用户确认恢复密钥已保存到离线密码管理器后，服务器上的两个 root-only 临时凭据文件均已永久删除并验证不存在：
 
-```bash
-sudo rm -f /root/yunling-initial-admin.txt
-```
+- `/root/yunling-initial-admin.txt`
+- `/root/yunling-recovery-key.txt`
+
+离线恢复密钥现为唯一副本，后续不得通过聊天、工单、代码仓库或终端日志传递。
 
 ## Windmill 下线与恢复点
 
