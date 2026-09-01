@@ -16,14 +16,13 @@ API、Scheduler、Web、Caddy、PostgreSQL、Redis、MinIO 和 Ops 八个长期�
 
 - 数据库迁移：`000010` 至 `000012` 已应用，当前迁移版本为 `12`
 - 本机 Restic 与腾讯云 COS 双份备份：已完成真实手动备份验收
-- 2026-09-01 12:30（Asia/Shanghai）定时备份：`succeeded`
+- 2026-09-01 12:30（Asia/Shanghai）定时备份：`succeeded`，本机快照 `5687d8c8a412aa114510fef4fe5afeef837a3a2c3d817eff02fa27e3db84989e`，COS 快照 `49ecbe8a9c25e8b14f5e6cf95807eb287a0831f5d3d83d4547274e65ea648ac1`，清单 SHA-256 `e50bbfebdda91f851421991e888cae13e517290c4c9108628e7f4010e5e52d6a`，`2451834` 字节、`1` 个对象、尝试 `1` 次
+- 2026-09-01 18:30（Asia/Shanghai）定时备份：`succeeded`，本机快照 `de6353f9b93fc51329cbad67dfe1fce6fb6fdffbd6284404a343af09862882e9`，COS 快照 `59428a947debeda4b107caef310497a53635093bc9725adc19eb0be8329e9e34`，清单 SHA-256 `da8422213f6cdd537a0a27ed547bf13d419708e7f61c51718f64dc9ad531db7f`，`2663011` 字节、`1` 个对象、尝试 `1` 次
 - 隔离恢复校验：`succeeded`，迁移版本 `12`，校验对象数 `1`
 - 临时恢复数据库：成功与失败路径均已清理，生产库未被覆盖
 - COS 凭据、Restic 密码和数据库备份凭据：仅通过 root-only 文件挂载，不写入环境变量或日志
 
-下一次定时备份计划为 2026-09-01 18:30（Asia/Shanghai）；需要再观察一次成功结果，形成连续两次定时备份证据。
-
-2026-09-01 15:42（Asia/Shanghai）只读核对结果：12:30 定时备份状态仍为 `succeeded`，18:30 及之后的计划记录均未到执行时间，数据库中“已到期但仍排队”的备份数量为 `0`。
+2026-09-02 00:10（Asia/Shanghai）只读核对结果：12:30 与 18:30 两次定时备份均按计划完成，本机和 COS 快照字段完整、错误字段为空，形成连续两次成功证据；数据库中“已到期但仍排队”的备份数量为 `0`。Ops 健康接口返回 `ok`，`yunling-ops-1` 状态为 `Up 9 hours (healthy)`。
 
 ## 飞书通知
 
