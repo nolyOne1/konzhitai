@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -152,25 +153,34 @@ func writeTooManyRequests(response http.ResponseWriter) {
 type releaseLimits struct {
 	mutex                sync.Mutex
 	maxRequestsPerWindow int
+	maxGlobalPerWindow   int
 	window               time.Duration
 	now                  func() time.Time
-	windowEndsAt         time.Time
-	requests             int
+	clients              map[string]requestWindow
+	global               requestWindow
+	nextCleanup          time.Time
 	downloadSlots        chan struct{}
+}
+
+type requestWindow struct {
+	endsAt   time.Time
+	requests int
 }
 
 func newReleaseLimits(options handlerOptions) *releaseLimits {
 	return &releaseLimits{
 		maxRequestsPerWindow: options.maxRequestsPerWindow,
+		maxGlobalPerWindow:   options.maxRequestsPerWindow * 64,
 		window:               options.window,
 		now:                  options.now,
+		clients:              make(map[string]requestWindow),
 		downloadSlots:        make(chan struct{}, options.maxConcurrent),
 	}
 }
 
 func (limits *releaseLimits) limitRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if !limits.allowRequest() {
+		if !limits.allowRequest(request) {
 			writeTooManyRequests(response)
 			return
 		}
@@ -178,19 +188,54 @@ func (limits *releaseLimits) limitRequests(next http.Handler) http.Handler {
 	})
 }
 
-func (limits *releaseLimits) allowRequest() bool {
+func (limits *releaseLimits) allowRequest(request *http.Request) bool {
 	limits.mutex.Lock()
 	defer limits.mutex.Unlock()
 	now := limits.now()
-	if limits.windowEndsAt.IsZero() || !now.Before(limits.windowEndsAt) {
-		limits.windowEndsAt = now.Add(limits.window)
-		limits.requests = 0
+	if limits.global.endsAt.IsZero() || !now.Before(limits.global.endsAt) {
+		limits.global = requestWindow{endsAt: now.Add(limits.window)}
 	}
-	if limits.requests >= limits.maxRequestsPerWindow {
+	if limits.global.requests >= limits.maxGlobalPerWindow {
 		return false
 	}
-	limits.requests++
+	if limits.nextCleanup.IsZero() || !now.Before(limits.nextCleanup) {
+		for key, current := range limits.clients {
+			if !now.Before(current.endsAt) {
+				delete(limits.clients, key)
+			}
+		}
+		limits.nextCleanup = now.Add(limits.window)
+	}
+	key := releaseClientKey(request)
+	current := limits.clients[key]
+	if current.endsAt.IsZero() || !now.Before(current.endsAt) {
+		current = requestWindow{endsAt: now.Add(limits.window)}
+	}
+	if current.requests >= limits.maxRequestsPerWindow {
+		return false
+	}
+	current.requests++
+	limits.clients[key] = current
+	limits.global.requests++
 	return true
+}
+
+func releaseClientKey(request *http.Request) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(request.RemoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(request.RemoteAddr)
+	}
+	peer := net.ParseIP(host)
+	if peer != nil && (peer.IsPrivate() || peer.IsLoopback()) {
+		forwarded, _, _ := strings.Cut(request.Header.Get("X-Forwarded-For"), ",")
+		if client := net.ParseIP(strings.TrimSpace(forwarded)); client != nil {
+			return client.String()
+		}
+	}
+	if peer != nil {
+		return peer.String()
+	}
+	return host
 }
 
 func (limits *releaseLimits) acquireDownload() bool {

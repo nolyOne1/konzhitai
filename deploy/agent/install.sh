@@ -10,6 +10,7 @@ control_url=''
 enrollment_token=''
 registration_complete=0
 service_started=0
+install_complete=0
 
 usage() {
   echo '用法：install.sh --control-url https://控制平面域名' >&2
@@ -62,7 +63,7 @@ check_preflight() {
     echo '请使用 root 权限安装云令代理。' >&2
     failed=1
   fi
-  if [[ ! -t 0 || ! -r /dev/tty || ! -w /dev/tty ]]; then
+  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
     echo '需要可读写的交互式终端，请在 SSH 或网页终端中重新运行。' >&2
     failed=1
   fi
@@ -139,14 +140,18 @@ cleanup_install() {
     if ((service_started == 1)); then
       systemctl stop yunling-agent.service >/dev/null 2>&1 || true
     fi
-    if ! strip_bootstrap_file; then
-      rm -f "${environment_path}" >/dev/null 2>&1 || true
-    fi
+  fi
+  if ! strip_bootstrap_file; then
+    rm -f "${environment_path}" >/dev/null 2>&1 || true
+  fi
+  if ((registration_complete == 1 && install_complete == 0 && service_started == 1)); then
+    systemctl restart yunling-agent.service >/dev/null 2>&1 || true
   fi
   exit "${status}"
 }
 
 install_files() {
+  local temporary_binary='/usr/local/bin/.yunling-agent.new'
   if ! getent group yunling-runner >/dev/null 2>&1; then
     groupadd --system yunling-runner
   fi
@@ -165,7 +170,12 @@ install_files() {
   install -d -o yunling-agent -g yunling-runner -m 2750 /var/lib/yunling-agent
   install -d -o yunling-agent -g yunling-runner -m 2750 /var/lib/yunling-agent/script-cache
   install -d -o yunling-agent -g yunling-runner -m 2750 /var/lib/yunling-agent/runs
-  install -o root -g root -m 0755 "${source_binary}" /usr/local/bin/yunling-agent
+  rm -f "${temporary_binary}"
+  install -o root -g root -m 0755 "${source_binary}" "${temporary_binary}"
+  if ! mv -f "${temporary_binary}" /usr/local/bin/yunling-agent; then
+    rm -f "${temporary_binary}" >/dev/null 2>&1 || true
+    return 1
+  fi
   install -o root -g root -m 0644 "${script_dir}/yunling-agent.service" /etc/systemd/system/yunling-agent.service
   install -o root -g root -m 0644 "${script_dir}/yunling-run@.service" /etc/systemd/system/yunling-run@.service
   install -o root -g root -m 0644 "${script_dir}/50-yunling-agent.rules" /etc/polkit-1/rules.d/50-yunling-agent.rules
@@ -211,12 +221,28 @@ main() {
   unset YUNLING_ENROLLMENT_TOKEN YUNLING_CONTROL_URL
   parse_args "$@"
   check_preflight
-  if [[ -e "${credentials_path}" || -L "${credentials_path}" || -e "${legacy_credentials_path}" || -L "${legacy_credentials_path}" ]]; then
-    echo '该服务器已存在云令代理身份，请先在控制台确认后再处理。' >&2
+  if [[ -L "${credentials_path}" || (-e "${credentials_path}" && ! -f "${credentials_path}") || -e "${legacy_credentials_path}" || -L "${legacy_credentials_path}" ]]; then
+    echo '检测到不受支持的云令代理身份文件，请先在控制台确认后再处理。' >&2
     return 2
   fi
 
   trap cleanup_install EXIT
+  if [[ -f "${credentials_path}" ]]; then
+    registration_complete=1
+    echo '检测到现有云令代理身份，正在修复安装并保留原节点身份。'
+    install_files
+    chown yunling-agent:yunling-agent "${credentials_path}"
+    chmod 0600 "${credentials_path}"
+    strip_bootstrap_file
+    systemctl daemon-reload
+    service_started=1
+    systemctl enable --now yunling-agent.service
+    systemctl restart yunling-agent.service
+    install_complete=1
+    echo '云令代理安装已修复，原节点身份保持不变。'
+    return 0
+  fi
+
   read_enrollment_token
   install_files
   write_bootstrap_environment
@@ -224,13 +250,14 @@ main() {
   service_started=1
   systemctl enable --now yunling-agent.service
   wait_for_registration
+  registration_complete=1
 
   chown yunling-agent:yunling-agent "${credentials_path}"
   chmod 0600 "${credentials_path}"
   strip_bootstrap_file
-  registration_complete=1
   enrollment_token=''
   systemctl restart yunling-agent.service
+  install_complete=1
   echo '云令代理安装完成，已启用 systemd 服务。'
 }
 

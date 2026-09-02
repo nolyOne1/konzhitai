@@ -129,14 +129,14 @@ export function ServerEnrollmentDialog({ controlUrl, onClose }: ServerEnrollment
 
   return (
     <div className="drawer-backdrop centered-dialog" onMouseDown={closeFromBackdrop}>
-      <section className="console-dialog enrollment-dialog" role="dialog" aria-modal="true" aria-labelledby="enrollment-title" onKeyDown={(event) => handleDialogKeys(event, confirmClose ? () => setConfirmClose(false) : requestClose)}>
+      <section className="console-dialog enrollment-dialog" role="dialog" aria-modal="true" aria-labelledby="enrollment-title" onKeyDown={(event) => handleDialogKeys(event, confirmClose ? () => setConfirmClose(false) : requestClose, confirmClose ? '.enrollment-close-confirmation' : undefined)}>
         <header className="drawer-header">
           <div>
             <p className="eyebrow">多云节点扩容</p>
             <h2 id="enrollment-title">接入新服务器</h2>
             <p>{issued ? '令牌已创建，请在失效前完成代理注册。' : '填写节点信息并创建仅显示一次的注册令牌。'}</p>
           </div>
-          <button type="button" className="icon-button" aria-label="关闭接入向导" disabled={creating} onClick={requestClose}>
+          <button type="button" className="icon-button" aria-label="关闭接入向导" disabled={creating || confirmClose} onClick={requestClose}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
           </button>
         </header>
@@ -201,7 +201,7 @@ function CloseConfirmation({ continueRef, onContinue, onConfirm }: { continueRef
 }
 
 function parseLabels(value: string) {
-  const labels: Record<string, string> = {}
+  const labels = Object.create(null) as Record<string, string>
   const normalized = value.trim()
   if (!normalized) return labels
   if (normalized.includes('，')) throw new Error(LABEL_FORMAT_ERROR)
@@ -233,14 +233,16 @@ function formatTime(value: string) {
   return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value))
 }
 
-function handleDialogKeys(event: KeyboardEvent<HTMLElement>, onClose: () => void) {
+function handleDialogKeys(event: KeyboardEvent<HTMLElement>, onClose: () => void, focusScope?: string) {
   if (event.key === 'Escape') {
     event.preventDefault()
     onClose()
     return
   }
   if (event.key !== 'Tab') return
-  const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]')]
+  const scope = focusScope ? event.currentTarget.querySelector<HTMLElement>(focusScope) : event.currentTarget
+  if (!scope) return
+  const controls = [...scope.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]')]
   if (controls.length === 0) return
   const first = controls[0]
   const last = controls[controls.length - 1]

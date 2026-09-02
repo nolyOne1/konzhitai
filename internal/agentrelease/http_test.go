@@ -155,6 +155,59 @@ func TestHandlerRateLimitResetsAfterWindow(t *testing.T) {
 	}
 }
 
+func TestHandlerRateLimitIsolatedByForwardedClient(t *testing.T) {
+	root, _, _ := writeValidCatalog(t)
+	catalog, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler(catalog, WithLimits(1, 1, time.Minute, time.Now))
+
+	request := func(client string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/releases/agent/latest", nil)
+		req.RemoteAddr = "172.18.0.2:8080"
+		req.Header.Set("X-Forwarded-For", client)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		return response
+	}
+
+	if got := request("203.0.113.10").Code; got != http.StatusOK {
+		t.Fatalf("客户端 A 首次请求：%d", got)
+	}
+	if got := request("203.0.113.10").Code; got != http.StatusTooManyRequests {
+		t.Fatalf("客户端 A 超限请求：%d", got)
+	}
+	if got := request("203.0.113.11").Code; got != http.StatusOK {
+		t.Fatalf("客户端 B 不应受客户端 A 影响：%d", got)
+	}
+}
+
+func TestHandlerRateLimitIgnoresForwardingFromUntrustedPeer(t *testing.T) {
+	root, _, _ := writeValidCatalog(t)
+	catalog, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler(catalog, WithLimits(1, 1, time.Minute, time.Now))
+
+	request := func(forwarded string) int {
+		req := httptest.NewRequest(http.MethodGet, "/api/releases/agent/latest", nil)
+		req.RemoteAddr = "198.51.100.20:443"
+		req.Header.Set("X-Forwarded-For", forwarded)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		return response.Code
+	}
+
+	if got := request("203.0.113.10"); got != http.StatusOK {
+		t.Fatalf("首次请求：%d", got)
+	}
+	if got := request("203.0.113.11"); got != http.StatusTooManyRequests {
+		t.Fatalf("不可信对端不得通过伪造转发地址绕过限流：%d", got)
+	}
+}
+
 func TestHandlerLimitsConcurrentDownloads(t *testing.T) {
 	root, _, _ := writeValidCatalog(t)
 	catalog, err := Load(root)
