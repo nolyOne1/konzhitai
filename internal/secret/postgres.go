@@ -25,13 +25,13 @@ func (r *PostgresRepository) Create(ctx context.Context, value StoredSecret) (Me
 	err := r.db.QueryRow(ctx, `
 		INSERT INTO secrets (
 			id, name, ciphertext, nonce, encrypted_data_key, data_key_nonce,
-			key_version, created_by, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		RETURNING id::text, name, COALESCE(created_by::text,''), created_at, updated_at
+			key_version, scope, created_by, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		RETURNING id::text, name, scope, COALESCE(created_by::text,''), created_at, updated_at
 	`, value.ID, value.Name, value.Ciphertext, value.CiphertextNonce,
-		value.EncryptedDataKey, value.DataKeyNonce, value.KeyVersion, createdBy,
+		value.EncryptedDataKey, value.DataKeyNonce, value.KeyVersion, value.Scope, createdBy,
 		value.CreatedAt, value.UpdatedAt,
-	).Scan(&metadata.ID, &metadata.Name, &metadata.CreatedBy, &metadata.CreatedAt, &metadata.UpdatedAt)
+	).Scan(&metadata.ID, &metadata.Name, &metadata.Scope, &metadata.CreatedBy, &metadata.CreatedAt, &metadata.UpdatedAt)
 	if err != nil {
 		return Metadata{}, fmt.Errorf("保存敏感参数：%w", err)
 	}
@@ -50,7 +50,7 @@ func (r *PostgresRepository) Load(ctx context.Context, ids []ID) ([]StoredSecret
 		values[index] = string(id)
 	}
 	rows, err := r.db.Query(ctx, `
-		SELECT id::text, name, COALESCE(created_by::text,''), created_at, updated_at,
+		SELECT id::text, name, scope, COALESCE(created_by::text,''), created_at, updated_at,
 		       ciphertext, nonce, encrypted_data_key, data_key_nonce, key_version
 		FROM secrets WHERE id = ANY($1::uuid[])
 	`, values)
@@ -62,7 +62,7 @@ func (r *PostgresRepository) Load(ctx context.Context, ids []ID) ([]StoredSecret
 	for rows.Next() {
 		var item StoredSecret
 		if err := rows.Scan(
-			&item.ID, &item.Name, &item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
+			&item.ID, &item.Name, &item.Scope, &item.CreatedBy, &item.CreatedAt, &item.UpdatedAt,
 			&item.Ciphertext, &item.CiphertextNonce, &item.EncryptedDataKey,
 			&item.DataKeyNonce, &item.KeyVersion,
 		); err != nil {
@@ -81,8 +81,8 @@ func (r *PostgresRepository) List(ctx context.Context) ([]Metadata, error) {
 		return nil, ErrInvalidSecret
 	}
 	rows, err := r.db.Query(ctx, `
-		SELECT id::text, name, COALESCE(created_by::text,''), created_at, updated_at
-		FROM secrets ORDER BY created_at DESC, id DESC
+		SELECT id::text, name, scope, COALESCE(created_by::text,''), created_at, updated_at
+		FROM secrets WHERE scope='user' ORDER BY created_at DESC, id DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("读取敏感参数列表：%w", err)
@@ -91,7 +91,7 @@ func (r *PostgresRepository) List(ctx context.Context) ([]Metadata, error) {
 	items := []Metadata{}
 	for rows.Next() {
 		var item Metadata
-		if err := rows.Scan(&item.ID, &item.Name, &item.CreatedBy, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.Scope, &item.CreatedBy, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("解析敏感参数元数据：%w", err)
 		}
 		items = append(items, item)

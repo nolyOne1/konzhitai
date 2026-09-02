@@ -50,6 +50,27 @@ func TestRaiseCreatesNewAlertAfterMergeWindow(t *testing.T) {
 	}
 }
 
+func TestResolveIsIdempotentAndIncludesResolvedTime(t *testing.T) {
+	repository := &memoryAlertRepository{}
+	now := time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC)
+	service := alert.NewService(repository, func() time.Time { return now })
+	event := alert.Event{ResourceType: "server", ResourceID: "server-1", Code: "agent_offline", Severity: alert.SeverityCritical, Title: "服务器离线"}
+	if err := service.Raise(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	repository.alerts[0].Status = alert.StatusAcknowledged
+	now = now.Add(time.Minute)
+	if err := service.Resolve(context.Background(), "server", "server-1", "agent_offline"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Resolve(context.Background(), "server", "server-1", "agent_offline"); err != nil {
+		t.Fatal(err)
+	}
+	if repository.alerts[0].Status != alert.StatusResolved || repository.alerts[0].ResolvedAt == nil || !repository.alerts[0].ResolvedAt.Equal(now) {
+		t.Fatalf("告警未正确恢复：%+v", repository.alerts[0])
+	}
+}
+
 type memoryAlertRepository struct{ alerts []alert.Alert }
 
 func (r *memoryAlertRepository) MergeOrCreate(_ context.Context, event alert.Event, occurredAt, mergeSince time.Time) error {
@@ -74,5 +95,18 @@ func (r *memoryAlertRepository) List(context.Context) ([]alert.Alert, error) {
 }
 
 func (r *memoryAlertRepository) Acknowledge(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+func (r *memoryAlertRepository) Resolve(_ context.Context, resourceType, resourceID, code string, at time.Time) error {
+	for index := range r.alerts {
+		item := &r.alerts[index]
+		if item.ResourceType == resourceType && item.ResourceID == resourceID && item.Code == code &&
+			(item.Status == alert.StatusOpen || item.Status == alert.StatusAcknowledged) {
+			item.Status = alert.StatusResolved
+			item.ResolvedAt = &at
+			return nil
+		}
+	}
 	return nil
 }

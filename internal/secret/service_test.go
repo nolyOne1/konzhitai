@@ -58,6 +58,46 @@ func TestResolveForRunDecryptsReferencedSecrets(t *testing.T) {
 	}
 }
 
+func TestSystemScopeSecretsStayOutOfUserListAndCanBeResolved(t *testing.T) {
+	repository := &memoryRepository{items: map[secret.ID]secret.StoredSecret{}}
+	service := secret.NewService(repository, fixedKeyProvider())
+	userSecret, err := service.Create(context.Background(), "用户令牌", []byte("user-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	systemSecret, err := service.CreateSystem(
+		context.Background(),
+		"notification/feishu/signing/test-id",
+		[]byte("signing-secret"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository.items[userSecret.ID].Scope != secret.ScopeUser {
+		t.Fatalf("普通秘密作用域错误：%q", repository.items[userSecret.ID].Scope)
+	}
+	if repository.items[systemSecret.ID].Scope != secret.ScopeSystem {
+		t.Fatalf("系统秘密作用域错误：%q", repository.items[systemSecret.ID].Scope)
+	}
+
+	listed, err := service.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != userSecret.ID {
+		t.Fatalf("用户列表不得包含系统秘密：%+v", listed)
+	}
+
+	values, err := service.Resolve(context.Background(), []secret.ID{systemSecret.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(values[systemSecret.ID])
+	if string(values[systemSecret.ID]) != "signing-secret" {
+		t.Fatalf("系统秘密解密错误：%q", values[systemSecret.ID])
+	}
+}
+
 func TestCreateUsesFreshDataKeyAndNonceForEverySecret(t *testing.T) {
 	repository := &memoryRepository{items: map[secret.ID]secret.StoredSecret{}}
 	service := secret.NewService(repository, fixedKeyProvider())
@@ -114,7 +154,9 @@ func (r *memoryRepository) Load(_ context.Context, ids []secret.ID) ([]secret.St
 func (r *memoryRepository) List(context.Context) ([]secret.Metadata, error) {
 	result := make([]secret.Metadata, 0, len(r.items))
 	for _, value := range r.items {
-		result = append(result, value.Metadata)
+		if value.Scope == secret.ScopeUser {
+			result = append(result, value.Metadata)
+		}
 	}
 	return result, nil
 }

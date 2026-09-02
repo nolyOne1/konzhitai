@@ -16,6 +16,13 @@ import (
 
 type ID string
 
+type Scope string
+
+const (
+	ScopeUser   Scope = "user"
+	ScopeSystem Scope = "system"
+)
+
 type creatorContextKey struct{}
 
 var (
@@ -27,6 +34,7 @@ var (
 type Metadata struct {
 	ID        ID        `json:"id"`
 	Name      string    `json:"name"`
+	Scope     Scope     `json:"-"`
 	CreatedBy string    `json:"createdBy,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -78,8 +86,17 @@ func CreatorFromContext(ctx context.Context) (string, bool) {
 }
 
 func (s *Service) Create(ctx context.Context, name string, plaintext []byte) (Metadata, error) {
+	return s.create(ctx, name, plaintext, ScopeUser)
+}
+
+func (s *Service) CreateSystem(ctx context.Context, name string, plaintext []byte) (Metadata, error) {
+	return s.create(ctx, name, plaintext, ScopeSystem)
+}
+
+func (s *Service) create(ctx context.Context, name string, plaintext []byte, scope Scope) (Metadata, error) {
 	name = strings.TrimSpace(name)
-	if s == nil || s.repository == nil || s.keys == nil || name == "" || len(plaintext) == 0 {
+	if s == nil || s.repository == nil || s.keys == nil || name == "" || len(plaintext) == 0 ||
+		(scope != ScopeUser && scope != ScopeSystem) {
 		return Metadata{}, ErrInvalidSecret
 	}
 	master, err := s.keys.Current(ctx)
@@ -91,7 +108,7 @@ func (s *Service) Create(ctx context.Context, name string, plaintext []byte) (Me
 	id := ID(uuid.NewString())
 	now := s.now().UTC()
 	createdBy, _ := ctx.Value(creatorContextKey{}).(string)
-	metadata := Metadata{ID: id, Name: name, CreatedBy: createdBy, CreatedAt: now, UpdatedAt: now}
+	metadata := Metadata{ID: id, Name: name, Scope: scope, CreatedBy: createdBy, CreatedAt: now, UpdatedAt: now}
 	aad := associatedData(metadata, master.Version)
 
 	dataKey := make([]byte, 32)
@@ -114,6 +131,19 @@ func (s *Service) Create(ctx context.Context, name string, plaintext []byte) (Me
 }
 
 func (s *Service) ResolveForRun(ctx context.Context, refs []ID) (map[string]string, error) {
+	values, err := s.Resolve(ctx, refs)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string, len(values))
+	for id, value := range values {
+		result[string(id)] = string(value)
+		clear(value)
+	}
+	return result, nil
+}
+
+func (s *Service) Resolve(ctx context.Context, refs []ID) (map[ID][]byte, error) {
 	if s == nil || s.repository == nil || s.keys == nil {
 		return nil, ErrInvalidSecret
 	}
@@ -135,10 +165,16 @@ func (s *Service) ResolveForRun(ctx context.Context, refs []ID) (map[string]stri
 	if len(stored) != len(unique) {
 		return nil, ErrSecretNotFound
 	}
-	result := make(map[string]string, len(stored))
+	result := make(map[ID][]byte, len(stored))
+	clearResult := func() {
+		for _, value := range result {
+			clear(value)
+		}
+	}
 	for _, item := range stored {
 		master, err := s.keys.ByVersion(ctx, item.KeyVersion)
 		if err != nil || !validMasterKey(master) || master.Version != item.KeyVersion {
+			clearResult()
 			return nil, ErrKeyUnavailable
 		}
 		masterMaterial := append([]byte(nil), master.Material...)
@@ -146,15 +182,16 @@ func (s *Service) ResolveForRun(ctx context.Context, refs []ID) (map[string]stri
 		dataKey, err := open(masterMaterial, item.DataKeyNonce, item.EncryptedDataKey, aad)
 		clear(masterMaterial)
 		if err != nil || len(dataKey) != 32 {
+			clearResult()
 			return nil, ErrKeyUnavailable
 		}
 		plaintext, err := open(dataKey, item.CiphertextNonce, item.Ciphertext, aad)
 		clear(dataKey)
 		if err != nil {
+			clearResult()
 			return nil, fmt.Errorf("解密敏感参数 %s：%w", item.ID, err)
 		}
-		result[string(item.ID)] = string(plaintext)
-		clear(plaintext)
+		result[item.ID] = plaintext
 	}
 	return result, nil
 }

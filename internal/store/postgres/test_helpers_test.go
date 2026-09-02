@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,7 +16,17 @@ func startPostgres(t *testing.T) *pgxpool.Pool {
 
 func applyMigrations(t *testing.T, db *pgxpool.Pool) {
 	t.Helper()
-	testpostgres.ApplyInitialMigration(t, db)
+	root := testpostgres.RepositoryRoot(t)
+	migrations, err := filepath.Glob(filepath.Join(root, "migrations", "*.up.sql"))
+	if err != nil {
+		t.Fatalf("查找数据库迁移：%v", err)
+	}
+	if len(migrations) == 0 {
+		t.Fatal("未找到数据库迁移")
+	}
+	for _, path := range migrations {
+		testpostgres.ApplyMigration(t, db, filepath.Base(path))
+	}
 }
 
 func tableExists(t *testing.T, db *pgxpool.Pool, table string) bool {

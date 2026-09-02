@@ -1,10 +1,32 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"testing"
 
 	"yunling.local/platform/internal/executor"
 )
+
+func TestWriteVersionCommandPrintsBuildVersion(t *testing.T) {
+	original := agentVersion
+	agentVersion = "9.8.7-test"
+	t.Cleanup(func() { agentVersion = original })
+
+	var output bytes.Buffer
+	if !writeVersionCommand([]string{"yunling-agent", "version"}, &output) {
+		t.Fatal("version 子命令必须被处理")
+	}
+	if output.String() != "9.8.7-test\n" {
+		t.Fatalf("版本输出：%q", output.String())
+	}
+}
+
+func TestWriteVersionCommandIgnoresNormalStart(t *testing.T) {
+	if writeVersionCommand([]string{"yunling-agent"}, io.Discard) {
+		t.Fatal("普通启动不得被截断")
+	}
+}
 
 func TestNewAgentLauncherUsesSystemdOnLinux(t *testing.T) {
 	launcher := newAgentLauncher("linux", "")

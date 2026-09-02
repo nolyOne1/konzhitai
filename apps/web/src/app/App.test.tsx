@@ -1,9 +1,15 @@
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import userEvent from '@testing-library/user-event'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { App } from './App'
 
 describe('云令应用壳', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    window.history.pushState({}, '', '/')
+  })
+
   it('显示全中文控制台品牌和主导航', () => {
     render(<App />)
 
@@ -16,6 +22,33 @@ describe('云令应用壳', () => {
     expect(screen.getByRole('link', { name: '任务调度' })).toBeVisible()
     expect(screen.getByRole('link', { name: '执行记录' })).toBeVisible()
     expect(screen.getByRole('link', { name: '服务器' })).toBeVisible()
+    expect(screen.getByRole('link', { name: '运维中心' })).toBeVisible()
+  })
+
+  it('访问运维中心地址时显示账号安全页面', () => {
+    window.history.pushState({}, '', '/operations')
+
+    render(<App />)
+
+    expect(screen.getByRole('heading', { level: 1, name: '运维中心' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: '账号安全' })).toBeVisible()
+    window.history.pushState({}, '', '/')
+  })
+
+  it('访问脚本同步地址时显示同步总览而不是占位页', async () => {
+    window.history.pushState({}, '', '/sync')
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/scripts') {
+        return { ok: true, json: async () => ({ scripts: [] }) } as Response
+      }
+      return { ok: false, status: 404, json: async () => ({ message: '未找到资源' }) } as Response
+    }))
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { level: 1, name: '脚本同步' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: '控制台模块' })).not.toBeInTheDocument()
+    window.history.pushState({}, '', '/')
   })
 
   it('访问登录地址时显示中文登录页', () => {
@@ -26,5 +59,70 @@ describe('云令应用壳', () => {
     expect(screen.getByRole('heading', { name: '登录云令' })).toBeVisible()
     expect(screen.getByLabelText('邮箱')).toBeVisible()
     window.history.pushState({}, '', '/')
+  })
+
+  it('退出当前会话后返回登录页', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/auth/logout') {
+        return { ok: true, status: 204 } as Response
+      }
+      return {
+        ok: false,
+        status: 401,
+        json: async () => ({ message: '请先登录' }),
+      } as Response
+    }))
+
+    render(<App />)
+    await user.click(screen.getByRole('button', { name: '退出登录' }))
+
+    expect(await screen.findByRole('heading', { name: '登录云令' })).toBeVisible()
+  })
+
+  it('退出请求处理中禁用按钮并显示进度', async () => {
+    const user = userEvent.setup()
+    let finishLogout: ((response: Response) => void) | undefined
+    const logoutResponse = new Promise<Response>((resolve) => { finishLogout = resolve })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/auth/logout') return logoutResponse
+      return {
+        ok: false,
+        status: 401,
+        json: async () => ({ message: '请先登录' }),
+      } as Response
+    }))
+
+    render(<App />)
+    await user.click(screen.getByRole('button', { name: '退出登录' }))
+
+    expect(screen.getByRole('button', { name: '正在退出…' })).toBeDisabled()
+    finishLogout?.({ ok: true, status: 204 } as Response)
+    expect(await screen.findByRole('heading', { name: '登录云令' })).toBeVisible()
+  })
+
+  it('退出失败时保留控制台并显示中文错误', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/auth/logout') {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ message: '退出登录失败，请稍后重试' }),
+        } as Response
+      }
+      return {
+        ok: false,
+        status: 401,
+        json: async () => ({ message: '请先登录' }),
+      } as Response
+    }))
+
+    render(<App />)
+    await user.click(screen.getByRole('button', { name: '退出登录' }))
+
+    expect(await screen.findByRole('alert', { name: '退出登录失败' })).toHaveTextContent('退出登录失败，请稍后重试')
+    expect(screen.getByRole('heading', { name: '运行总览' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '退出登录' })).toBeEnabled()
   })
 })

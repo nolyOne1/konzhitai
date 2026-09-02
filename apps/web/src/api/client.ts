@@ -46,6 +46,33 @@ export interface UpdateServerInput {
   draining?: boolean
 }
 
+export interface EnrollmentTokenInput {
+  name: string
+  cloudProvider: string
+  region: string
+  labels: Record<string, string>
+}
+
+export interface EnrollmentTokenView {
+  id: string
+  token: string
+  expiresAt: string
+}
+
+export interface AgentReleaseArtifact {
+  os: string
+  arch: string
+  fileName: string
+  byteSize: number
+  sha256: string
+  downloadUrl: string
+}
+
+export interface AgentReleaseManifest {
+  version: string
+  artifacts: AgentReleaseArtifact[]
+}
+
 export type DistributionMode = 'all_compatible' | 'server_group' | 'labels' | 'on_demand'
 
 export interface DistributionRule {
@@ -332,6 +359,45 @@ export async function updateServer(id: string, input: UpdateServerInput): Promis
   })
 }
 
+export async function getLatestAgentRelease(): Promise<AgentReleaseManifest> {
+  const response = await request<{
+    version: string
+    artifacts: Array<{
+      os: string
+      arch: string
+      file_name: string
+      byte_size: number
+      sha256: string
+      download_url: string
+    }>
+  }>('/api/releases/agent/latest')
+  return {
+    version: response.version,
+    artifacts: response.artifacts.map((artifact) => ({
+      os: artifact.os,
+      arch: artifact.arch,
+      fileName: artifact.file_name,
+      byteSize: artifact.byte_size,
+      sha256: artifact.sha256,
+      downloadUrl: artifact.download_url,
+    })),
+  }
+}
+
+export async function createServerEnrollmentToken(input: EnrollmentTokenInput): Promise<EnrollmentTokenView> {
+  const response = await request<{ id: string; token: string; expires_at: string }>('/api/servers/enrollment-tokens', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: input.name,
+      cloud_provider: input.cloudProvider,
+      region: input.region,
+      labels: input.labels,
+    }),
+  })
+  return { id: response.id, token: response.token, expiresAt: response.expires_at }
+}
+
 export async function getScripts(): Promise<ScriptView[]> {
   const response = await request<{ scripts: ScriptView[] }>('/api/scripts')
   return response.scripts
@@ -484,6 +550,133 @@ export async function validateTaskCron(input: Pick<TaskScheduleInput, 'cronExpre
 export async function getSession(): Promise<SessionUser> {
   const response = await request<{ user: { user_id: string; display_name: string; email: string; roles: RoleName[] } }>('/api/auth/session')
   return { id: response.user.user_id, displayName: response.user.display_name, email: response.user.email, roles: response.user.roles }
+}
+
+export async function logout(): Promise<void> {
+  await request<void>('/api/auth/logout', { method: 'POST' })
+}
+
+export interface FeishuNotificationConfig {
+  configured: boolean
+  enabled: boolean
+  maskedDestination: string
+  updatedAt?: string
+}
+
+export interface FeishuNotificationInput {
+  enabled: boolean
+  webhook: string
+  signingSecret: string
+}
+
+export interface NotificationDelivery {
+  id: string
+  status: 'pending' | 'sending' | 'retrying' | 'sent' | 'failed'
+  attempts: number
+  lastError?: string
+  sentAt?: string
+}
+
+export type BackupStatus = 'queued' | 'exporting' | 'snapshotting' | 'uploading' | 'succeeded' | 'degraded' | 'failed'
+export type VerificationStatus = 'queued' | 'restoring' | 'checking' | 'succeeded' | 'failed'
+
+export interface BackupRun {
+  id: string
+  triggerType: 'scheduled' | 'manual'
+  status: BackupStatus
+  scheduledFor?: string
+  localSnapshotId?: string
+  cosSnapshotId?: string
+  manifestSha256?: string
+  byteSize: number
+  objectCount: number
+  attempts: number
+  nextAttemptAt: string
+  errorMessage?: string
+  startedAt?: string
+  finishedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RestoreVerification {
+  id: string
+  backupRunId: string
+  triggerType: 'scheduled' | 'manual'
+  status: VerificationStatus
+  temporaryDatabase?: string
+  migrationVersion?: string
+  checkedObjects: number
+  errorMessage?: string
+  startedAt?: string
+  finishedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface BackupSummary {
+  status: 'unavailable' | 'not_started' | 'active' | 'healthy' | 'degraded' | 'failed'
+  nextBackupAt: string | null
+  latestLocalBackup: BackupRun | null
+  latestCOSBackup: BackupRun | null
+  latestVerification: RestoreVerification | null
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  await request<void>('/api/auth/password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ currentPassword, newPassword }),
+  })
+}
+
+export async function getFeishuNotificationConfig(): Promise<FeishuNotificationConfig> {
+  return request<FeishuNotificationConfig>('/api/operations/notifications/feishu')
+}
+
+export async function updateFeishuNotificationConfig(input: FeishuNotificationInput): Promise<FeishuNotificationConfig> {
+  return request<FeishuNotificationConfig>('/api/operations/notifications/feishu', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: input.enabled, webhook: input.webhook, signingSecret: input.signingSecret }),
+  })
+}
+
+export async function testFeishuNotification(): Promise<NotificationDelivery> {
+  return request<NotificationDelivery>('/api/operations/notifications/feishu/test', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  })
+}
+
+export async function getNotificationDelivery(id: string): Promise<NotificationDelivery> {
+  return request<NotificationDelivery>(`/api/operations/notifications/${encodeURIComponent(id)}`)
+}
+
+export async function getBackupSummary(): Promise<BackupSummary> {
+  return request<BackupSummary>('/api/operations/summary')
+}
+
+export async function getBackups(): Promise<BackupRun[]> {
+  const response = await request<{ backups: BackupRun[] }>('/api/operations/backups')
+  return response.backups
+}
+
+export async function requestBackup(): Promise<BackupRun> {
+  return request<BackupRun>('/api/operations/backups', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() }, body: '{}',
+  })
+}
+
+export async function getRestoreVerifications(): Promise<RestoreVerification[]> {
+  const response = await request<{ verifications: RestoreVerification[] }>('/api/operations/verifications')
+  return response.verifications
+}
+
+export async function requestVerification(backupRunId: string): Promise<RestoreVerification> {
+  return request<RestoreVerification>('/api/operations/verifications', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+    body: JSON.stringify({ backupRunId }),
+  })
 }
 
 export async function getSecrets(): Promise<SecretMetadata[]> {

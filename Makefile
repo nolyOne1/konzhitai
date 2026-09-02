@@ -14,6 +14,7 @@ build:
 	mkdir -p bin
 	go build -o bin/yunling-api ./cmd/api
 	go build -o bin/yunling-scheduler ./cmd/scheduler
+	go build -o bin/yunling-ops ./cmd/ops
 	go build -o bin/yunling-agent ./cmd/agent
 	go build -o bin/yunling-bootstrap ./cmd/bootstrap
 	npm --workspace apps/web run build

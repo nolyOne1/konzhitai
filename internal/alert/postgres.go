@@ -55,7 +55,7 @@ func (r *PostgresRepository) List(ctx context.Context) ([]Alert, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id::text, source_type, source_id, kind, severity, title, message, status,
 		       occurrence_count, first_occurred_at, last_occurred_at,
-		       COALESCE(acknowledged_by::text,''), acknowledged_at
+		       COALESCE(acknowledged_by::text,''), acknowledged_at, resolved_at
 		FROM alerts ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'acknowledged' THEN 1 ELSE 2 END,
 		       last_occurred_at DESC LIMIT 200
 	`)
@@ -69,12 +69,29 @@ func (r *PostgresRepository) List(ctx context.Context) ([]Alert, error) {
 		if err := rows.Scan(&item.ID, &item.ResourceType, &item.ResourceID, &item.Code,
 			&item.Severity, &item.Title, &item.Message, &item.Status, &item.Occurrences,
 			&item.FirstOccurredAt, &item.LastOccurredAt, &item.AcknowledgedBy,
-			&item.AcknowledgedAt); err != nil {
+			&item.AcknowledgedAt, &item.ResolvedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (r *PostgresRepository) Resolve(ctx context.Context, resourceType, resourceID, code string, at time.Time) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE alerts SET status='resolved', resolved_at=$4, updated_at=$4
+		WHERE id=(
+			SELECT id FROM alerts
+			WHERE source_type=$1 AND source_id=$2 AND kind=$3
+			  AND status IN ('open', 'acknowledged')
+			ORDER BY last_occurred_at DESC, id DESC
+			LIMIT 1
+		)
+	`, resourceType, resourceID, code, at)
+	if err != nil {
+		return fmt.Errorf("恢复告警：%w", err)
+	}
+	return nil
 }
 
 func (r *PostgresRepository) Acknowledge(ctx context.Context, id, userID string, at time.Time) error {

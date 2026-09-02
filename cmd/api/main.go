@@ -11,13 +11,17 @@ import (
 	"time"
 
 	"yunling.local/platform/internal/agentprotocol"
+	"yunling.local/platform/internal/agentrelease"
 	"yunling.local/platform/internal/alert"
 	"yunling.local/platform/internal/artifact"
 	"yunling.local/platform/internal/audit"
 	"yunling.local/platform/internal/auth"
+	"yunling.local/platform/internal/backup"
 	"yunling.local/platform/internal/dispatch"
 	"yunling.local/platform/internal/health"
 	"yunling.local/platform/internal/logstream"
+	"yunling.local/platform/internal/notification"
+	"yunling.local/platform/internal/operationshttp"
 	"yunling.local/platform/internal/script"
 	"yunling.local/platform/internal/secret"
 	"yunling.local/platform/internal/securityhttp"
@@ -34,6 +38,11 @@ func main() {
 
 	router := http.NewServeMux()
 	router.Handle("GET /api/health", health.Handler())
+	releaseRoot := strings.TrimSpace(os.Getenv("YUNLING_AGENT_RELEASE_DIR"))
+	if releaseRoot == "" {
+		releaseRoot = "/opt/yunling/releases/agent"
+	}
+	router.Handle("/api/releases/agent/", loadAgentReleaseHandler(releaseRoot))
 
 	unavailableHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -48,6 +57,8 @@ func main() {
 	var taskHandler http.Handler = unavailableHandler
 	var runHandler http.Handler = unavailableHandler
 	var securityHandler http.Handler = unavailableHandler
+	var passwordHandler http.Handler = unavailableHandler
+	var operationsHandler http.Handler = unavailableHandler
 	if dsn := os.Getenv("YUNLING_DATABASE_URL"); dsn != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pool, err := postgres.Open(ctx, dsn)
@@ -64,6 +75,9 @@ func main() {
 		protect := func(handler http.Handler) http.Handler {
 			return auth.Authenticate(authService)(audit.Middleware(auditService)(handler))
 		}
+		passwordStore := auth.NewPostgresPasswordChangeStore(pool)
+		passwordService := auth.NewPasswordChangeService(passwordStore, time.Now)
+		passwordHandler = protect(auth.PasswordHandler(passwordService, os.Getenv("YUNLING_PUBLIC_URL")))
 		taskService := task.NewService(pool, time.Now)
 		taskHandler = protect(task.Handler(taskService))
 
@@ -74,7 +88,7 @@ func main() {
 		connections := server.NewAgentConnectionHub()
 		registry := server.NewRegistry(
 			serverRepository, time.Now,
-			server.WithEventPublisher(offlineRunPublisher{reconciler: reconciler, alerts: alertService}),
+			server.WithEventPublisher(offlineRunPublisher{reconciler: reconciler}),
 			server.WithAlertSink(alertService),
 		)
 		logOptions := []logstream.ServiceOption{}
@@ -99,8 +113,20 @@ func main() {
 					log.Printf("主密钥不可用，敏感参数接口将返回暂不可用：%v", err)
 				} else {
 					secretService := secret.NewService(secret.NewPostgresRepository(pool), keyProvider)
+					notificationRepository := notification.NewPostgresRepository(pool)
+					outboxService := notification.NewOutboxService(
+						notificationRepository,
+						secretService,
+						notification.NewFeishuClient(nil, time.Now),
+						time.Now,
+					)
 					secretManager = secretService
 					dispatchSecretResolver = secretService
+					operationsHandler = protect(operationshttp.NewHandler(operationshttp.Services{
+						Notifications: notification.NewConfigService(notificationRepository, secretService),
+						Deliveries:    outboxService,
+						Backups:       backup.NewPostgresRepository(pool),
+					}, os.Getenv("YUNLING_PUBLIC_URL")))
 					logOptions = append(logOptions, logstream.WithRedaction(secret.NewRedactor(), secret.NewRunValueSource(pool, secretService)))
 				}
 			}
@@ -183,6 +209,7 @@ func main() {
 		log.Print("未设置 YUNLING_DATABASE_URL，认证和代理接口将返回暂不可用")
 	}
 	router.Handle("/api/auth/", authHandler)
+	router.Handle("POST /api/auth/password", passwordHandler)
 	router.Handle("/api/servers/enrollment-tokens", protectedServerHandler)
 	router.Handle("/api/dashboard", managementHandler)
 	router.Handle("/api/servers", managementHandler)
@@ -199,32 +226,50 @@ func main() {
 	router.Handle("/api/audit", securityHandler)
 	router.Handle("/api/alerts", securityHandler)
 	router.Handle("/api/alerts/", securityHandler)
+	router.Handle("/api/operations/", operationsHandler)
 	router.Handle("/api/servers/{id}/credentials/rotate", securityHandler)
 	router.Handle("/api/servers/{id}/credentials/revoke", securityHandler)
 	router.Handle("/api/agent/", serverHandler)
 
 	log.Printf("云令 API 正在监听 %s", address)
-	if err := http.ListenAndServe(address, router); err != nil {
+	if err := newHTTPServer(address, router).ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }
 
+func loadAgentReleaseHandler(root string) http.Handler {
+	catalog, err := agentrelease.Load(root)
+	if err != nil {
+		log.Printf("代理发布目录校验失败，发布接口将返回暂不可用：%v", err)
+		return agentrelease.UnavailableHandler()
+	}
+	manifest := catalog.Manifest()
+	log.Printf("代理发布已就绪：版本 %s，架构 %d", manifest.Version, len(manifest.Artifacts))
+	return agentrelease.Handler(catalog)
+}
+
+func newHTTPServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       60 * time.Second,
+	}
+}
+
 type offlineRunPublisher struct {
-	reconciler *task.Reconciler
-	alerts     *alert.Service
+	reconciler offlineReconciler
+}
+
+type offlineReconciler interface {
+	ServerOffline(context.Context, string) error
 }
 
 func (p offlineRunPublisher) Publish(ctx context.Context, event server.Event) error {
 	if event.Type == "server.offline" {
-		if err := p.reconciler.ServerOffline(ctx, event.ServerID); err != nil {
-			return err
-		}
-		if p.alerts != nil {
-			return p.alerts.Raise(ctx, alert.Event{
-				ResourceType: "server", ResourceID: event.ServerID, Code: "agent_offline",
-				Severity: alert.SeverityCritical, Title: "服务器离线", Message: "代理心跳已超过 15 秒未更新",
-			})
-		}
+		return p.reconciler.ServerOffline(ctx, event.ServerID)
 	}
 	return nil
 }
