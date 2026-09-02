@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -19,9 +21,12 @@ import (
 	"yunling.local/platform/internal/logstream"
 )
 
-const agentVersion = "0.1.0"
+var agentVersion = "0.1.0"
 
 func main() {
+	if writeVersionCommand(os.Args, os.Stdout) {
+		return
+	}
 	if len(os.Args) == 3 && os.Args[1] == "run-spec" {
 		exitCode, err := executor.RunSystemdSpec(os.Args[2])
 		if err != nil {
@@ -151,6 +156,14 @@ func main() {
 			log.Fatalf("云令代理停止：%v", err)
 		}
 	}
+}
+
+func writeVersionCommand(args []string, output io.Writer) bool {
+	if len(args) != 2 || args[1] != "version" {
+		return false
+	}
+	fmt.Fprintln(output, agentVersion)
+	return true
 }
 
 func newAgentLauncher(goos, mode string) executor.Launcher {
