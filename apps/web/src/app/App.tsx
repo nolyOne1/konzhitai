@@ -8,6 +8,7 @@ import { DashboardPage } from '../features/dashboard/DashboardPage'
 import { ServersPage } from '../features/servers/ServersPage'
 import { ScriptEditorPage } from '../features/scripts/ScriptEditorPage'
 import { ScriptsPage } from '../features/scripts/ScriptsPage'
+import { SyncPage } from '../features/scripts/SyncPage'
 import { TaskEditorPage } from '../features/tasks/TaskEditorPage'
 import { TasksPage } from '../features/tasks/TasksPage'
 import { RunDetailPage } from '../features/runs/RunDetailPage'
@@ -46,6 +47,7 @@ export function App() {
           <Route path="/runs/:id" element={<RunDetailPage />} />
           <Route path="/servers" element={<ServersPage />} />
           <Route path="/operations" element={<OperationsPage />} />
+          <Route path="/sync" element={<SyncPage />} />
           <Route path="/secrets" element={<SecretsPage />} />
           <Route path="/members" element={<MembersPage />} />
           <Route path="/settings" element={<AuditPage />} />

@@ -35,6 +35,22 @@ describe('云令应用壳', () => {
     window.history.pushState({}, '', '/')
   })
 
+  it('访问脚本同步地址时显示同步总览而不是占位页', async () => {
+    window.history.pushState({}, '', '/sync')
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/scripts') {
+        return { ok: true, json: async () => ({ scripts: [] }) } as Response
+      }
+      return { ok: false, status: 404, json: async () => ({ message: '未找到资源' }) } as Response
+    }))
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { level: 1, name: '脚本同步' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: '控制台模块' })).not.toBeInTheDocument()
+    window.history.pushState({}, '', '/')
+  })
+
   it('访问登录地址时显示中文登录页', () => {
     window.history.pushState({}, '', '/login')
 
