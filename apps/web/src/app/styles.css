@@ -1427,6 +1427,42 @@ h1 {
   background: var(--border);
 }
 
+.enrollment-release-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 16px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #fafcfb;
+}
+
+.enrollment-release-state > div {
+  display: grid;
+  gap: 3px;
+}
+
+.enrollment-release-state strong {
+  font-size: 13px;
+}
+
+.enrollment-release-state span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.enrollment-release-state.is-ready {
+  border-color: #cfe2d8;
+  background: var(--success-soft);
+}
+
+.enrollment-release-state.is-failed {
+  border-color: #ead6b7;
+  background: #fff8ec;
+}
+
 .enrollment-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1496,6 +1532,30 @@ h1 {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.enrollment-success h3 {
+  margin: 0 0 5px;
+  font-size: 17px;
+}
+
+.enrollment-close-confirmation {
+  margin-top: 20px;
+  padding: 20px;
+  border: 1px solid #ead6b7;
+  border-radius: 10px;
+  background: #fff8ec;
+}
+
+.enrollment-close-confirmation > strong {
+  font-size: 16px;
+}
+
+.enrollment-close-confirmation > p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 .enrollment-secret,
@@ -2909,6 +2969,15 @@ h1 {
 
   .enrollment-steps i {
     display: none;
+  }
+
+  .enrollment-release-state {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .enrollment-release-state .secondary-action {
+    width: 100%;
   }
 
   .enrollment-secret header,
