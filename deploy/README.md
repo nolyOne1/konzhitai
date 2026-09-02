@@ -95,47 +95,57 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml --profile too
 
 ## 五、接入京东云或其他执行服务器
 
-先通过 HTTPS 登录并创建仅显示一次、十分钟有效的注册令牌。当前可使用 API 完成：
+### 发布代理安装包
+
+生产镜像默认发布代理版本 `0.1.0`。升级代理时必须显式设置 `AGENT_VERSION`，版本只能包含字母、数字、点、下划线和连字符：
 
 ```bash
-curl --fail --show-error --cookie-jar /tmp/yunling-cookie \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"管理员邮箱","password":"管理员密码"}' \
-  https://你的域名/api/auth/login
-
-curl --fail --show-error --cookie /tmp/yunling-cookie \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"京东云执行节点-1","cloud_provider":"京东云","region":"填写地域","labels":{"用途":"批处理"}}' \
-  https://你的域名/api/servers/enrollment-tokens
-
-rm -f /tmp/yunling-cookie
+AGENT_VERSION=0.1.0
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml \
+  build --build-arg AGENT_VERSION="$AGENT_VERSION" api
 ```
 
-执行服务器需要 systemd 240 或更高版本，并安装 polkit；推荐 Debian 12/13、Ubuntu 22.04/24.04 或同等的新版本发行版。在可信构建机生成 Linux 代理并校验后再传到执行服务器：
+构建过程会分别生成 Linux amd64 与 arm64 静态二进制，为每个架构创建只含五个固定文件的归档，并把清单与归档复制到 API 镜像的 `/opt/yunling/releases/agent`。API 启动时会重新校验清单、文件类型、大小和 SHA-256；任一项不一致时发布接口关闭并返回 503，不能绕过校验下载。
+
+Caddy 现有 `/api/*` 反向代理已经覆盖以下公开只读路由，不需要开放新端口：
+
+- `GET /api/releases/agent/latest`：返回当前版本和两个架构；使用 `no-cache, no-store, must-revalidate`，避免控制台使用过期清单；
+- `GET /api/releases/agent/{version}/{sha256}/{fileName}`：只允许下载清单列出的精确文件；使用 SHA-256 ETag 和一年 `immutable` 缓存，条件请求命中时返回 304。
+
+这两个 GET 路由允许未登录访问，方便新服务器下载安装包。创建一次性注册令牌的 POST 路由仍要求管理员会话。归档下载有请求速率和并发上限，不能当作通用文件服务。
+
+### 从控制台一键接入
+
+执行服务器支持 Linux x86_64 和 ARM64，需要 systemd 240 或更高版本、polkit、Bash、`tar`、`sha256sum`、`mktemp`，以及 `curl` 或 `wget`。安装时还需要 root 或可用的 sudo 和可读写的 `/dev/tty`。推荐 Debian 12/13、Ubuntu 22.04/24.04 或同等级新版本发行版；安装器只做预检，不会自行调用包管理器。
+
+1. 管理员通过 HTTPS 登录云令，进入“服务器—接入服务器”。
+2. 等待向导显示代理版本及“支持 Linux x86_64 / ARM64”，再填写服务器名称、云厂商、地域和标签。
+3. 创建仅显示一次、十分钟有效的注册令牌，分别保存令牌和安装命令。
+4. 在新服务器的交互式终端整体粘贴安装命令。命令会识别架构、从控制面下载归档、校验 SHA-256 和归档白名单，再启动已验证的安装器。
+5. 按终端提示隐藏输入注册令牌；不要把令牌追加到安装命令。安装完成后检查：
 
 ```bash
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o bin/yunling-agent ./cmd/agent
-sha256sum bin/yunling-agent
-scp bin/yunling-agent deploy/agent/install.sh deploy/agent/yunling-agent.service \
-  deploy/agent/yunling-run@.service deploy/agent/50-yunling-agent.rules \
-  运维账号@执行服务器:/tmp/
-```
-
-在执行服务器上使用一次性令牌安装：
-
-```bash
-sudo env \
-  YUNLING_CONTROL_URL=https://你的域名 \
-  YUNLING_ENROLLMENT_TOKEN=仅显示一次的令牌 \
-  bash /tmp/install.sh /tmp/yunling-agent
+sudo systemctl status yunling-agent.service --no-pager
 sudo journalctl -u yunling-agent.service -n 100 --no-pager
 ```
 
-安装器不会保存一次性令牌；注册成功后会清理令牌环境并重启代理，只保留权限为 0600 的独立代理凭据。控制连接以无登录权限的 `yunling-agent` 账号运行；polkit 只允许它启停 root 预装的 `yunling-run@.service` 实例，不能创建任意临时单元。所有业务脚本固定以无登录权限的 `yunling-runner` 账号运行，调度器按任务声明值预留资源，模板另设 16 核、64 GiB、1024 个进程和 7 天的节点级硬上限。运行中的标准输出和错误日志会从独立文件持续回传。
+安装器不会接受命令行、环境变量或标准输入中的令牌，只从当前 `/dev/tty` 隐藏读取。注册成功后会删除引导秘密，只保留权限为 `0600` 的节点独立凭据。安装失败时会停止刚启动的服务并清除临时秘密；已存在节点凭据或旧凭据路径时会保守停止，避免覆盖现有身份。
 
-不要把云服务器 root 密码写入云令配置、脚本参数、环境文件或部署文档。若安装期间曾使用临时 root 密码，应在代理验证在线后立即轮换，随后改用密钥登录和专用运维账号。
+控制连接以无登录权限的 `yunling-agent` 账号运行；polkit 只允许它启停 root 预装的 `yunling-run@.service` 实例，不能创建任意临时单元。业务脚本固定以无登录权限的 `yunling-runner` 账号运行。调度器按任务声明预留资源，模板另设 16 核、64 GiB、1024 个进程和 7 天的节点级硬上限；标准输出和错误日志从独立文件持续回传。
 
-以后新增服务器时重复“创建一次性注册令牌—安装代理”即可。脚本发布后由中央生成不可变版本，兼容服务器会共享同一内容校验值并自动同步；发生校验漂移的节点会被阻止运行该版本。
+绝对不要把注册令牌放入命令参数、环境变量、URL、聊天、工单或部署文档，也不要把服务器 root 密码写入云令。云令不保存 SSH 用户名或密码；安装期间如临时启用了密码登录，应在节点上线后立即轮换并恢复密钥登录。
+
+### 下载与接入排障
+
+按以下顺序检查，定位后再重新创建令牌：
+
+1. **清单返回 503**：检查 API 日志中的“代理发布”错误，确认 `/opt/yunling/releases/agent/manifest.json` 存在，两个归档都是普通文件，字节数和 SHA-256 与清单一致；修复后重建并替换 API 容器。
+2. **安装包下载失败**：确认执行服务器能解析控制面域名并出站访问 443，系统时间和 CA 证书正常，且 Caddy、API 均健康；不要改用 HTTP 或关闭 TLS 校验。
+3. **SHA-256 校验失败**：停止安装，清理代理缓存或中间代理缓存，重新读取最新清单再生成命令；不要手工改摘要或继续解压。
+4. **提示已有凭据**：先在控制台核对该节点及其在线状态。需要重装时先吊销旧节点凭据并按受控流程移走旧文件，禁止直接覆盖。
+5. **令牌过期或已使用**：回到控制台重新创建一次性令牌；每个令牌只供一个节点使用，不能共享或重放。
+
+以后新增服务器只需重复控制台向导。脚本发布后由中央生成不可变版本，兼容服务器共享同一内容校验值并自动同步；发生校验漂移的节点会被阻止运行该版本。
 
 ## 六、日常运维
 
