@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { getServers, getSession, revokeServerCredentials, rotateServerCredential, updateServer, type ServerView, type UpdateServerInput } from '../../api/client'
 import { ServerDrawer } from './ServerDrawer'
+import { ServerEnrollmentDialog } from './ServerEnrollmentDialog'
 
 export function ServersPage() {
   const [servers, setServers] = useState<ServerView[]>([])
@@ -10,7 +11,12 @@ export function ServersPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [isAdmin, setIsAdmin] = useState(false)
+  const [sessionReady, setSessionReady] = useState(false)
+  const [sessionError, setSessionError] = useState('')
   const [securityBusy, setSecurityBusy] = useState(false)
+  const [showEnrollment, setShowEnrollment] = useState(false)
+  const enrollmentButtonRef = useRef<HTMLButtonElement>(null)
+  const sessionRequestRef = useRef(0)
 
   useEffect(() => {
     let active = true
@@ -22,9 +28,8 @@ export function ServersPage() {
   }, [])
 
   useEffect(() => {
-    let active = true
-    getSession().then((session) => { if (active) setIsAdmin(session.roles.includes('admin')) }).catch(() => undefined)
-    return () => { active = false }
+    void loadSession()
+    return () => { sessionRequestRef.current += 1 }
   }, [])
 
   const selected = useMemo(() => servers.find((server) => server.id === selectedID) ?? null, [selectedID, servers])
@@ -56,6 +61,27 @@ export function ServersPage() {
     } finally { setSecurityBusy(false) }
   }
 
+  async function loadSession() {
+    const requestID = sessionRequestRef.current + 1
+    sessionRequestRef.current = requestID
+    setSessionReady(false)
+    setSessionError('')
+    setIsAdmin(false)
+    try {
+      const session = await getSession()
+      if (sessionRequestRef.current === requestID) setIsAdmin(session.roles.includes('admin'))
+    } catch {
+      if (sessionRequestRef.current === requestID) setSessionError('权限信息加载失败，请重试。')
+    } finally {
+      if (sessionRequestRef.current === requestID) setSessionReady(true)
+    }
+  }
+
+  function closeEnrollment() {
+    setShowEnrollment(false)
+    window.setTimeout(() => enrollmentButtonRef.current?.focus(), 0)
+  }
+
   return (
     <>
       <div className="page-heading">
@@ -64,7 +90,10 @@ export function ServersPage() {
           <h1>服务器</h1>
           <p>查看代理连接、实时资源和调度可用性</p>
         </div>
-        <button type="button" className="primary-action">接入服务器</button>
+        <div className="server-heading-action">
+          <button ref={enrollmentButtonRef} type="button" className="primary-action" aria-busy={!sessionReady} aria-describedby={sessionError ? 'enrollment-permission-error' : sessionReady && !isAdmin ? 'enrollment-permission-note' : undefined} disabled={!sessionReady || !isAdmin} onClick={() => setShowEnrollment(true)}>接入服务器</button>
+          {sessionError ? <div className="server-permission-error" id="enrollment-permission-error" role="alert"><span>{sessionError}</span><button type="button" className="secondary-action" onClick={() => void loadSession()}>重试权限检查</button></div> : sessionReady && !isAdmin ? <small id="enrollment-permission-note">仅管理员可接入新服务器</small> : null}
+        </div>
       </div>
 
       {error && <div className="notice notice-error" role="alert">{error}</div>}
@@ -106,6 +135,7 @@ export function ServersPage() {
       </section>
 
       {selected && <ServerDrawer server={selected} saving={pendingID === selected.id} securityBusy={securityBusy} isAdmin={isAdmin} onClose={() => setSelectedID(null)} onSave={(input) => saveServer(selected, input)} onRotate={() => rotateCredential(selected)} onRevoke={() => revokeCredentials(selected)} />}
+      {showEnrollment && <ServerEnrollmentDialog controlUrl={window.location.origin} onClose={closeEnrollment} />}
     </>
   )
 }

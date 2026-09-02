@@ -46,6 +46,19 @@ export interface UpdateServerInput {
   draining?: boolean
 }
 
+export interface EnrollmentTokenInput {
+  name: string
+  cloudProvider: string
+  region: string
+  labels: Record<string, string>
+}
+
+export interface EnrollmentTokenView {
+  id: string
+  token: string
+  expiresAt: string
+}
+
 export type DistributionMode = 'all_compatible' | 'server_group' | 'labels' | 'on_demand'
 
 export interface DistributionRule {
@@ -330,6 +343,20 @@ export async function updateServer(id: string, input: UpdateServerInput): Promis
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
+}
+
+export async function createServerEnrollmentToken(input: EnrollmentTokenInput): Promise<EnrollmentTokenView> {
+  const response = await request<{ id: string; token: string; expires_at: string }>('/api/servers/enrollment-tokens', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: input.name,
+      cloud_provider: input.cloudProvider,
+      region: input.region,
+      labels: input.labels,
+    }),
+  })
+  return { id: response.id, token: response.token, expiresAt: response.expires_at }
 }
 
 export async function getScripts(): Promise<ScriptView[]> {
