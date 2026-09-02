@@ -15,7 +15,10 @@ describe('代理一条命令安装', () => {
       'Linux:x86_64)',
       'Linux:aarch64|Linux:arm64)',
       'mktemp -d',
-      'trap cleanup EXIT HUP INT TERM',
+      'trap cleanup EXIT',
+      "trap 'abort 129' HUP",
+      "trap 'abort 130' INT",
+      "trap 'abort 143' TERM",
       'sha256sum',
       'curl',
       'wget',
@@ -29,6 +32,7 @@ describe('代理一条命令安装', () => {
     ]) {
       expect(command).toContain(expected)
     }
+    expect(command.indexOf('command -v mktemp')).toBeLessThan(command.indexOf('temp_dir=$(mktemp -d)'))
     expect(command.indexOf('sha256sum "$archive"')).toBeLessThan(command.indexOf('sudo -- bash'))
     expect(command).not.toContain('YUNLING_ENROLLMENT_TOKEN')
     expect(command).not.toContain('/tmp/install.sh')
