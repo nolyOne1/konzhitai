@@ -6,6 +6,7 @@ import {
   getBackupSummary,
   getDashboard,
   getFeishuNotificationConfig,
+  getLatestAgentRelease,
   getNotificationDelivery,
   getRestoreVerifications,
   requestBackup,
@@ -26,6 +27,31 @@ describe('API 客户端', () => {
     }))
 
     await expect(getDashboard()).rejects.toThrow('服务返回的数据格式不正确')
+  })
+
+  it('显式映射代理发布清单字段', async () => {
+    const digest = 'a'.repeat(64)
+    const fetchMock = vi.fn().mockResolvedValue(response({
+      version: '0.1.0',
+      artifacts: [{
+        os: 'linux', arch: 'amd64', file_name: 'agent-amd64.tar.gz',
+        byte_size: 42, sha256: digest,
+        download_url: `/api/releases/agent/0.1.0/${digest}/agent-amd64.tar.gz`,
+      }],
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const release = await getLatestAgentRelease()
+
+    expect(release).toEqual({
+      version: '0.1.0',
+      artifacts: [{
+        os: 'linux', arch: 'amd64', fileName: 'agent-amd64.tar.gz',
+        byteSize: 42, sha256: digest,
+        downloadUrl: `/api/releases/agent/0.1.0/${digest}/agent-amd64.tar.gz`,
+      }],
+    })
+    expect(fetchMock).toHaveBeenCalledWith('/api/releases/agent/latest', { credentials: 'same-origin' })
   })
 
   it('使用同源 JSON 请求修改当前用户密码', async () => {

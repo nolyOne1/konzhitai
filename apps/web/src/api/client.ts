@@ -59,6 +59,20 @@ export interface EnrollmentTokenView {
   expiresAt: string
 }
 
+export interface AgentReleaseArtifact {
+  os: string
+  arch: string
+  fileName: string
+  byteSize: number
+  sha256: string
+  downloadUrl: string
+}
+
+export interface AgentReleaseManifest {
+  version: string
+  artifacts: AgentReleaseArtifact[]
+}
+
 export type DistributionMode = 'all_compatible' | 'server_group' | 'labels' | 'on_demand'
 
 export interface DistributionRule {
@@ -343,6 +357,31 @@ export async function updateServer(id: string, input: UpdateServerInput): Promis
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
+}
+
+export async function getLatestAgentRelease(): Promise<AgentReleaseManifest> {
+  const response = await request<{
+    version: string
+    artifacts: Array<{
+      os: string
+      arch: string
+      file_name: string
+      byte_size: number
+      sha256: string
+      download_url: string
+    }>
+  }>('/api/releases/agent/latest')
+  return {
+    version: response.version,
+    artifacts: response.artifacts.map((artifact) => ({
+      os: artifact.os,
+      arch: artifact.arch,
+      fileName: artifact.file_name,
+      byteSize: artifact.byte_size,
+      sha256: artifact.sha256,
+      downloadUrl: artifact.download_url,
+    })),
+  }
 }
 
 export async function createServerEnrollmentToken(input: EnrollmentTokenInput): Promise<EnrollmentTokenView> {
