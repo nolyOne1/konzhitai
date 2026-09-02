@@ -89,14 +89,17 @@ func TestPostgresOutboxClaimsOnceAndExpiredLeaseCanBeTakenOver(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	if _, err := db.Exec(ctx, `
-		INSERT INTO notification_outbox (event_type, payload, idempotency_key)
-		VALUES ('test', $1, 'claim-test')
-	`, `{"code":"test","severity":"info","title":"并发领取测试","sourceType":"system","sourceId":"yunling","occurrenceCount":1,"occurredAt":"2026-08-31T12:00:00Z"}`); err != nil {
+		INSERT INTO notification_outbox (
+			event_type, payload, idempotency_key,
+			next_attempt_at, created_at, updated_at
+		)
+		VALUES ('test', $1, 'claim-test', $2, $2, $2)
+	`, `{"code":"test","severity":"info","title":"并发领取测试","sourceType":"system","sourceId":"yunling","occurrenceCount":1,"occurredAt":"2026-08-31T12:00:00Z"}`, now); err != nil {
 		t.Fatal(err)
 	}
 
-	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	type result struct {
 		claim notification.ClaimedDelivery
 		ok    bool

@@ -265,7 +265,7 @@ func TestOpsSecretsInitIsOneShotOfflineAndCopiesOnlyToDedicatedVolume(t *testing
 	root := testpostgres.RepositoryRoot(t)
 	compose := mustReadDeploymentFile(t, root, "deploy", "docker-compose.yml")
 	start := strings.Index(compose, "\n  ops-secrets-init:")
-	endRelative := strings.Index(compose[start+1:], "\n  ops:")
+	endRelative := strings.Index(compose[start+1:], "\n  ops-data-init:")
 	if start < 0 || endRelative < 0 {
 		t.Fatal("Compose 必须定义一次性 ops-secrets-init")
 	}
