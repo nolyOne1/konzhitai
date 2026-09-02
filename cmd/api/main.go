@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"yunling.local/platform/internal/agentprotocol"
+	"yunling.local/platform/internal/agentrelease"
 	"yunling.local/platform/internal/alert"
 	"yunling.local/platform/internal/artifact"
 	"yunling.local/platform/internal/audit"
@@ -37,6 +38,11 @@ func main() {
 
 	router := http.NewServeMux()
 	router.Handle("GET /api/health", health.Handler())
+	releaseRoot := strings.TrimSpace(os.Getenv("YUNLING_AGENT_RELEASE_DIR"))
+	if releaseRoot == "" {
+		releaseRoot = "/opt/yunling/releases/agent"
+	}
+	router.Handle("/api/releases/agent/", loadAgentReleaseHandler(releaseRoot))
 
 	unavailableHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -226,8 +232,30 @@ func main() {
 	router.Handle("/api/agent/", serverHandler)
 
 	log.Printf("云令 API 正在监听 %s", address)
-	if err := http.ListenAndServe(address, router); err != nil {
+	if err := newHTTPServer(address, router).ListenAndServe(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func loadAgentReleaseHandler(root string) http.Handler {
+	catalog, err := agentrelease.Load(root)
+	if err != nil {
+		log.Printf("代理发布目录校验失败，发布接口将返回暂不可用：%v", err)
+		return agentrelease.UnavailableHandler()
+	}
+	manifest := catalog.Manifest()
+	log.Printf("代理发布已就绪：版本 %s，架构 %d", manifest.Version, len(manifest.Artifacts))
+	return agentrelease.Handler(catalog)
+}
+
+func newHTTPServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       60 * time.Second,
 	}
 }
 

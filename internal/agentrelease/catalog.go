@@ -174,6 +174,14 @@ func (c *Catalog) Open(version, digest, fileName string) (*os.File, Artifact, er
 	return file, c.artifactByKey[key], nil
 }
 
+func (c *Catalog) lookup(version, digest, fileName string) (Artifact, bool) {
+	if c == nil {
+		return Artifact{}, false
+	}
+	artifact, ok := c.artifactByKey[artifactKey(version, digest, fileName)]
+	return artifact, ok
+}
+
 func artifactKey(version, digest, fileName string) string {
 	return version + "\x00" + digest + "\x00" + fileName
 }

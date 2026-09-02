@@ -167,6 +167,17 @@ func TestServiceBuildUsesReachableVerifiedGoModuleMirror(t *testing.T) {
 	}
 }
 
+func TestAPIDeploymentUsesEmbeddedReadOnlyAgentReleases(t *testing.T) {
+	root := testpostgres.RepositoryRoot(t)
+	compose := mustReadDeploymentFile(t, root, "deploy", "docker-compose.yml")
+	if !strings.Contains(compose, "YUNLING_AGENT_RELEASE_DIR: /opt/yunling/releases/agent") {
+		t.Fatal("API 必须显式读取镜像内的代理发布目录")
+	}
+	if strings.Contains(compose, ":/opt/yunling/releases/agent") {
+		t.Fatal("代理发布目录必须来自只读服务镜像，不能由宿主机卷覆盖")
+	}
+}
+
 func TestPasswordChangeTrustsOnlyCaddyOwnedForwardedIP(t *testing.T) {
 	root := testpostgres.RepositoryRoot(t)
 	compose := mustReadDeploymentFile(t, root, "deploy", "docker-compose.yml")
