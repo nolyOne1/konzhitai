@@ -95,17 +95,11 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml --profile too
 
 ## 五、接入京东云或其他执行服务器
 
-### 发布代理安装包
+### 代理安装包的只读发布
 
-生产镜像默认发布代理版本 `0.1.0`。升级代理时必须显式设置 `AGENT_VERSION`，版本只能包含字母、数字、点、下划线和连字符：
+当前生产代理版本锁定为 `0.1.0`。清单和 Linux amd64/arm64 归档保存在独立命名卷 `yunling_agent_releases`，API 只读挂载 `/opt/yunling/releases/agent`。API 启动时会校验清单、文件类型、大小和 SHA-256；任一项不一致时发布接口关闭并返回 503。
 
-```bash
-AGENT_VERSION=0.1.0
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml \
-  build --build-arg AGENT_VERSION="$AGENT_VERSION" api
-```
-
-构建过程会分别生成 Linux amd64 与 arm64 静态二进制，为每个架构创建只含五个固定文件的归档，并把清单与归档复制到 API 镜像的 `/opt/yunling/releases/agent`。API 启动时会重新校验清单、文件类型、大小和 SHA-256；任一项不一致时发布接口关闭并返回 503，不能绕过校验下载。
+普通控制面镜像不再内置代理二进制或发布包，日常发布无权写入该卷。代理升级必须另行设计、审批和验证专用流程，不得通过手工构建 API 镜像、替换卷文件或普通“云令生产发布”完成。
 
 Caddy 现有 `/api/*` 反向代理已经覆盖以下公开只读路由，不需要开放新端口：
 
@@ -156,15 +150,9 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml logs -f --tail=200 api scheduler ops
 ```
 
-更新程序：
+生产程序更新不再在服务器执行 `git pull`、现场构建或直接 `up`。请按 [生产发布与回滚手册](RELEASE.md) 选择不可变候选、通过 `production` 环境人工审批并由受限入口执行。
 
-```bash
-git pull --ff-only
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml build --pull
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
-```
-
-更新前先执行测试与备份。不要使用 `docker compose down -v`，该命令会删除数据库、对象存储、Redis 和 Caddy 数据卷。
+不要使用 `docker compose down -v`，该命令会删除数据库、对象存储、Redis、Caddy 和代理发布数据卷。
 
 ### 飞书通知配置
 
@@ -179,9 +167,9 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps ops
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml logs --tail=100 ops
 ```
 
-### 管理员改密功能上线
+### 管理员改密功能上线（历史流程，禁止复用）
 
-管理员改密涉及数据库加法迁移和会话撤销。生产升级必须按以下顺序执行，不得提前删除初始凭据文件。
+管理员改密所需迁移已在当前生产完成。以下只保留凭据验收要求，不再是升级指令。不得重复执行历史迁移、`git pull`、现场构建或直接重建生产服务。任何新数据库迁移都必须使用独立方案和审批；当前版本化控制面发布会在迁移树摘要改变时主动拒绝。
 
 1. 在当前生产版本仍正常运行时创建 PostgreSQL 备份：
 
@@ -193,20 +181,9 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml exec -T postg
   > backups/yunling-before-password-change-$(date +%F-%H%M).dump
 ```
 
-2. 拉取已经过测试的提交，先执行仅新增表和索引的迁移，再重建并启动服务：
-
-```bash
-git pull --ff-only
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml exec -T postgres \
-  sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
-  < migrations/000010_password_change_security.up.sql
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
-docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
-```
-
-3. 使用初始管理员凭据登录控制台，进入“运维中心—账号安全”，设置至少 12 位且不与旧密码相同的新密码，并保存到受控密码管理器。
-4. 确认当前会话仍可访问；再打开无痕窗口，使用新密码重新登录成功，并确认旧密码登录失败。
-5. 只有以上检查全部通过后，才删除服务器上的初始凭据文件，并立即验证文件已不存在：
+2. 使用初始管理员凭据登录控制台，进入“运维中心—账号安全”，设置至少 12 位且不与旧密码相同的新密码，并保存到受控密码管理器。
+3. 确认当前会话仍可访问；再打开无痕窗口，使用新密码重新登录成功，并确认旧密码登录失败。
+4. 只有以上检查全部通过后，才删除服务器上的初始凭据文件，并立即验证文件已不存在：
 
 ```bash
 sudo test -f /root/yunling-initial-admin.txt
