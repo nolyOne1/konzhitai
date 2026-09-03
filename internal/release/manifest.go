@@ -42,8 +42,10 @@ type Manifest struct {
 }
 
 type ManifestPolicy struct {
-	RepositoryID int64
-	Owner        string
+	RepositoryID  int64
+	Owner         string
+	allowedImages map[string]string
+	origin        ReleaseOrigin
 }
 
 func DecodeManifest(reader io.Reader) (Manifest, error) {
@@ -83,13 +85,25 @@ func ValidateManifest(manifest Manifest, policy ManifestPolicy) error {
 		"web":      "ghcr.io/" + policy.Owner + "/yunling-web@sha256:",
 		"ops":      "ghcr.io/" + policy.Owner + "/yunling-ops@sha256:",
 	}
+	exactImages := false
+	if len(policy.allowedImages) != 0 {
+		if len(policy.allowedImages) != 3 {
+			return errors.New("候选镜像白名单无效")
+		}
+		allowedImages = policy.allowedImages
+		exactImages = true
+	}
 	for name, value := range map[string]string{
 		"services": manifest.Images.Services,
 		"web":      manifest.Images.Web,
 		"ops":      manifest.Images.Ops,
 	} {
 		prefix := allowedImages[name]
-		if len(value) != len(prefix)+64 || !strings.HasPrefix(value, prefix) || !lowerHex64Pattern.MatchString(value[len(prefix):]) {
+		valid := len(value) == len(prefix)+64 && strings.HasPrefix(value, prefix) && lowerHex64Pattern.MatchString(value[len(prefix):])
+		if exactImages {
+			valid = value == prefix
+		}
+		if !valid {
 			return fmt.Errorf("%s 镜像必须使用允许仓库的不可变摘要", name)
 		}
 	}

@@ -145,6 +145,18 @@ func TestDeployExecutesPinnedImagesThenCommitsState(t *testing.T) {
 	}
 }
 
+func TestDeployUsesInjectedHealthWindow(t *testing.T) {
+	fixture := newDeploymentFixture(t)
+	fixture.deployer.HealthTimeout = 7 * time.Second
+	fixture.deployer.HealthInterval = 25 * time.Millisecond
+	if _, err := fixture.deployer.Execute(context.Background(), validDeployRequest(fixture.manifest)); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(fixture.health.times, []time.Duration{7 * time.Second, 25 * time.Millisecond}) {
+		t.Fatalf("未使用注入的健康检查窗口：%v", fixture.health.times)
+	}
+}
+
 func TestDeployHealthFailureRestoresPreviousRelease(t *testing.T) {
 	fixture := newDeploymentFixture(t)
 	fixture.health.waits = []error{errors.New("web unhealthy"), nil}

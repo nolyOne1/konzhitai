@@ -35,8 +35,9 @@ var (
 type ReleaseOrigin string
 
 const (
-	OriginGHCR      ReleaseOrigin = "ghcr"
-	OriginBootstrap ReleaseOrigin = "local-bootstrap"
+	OriginGHCR               ReleaseOrigin = "ghcr"
+	OriginBootstrap          ReleaseOrigin = "local-bootstrap"
+	originReleaseIntegration ReleaseOrigin = "release-integration"
 )
 
 type ServiceImages struct {
@@ -86,9 +87,13 @@ func NewStoredRelease(manifest Manifest, policy ManifestPolicy) (StoredRelease, 
 	if err := ValidateManifest(manifest, policy); err != nil {
 		return StoredRelease{}, fmt.Errorf("%w：%v", ErrInvalidRelease, err)
 	}
+	origin := OriginGHCR
+	if manifestOrigin := policy.origin; manifestOrigin != "" {
+		origin = manifestOrigin
+	}
 	return StoredRelease{
 		TargetID:  strconv.FormatInt(manifest.CandidateRunID, 10),
-		Origin:    OriginGHCR,
+		Origin:    origin,
 		SourceSHA: manifest.SourceSHA,
 		Images: ServiceImages{
 			API: manifest.Images.Services, Scheduler: manifest.Images.Services,
@@ -429,6 +434,11 @@ func validateStoredRelease(release StoredRelease, requireSuccess bool) error {
 			if len(match) != 2 || match[1] != service {
 				return ErrInvalidRelease
 			}
+		}
+	case originReleaseIntegration:
+		if !targetIDPattern.MatchString(release.TargetID) || !lowerHex40Pattern.MatchString(release.SourceSHA) ||
+			!validateReleaseIntegrationImages(release.Images) {
+			return ErrInvalidRelease
 		}
 	default:
 		return ErrInvalidRelease

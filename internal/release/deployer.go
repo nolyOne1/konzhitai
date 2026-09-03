@@ -61,14 +61,16 @@ type Result struct {
 }
 
 type Deployer struct {
-	Config    HostConfig
-	Policy    ManifestPolicy
-	Store     *StateStore
-	Runner    CommandRunner
-	Resources ResourceReader
-	Locker    Locker
-	Health    HealthChecker
-	Now       func() time.Time
+	Config         HostConfig
+	Policy         ManifestPolicy
+	Store          *StateStore
+	Runner         CommandRunner
+	Resources      ResourceReader
+	Locker         Locker
+	Health         HealthChecker
+	HealthTimeout  time.Duration
+	HealthInterval time.Duration
+	Now            func() time.Time
 }
 
 func (deployer *Deployer) Execute(ctx context.Context, request Request) (Result, error) {
@@ -149,7 +151,8 @@ func (deployer *Deployer) Execute(ctx context.Context, request Request) (Result,
 		return deployer.failAfterUpdate(ctx, request, result, current, config, startedAt,
 			fmt.Errorf("重建应用容器：%w", err))
 	}
-	if err := deployer.Health.Wait(ctx, releaseHealthTimeout, releaseHealthInterval); err != nil {
+	healthTimeout, healthInterval := deployer.healthWindow()
+	if err := deployer.Health.Wait(ctx, healthTimeout, healthInterval); err != nil {
 		return deployer.failAfterUpdate(ctx, request, result, current, config, startedAt,
 			fmt.Errorf("新版本健康检查：%w", err))
 	}
@@ -286,7 +289,20 @@ func (deployer *Deployer) restore(ctx context.Context, config HostConfig, previo
 	if err := deployer.composeUpdate(ctx, config); err != nil {
 		return err
 	}
-	return deployer.Health.Wait(ctx, releaseHealthTimeout, releaseHealthInterval)
+	healthTimeout, healthInterval := deployer.healthWindow()
+	return deployer.Health.Wait(ctx, healthTimeout, healthInterval)
+}
+
+func (deployer *Deployer) healthWindow() (time.Duration, time.Duration) {
+	timeout := deployer.HealthTimeout
+	if timeout <= 0 {
+		timeout = releaseHealthTimeout
+	}
+	interval := deployer.HealthInterval
+	if interval <= 0 {
+		interval = releaseHealthInterval
+	}
+	return timeout, interval
 }
 
 func validateDeploymentRequest(request Request, policy ManifestPolicy) error {
