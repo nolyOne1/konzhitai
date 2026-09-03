@@ -43,6 +43,9 @@
 - `internal/release/health.go`：四个容器、三个内部接口和两个公网接口检查。
 - `internal/release/deployer.go`：预检、部署、自动回滚与人工回滚状态机。
 - `internal/release/notify.go`：从机器结果生成并发送中文飞书发布卡片。
+- `internal/release/sourcepolicy.go`：解析 Dockerfile 与 `.dockerignore`，执行可复用的构建来源安全策略。
+- `internal/release/workflowpolicy.go`：语义解析 Actions YAML，验证触发器、权限、审批、并发和 Secrets 边界。
+- `internal/release/github.go`：验证 GitHub 运行元数据与候选来源，不让信任判断藏在工作流内联 Shell 中。
 - `cmd/yunling-release/main.go`：`manifest`、`request`、`execute`、`bootstrap`、`preflight`、`notify` 子命令。
 - `deploy/agent/release-lock.json`：当前生产代理 `0.1.0` 的公开元数据锁，不保存二进制。
 - `deploy/release/install.sh`：一次性安装受限账号、固定程序、sudoers 和初始基线。
@@ -789,34 +792,37 @@ git commit -m "feat: 增加受限生产发布安装器"
 - Modify: `deploy/Dockerfile.ops`
 - Modify: `deploy/Dockerfile.minio`
 - Modify: `.dockerignore`
+- Create: `internal/release/sourcepolicy.go`
+- Create: `internal/release/sourcepolicy_test.go`
+- Create: `deploy/release/testdata/context-probe.Dockerfile`
 - Create: `tests/integration/release_deployment_test.go`
 
 **Interfaces:**
 - Produces: every `FROM` line in every `deploy/Dockerfile*` includes an immutable `@sha256:<64 lowercase hex>` digest。
 - Produces: build contexts exclude credentials, release state, backups and local outputs。
+- Produces: `ValidateBuildSources(repositoryRoot string) error`，供本地测试和 CI 对真实仓库执行同一策略。
 
-- [ ] **Step 1: 写基础镜像和上下文契约测试**
+- [ ] **Step 1: 写基础镜像和构建上下文策略的行为测试**
 
 ```go
-func TestProductionDockerfilesPinEveryBaseByDigest(t *testing.T) {
-	for _, name := range []string{"Dockerfile.services", "Dockerfile.web", "Dockerfile.ops", "Dockerfile.minio"} {
-		content := readRepoText(t, "deploy/"+name)
-		for _, line := range strings.Split(content, "\n") {
-			if strings.HasPrefix(line, "FROM ") && !regexp.MustCompile(`@sha256:[0-9a-f]{64}(?: |$)`).MatchString(line) {
-				t.Errorf("%s 未固定基础镜像：%s", name, line)
-			}
-		}
+func TestValidateBuildSourcesRejectsMovableBaseAndMissingSecretExclusion(t *testing.T) {
+	root := newBuildPolicyFixture(t)
+	writeFixture(t, root, "deploy/Dockerfile.services", "FROM alpine:3.24\n")
+	writeFixture(t, root, ".dockerignore", "node_modules\n")
+	err := ValidateBuildSources(root)
+	if !errors.Is(err, ErrUnsafeBuildSource) {
+		t.Fatalf("未固定基础镜像和缺少密钥排除规则必须失败：%v", err)
 	}
 }
 ```
 
-Assert `.dockerignore` contains `**/.env`、`deploy/secrets`、`releases`、`backups`、`*.pem`、`id_rsa*`、`id_ed25519*` and existing build outputs.
+Add a passing fixture with digest-pinned `FROM` entries and effective ignore rules for nested `.env`、`deploy/secrets`、`releases`、`backups`、`*.pem`、`id_rsa*`、`id_ed25519*` and build outputs. Expectations are literal fixtures; tests call the real policy and do not search the repository file as plain text.
 
 - [ ] **Step 2: 运行契约测试确认失败**
 
-Run: `go test ./tests/integration -run 'TestProductionDockerfiles|TestDockerBuildContext' -count=1`
+Run: `go test ./internal/release -run TestValidateBuildSources -count=1`
 
-Expected: FAIL because current `FROM` lines use tags only.
+Expected: FAIL because `ValidateBuildSources` does not exist.
 
 - [ ] **Step 3: 从注册表解析并记录实际索引摘要**
 
@@ -833,7 +839,11 @@ done
 
 Expected: nine quoted values matching `"sha256:[0-9a-f]{64}"`. Append each returned digest to its existing tag in every `FROM`, keeping the human-readable tag before `@sha256:`. Review the manifest platform list and reject any tag without `linux/amd64`.
 
-- [ ] **Step 4: 收紧 `.dockerignore` 并构建全部镜像**
+- [ ] **Step 4: 收紧 `.dockerignore`、运行真实上下文探针并构建全部镜像**
+
+Implement `ValidateBuildSources` with a Dockerfile parser that evaluates every stage and rejects any registry base without a digest. Parse ignore rules with Docker-compatible matching rather than substring checks.
+
+Create temporary sentinel files under each sensitive path, then use `context-probe.Dockerfile` to `COPY . /context` into a local BuildKit output. Assert none of the sentinels exists in the exported context and always remove only those explicitly named temporary sentinels.
 
 Run: `docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml build web api scheduler ops bootstrap minio`
 
@@ -841,12 +851,12 @@ Expected: all builds succeed from pinned bases; services image contains no agent
 
 - [ ] **Step 5: 运行部署契约测试并提交**
 
-Run: `go test ./tests/integration -run 'TestProductionDockerfiles|TestDockerBuildContext|TestAPIDeployment' -count=1`
+Run: `go test ./internal/release ./tests/integration -run 'TestValidateBuildSources|TestAPIDeployment' -count=1`
 
 Expected: PASS。
 
 ```bash
-git add deploy/Dockerfile.services deploy/Dockerfile.web deploy/Dockerfile.ops deploy/Dockerfile.minio .dockerignore tests/integration/release_deployment_test.go
+git add deploy/Dockerfile.services deploy/Dockerfile.web deploy/Dockerfile.ops deploy/Dockerfile.minio deploy/release/testdata/context-probe.Dockerfile .dockerignore internal/release/sourcepolicy.go internal/release/sourcepolicy_test.go tests/integration/release_deployment_test.go
 git commit -m "build: 固定生产基础镜像摘要"
 ```
 
@@ -854,6 +864,10 @@ git commit -m "build: 固定生产基础镜像摘要"
 
 **Files:**
 - Create: `.github/workflows/publish-candidate.yml`
+- Create: `internal/release/github.go`
+- Create: `internal/release/github_test.go`
+- Create: `internal/release/workflowpolicy.go`
+- Create: `internal/release/workflowpolicy_test.go`
 - Create: `tests/integration/release_workflow_test.go`
 - Modify: `cmd/yunling-release/main.go`
 - Modify: `cmd/yunling-release/main_test.go`
@@ -862,33 +876,46 @@ git commit -m "build: 固定生产基础镜像摘要"
 - Consumes: `yunling-release manifest create/validate` from Task 6。
 - Produces: workflow `云令候选版本` and artifact `yunling-release-<40位source SHA>` retained 90 days。
 - Produces: three GHCR image digests and one bootstrap bundle for first installation。
+- Produces: `ValidateCandidateRun(RunMetadata, CandidatePolicy) error` and `ValidateWorkflowFiles(repositoryRoot string) error`。
 
-- [ ] **Step 1: 写候选工作流安全契约测试**
+- [ ] **Step 1: 写候选来源与工作流策略行为测试**
 
 ```go
-func TestCandidateWorkflowUsesTrustedSuccessfulMainCI(t *testing.T) {
-	workflow := readRepoText(t, ".github/workflows/publish-candidate.yml")
-	for _, required := range []string{
-		"name: 云令候选版本", "workflow_run:", "workflows: [\"云令 CI\"]", "types: [completed]",
-		"github.event.workflow_run.conclusion == 'success'", "github.event.workflow_run.head_branch == 'main'",
-		"github.event.workflow_run.event == 'push'", "github.event.workflow_run.head_sha",
-	} {
-		if !strings.Contains(workflow, required) { t.Errorf("缺少 %q", required) }
+func TestValidateCandidateRunRejectsUntrustedRuns(t *testing.T) {
+	valid := RunMetadata{Workflow: "云令 CI", Conclusion: "success", Branch: "main", Event: "push", RepositoryID: 42}
+	cases := []struct {
+		name string
+		edit func(*RunMetadata)
+	}{
+		{"错误工作流", func(run *RunMetadata) { run.Workflow = "其他" }},
+		{"失败结论", func(run *RunMetadata) { run.Conclusion = "failure" }},
+		{"非主分支", func(run *RunMetadata) { run.Branch = "feature" }},
+		{"非推送事件", func(run *RunMetadata) { run.Event = "pull_request" }},
+		{"外部仓库", func(run *RunMetadata) { run.RepositoryID = 99 }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			run := valid
+			tc.edit(&run)
+			if err := ValidateCandidateRun(run, CandidatePolicy{RepositoryID: 42}); err == nil {
+				t.Fatal("不受信任的运行必须失败")
+			}
+		})
 	}
 }
 ```
 
-Also assert no `${{ secrets.` except `secrets.GITHUB_TOKEN`, no SSH/production domain, exact permissions, 90-day manifest artifact, three attestation steps, fixed Action SHAs and no agent image publication.
+Add semantic YAML fixtures. `ValidateWorkflowFiles` must decode mappings/sequences and reject: candidate triggers other than completed `workflow_run` of `云令 CI`; production/SSH references in candidate; permissions broader than the exact allowlist; artifact retention other than 90; missing three attestations; mutable Action refs; any agent image publication. Mutate one semantic field per table row so each failure names a real security regression rather than a source-text change.
 
 - [ ] **Step 2: 运行工作流测试确认失败**
 
-Run: `go test ./tests/integration -run TestCandidateWorkflow -count=1`
+Run: `go test ./internal/release -run 'TestValidateCandidateRun|TestValidateWorkflowFiles' -count=1`
 
-Expected: FAIL because the workflow does not exist.
+Expected: FAIL because the run and workflow policy do not exist.
 
 - [ ] **Step 3: 编写候选工作流信任门**
 
-Use this outer structure and retain the exact guards:
+Use this outer structure and retain the exact guards. The first step serializes `github.event.workflow_run` into a bounded JSON file and calls the tested `yunling-release candidate authorize` command; the Job-level `if` remains a defense-in-depth guard:
 
 ```yaml
 name: 云令候选版本
@@ -927,9 +954,13 @@ Run the static CLI to create and validate `release-manifest.json`, then attest e
 
 Build `yunling-release-linux-amd64`; package it with `deploy/release/install.sh`、`deploy/docker-compose.yml` and `deploy/agent/release-lock.json` into `yunling-release-bootstrap.tar.gz`, create `SHA256SUMS`, and attest the tarball. Upload the manifest, its `SHA256SUMS`, and bootstrap tarball using `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02`, artifact name `yunling-release-${{ github.event.workflow_run.head_sha }}`, `retention-days: 90`, `if-no-files-found: error`.
 
-- [ ] **Step 6: 运行工作流契约和本地清单生成**
+- [ ] **Step 6: 运行 Action 语法、语义策略和本地清单生成**
 
-Run: `go test ./tests/integration -run TestCandidateWorkflow -count=1`
+Run: `actionlint .github/workflows/publish-candidate.yml`
+
+Expected: exit 0 with no diagnostics.
+
+Run: `go test ./internal/release ./tests/integration -run 'TestValidateCandidateRun|TestValidateWorkflowFiles|TestCandidateWorkflow' -count=1`
 
 Expected: PASS。
 
@@ -940,7 +971,7 @@ Expected: command succeeds and `manifest validate` accepts the resulting file.
 - [ ] **Step 7: 提交候选工作流**
 
 ```bash
-git add .github/workflows/publish-candidate.yml tests/integration/release_workflow_test.go cmd/yunling-release
+git add .github/workflows/publish-candidate.yml internal/release/github.go internal/release/github_test.go internal/release/workflowpolicy.go internal/release/workflowpolicy_test.go tests/integration/release_workflow_test.go cmd/yunling-release
 git commit -m "ci: 自动发布不可变候选镜像"
 ```
 
@@ -954,28 +985,31 @@ git commit -m "ci: 自动发布不可变候选镜像"
 - Consumes: candidate run ID/artifact from Task 9 and `request create`、`manifest validate`、`notify` from Task 6。
 - Produces: manual operations `deploy` and `rollback`, production environment deployment, strict SSH request and Feishu final notification。
 
-- [ ] **Step 1: 写生产工作流审批、权限和并发测试**
+- [ ] **Step 1: 写生产审批、权限和输入策略的行为测试**
 
 ```go
-func TestProductionWorkflowRequiresManualApprovalAndNeverCancelsRunningDeploy(t *testing.T) {
-	workflow := readRepoText(t, ".github/workflows/deploy-production.yml")
-	for _, required := range []string{
-		"name: 云令生产发布", "workflow_dispatch:", "type: choice", "- deploy", "- rollback",
-		"environment:", "name: production", "group: production-release", "cancel-in-progress: false",
-		"StrictHostKeyChecking=yes", "BatchMode=yes", "IdentitiesOnly=yes",
-	} {
-		if !strings.Contains(workflow, required) { t.Errorf("缺少 %q", required) }
+func TestValidateProductionInputAllowsOnlyDeployOrHistoricalRollback(t *testing.T) {
+	valid := []ProductionInput{
+		{Operation: "deploy", TargetID: "123"},
+		{Operation: "rollback", TargetID: "456"},
+		{Operation: "rollback", TargetID: "bootstrap"},
+	}
+	for _, input := range valid {
+		if err := ValidateProductionInput(input); err != nil { t.Fatalf("合法输入被拒绝：%v", err) }
+	}
+	for _, input := range []ProductionInput{{"deploy", "bootstrap"}, {"deploy", "01"}, {"shell", "123"}, {"rollback", "../current"}} {
+		if err := ValidateProductionInput(input); err == nil { t.Fatalf("危险输入被接受：%+v", input) }
 	}
 }
 ```
 
-Assert production secrets only occur inside the Job that declares `environment: production`; no `pull_request`、`push`、password SSH、`StrictHostKeyChecking=no` or `curl -k`; rollback target allows only digits or literal `bootstrap`.
+Extend semantic `ValidateWorkflowFiles` fixtures to reject production secrets outside the Job declaring `environment.name=production`, non-manual triggers, missing or cancelable `production-release` concurrency, password SSH, disabled host-key verification, `curl -k`, or a non-fixed remote command. Test the generated SSH argument vector from `request create` directly and require `StrictHostKeyChecking=yes`、`BatchMode=yes` and `IdentitiesOnly=yes`.
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `go test ./tests/integration -run TestProductionWorkflow -count=1`
+Run: `go test ./internal/release ./cmd/yunling-release -run 'TestValidateProductionInput|TestSSHArguments|TestValidateWorkflowFiles' -count=1`
 
-Expected: FAIL because the production workflow does not exist.
+Expected: FAIL because the production input and workflow policy are not implemented.
 
 - [ ] **Step 3: 实现无密钥预检 Job**
 
@@ -1000,9 +1034,13 @@ Write `PRODUCTION_SSH_PRIVATE_KEY` to a Runner temp file under `umask 077`; writ
 
 Always invoke `yunling-release notify` after the SSH attempt using `PRODUCTION_FEISHU_WEBHOOK` and `PRODUCTION_FEISHU_SIGNING_SECRET`. Set only this notification step to `continue-on-error: true`; append `notification_failed` to `$GITHUB_STEP_SUMMARY` if it fails. After notification, exit with the saved deployment exit code so a failed or failed-rollback deployment remains red while a healthy deployment remains green.
 
-- [ ] **Step 6: 运行工作流契约并提交**
+- [ ] **Step 6: 运行 Action 语法、语义策略并提交**
 
-Run: `go test ./tests/integration -run 'TestCandidateWorkflow|TestProductionWorkflow' -count=1`
+Run: `actionlint .github/workflows/publish-candidate.yml .github/workflows/deploy-production.yml`
+
+Expected: exit 0 with no diagnostics.
+
+Run: `go test ./internal/release ./cmd/yunling-release ./tests/integration -run 'TestValidateProductionInput|TestSSHArguments|TestValidateWorkflowFiles|TestCandidateWorkflow|TestProductionWorkflow' -count=1`
 
 Expected: PASS。
 
@@ -1095,32 +1133,21 @@ git commit -m "test: 演练真实发布与自动回滚"
 - Consumes: all implemented commands, paths, settings and failure states。
 - Produces: operator procedures for candidate selection, approval, rollback, diagnostics, key rotation and first bootstrap。
 
-- [ ] **Step 1: 写文档契约测试**
+- [ ] **Step 1: 先生成可核验的命令与状态清单**
 
-Add to `tests/integration/release_deployment_test.go` assertions for the exact headings and prohibitions:
+Run every implemented `yunling-release <command> --help` form and save its fresh stdout in the task notes. Enumerate the actual `Result.Status` / `RollbackStatus` values, root-only state paths, public health URLs and workflow input names from the compiled program and parsed workflow model. This is the independent source for the manual documentation review; do not copy expectations from a prose keyword test.
 
-```go
-for _, required := range []string{
-	"候选运行编号", "production 环境审批", "自动回滚", "人工回滚", "代理发布只读卷",
-	"不得使用 docker compose down -v", "不得使用 latest", "不得关闭 SSH 主机指纹校验",
-} {
-	if !strings.Contains(releaseGuide, required) { t.Errorf("发布手册缺少 %q", required) }
-}
-```
-
-- [ ] **Step 2: 运行文档测试确认失败**
-
-Run: `go test ./tests/integration -run TestReleaseDocumentation -count=1`
-
-Expected: FAIL because `deploy/RELEASE.md` does not exist.
-
-- [ ] **Step 3: 编写发布与排障手册**
+- [ ] **Step 2: 编写发布与排障手册**
 
 Document these exact flows: locate successful candidate run; inspect source SHA/digests/attestations; approve or reject production; read result; manual rollback to numeric target or bootstrap; inspect root-only diagnostic ID; rotate the dedicated Ed25519 key; disable the authorized key; handle GHCR/SSH/health/rollback/Feishu failures. Replace the old daily `git pull` and `docker compose build` production update section with a link to `deploy/RELEASE.md`.
 
-- [ ] **Step 4: 更新生产记录模板**
+- [ ] **Step 3: 更新生产记录模板**
 
 Add a “版本化发布” section to `deploy/PRODUCTION.md` with fields for current candidate run ID, source SHA, services/web/ops digests, previous target, first enable time, last rollback drill and agent lock hash. Do not invent deployment results before the real rollout; phrase it as the required record format and keep current historical facts unchanged.
+
+- [ ] **Step 4: 人工走查中文文档**
+
+The user approved this documentation-only exception to automated TDD on 2026-09-03. Using the fresh command/state checklist from Step 1, review each procedure line by line and require coverage of: 候选运行编号、`production` 环境审批、自动回滚、人工回滚、代理发布只读卷、禁止 `docker compose down -v`、禁止 `latest`、禁止关闭 SSH 主机指纹校验。Execute every read-only example and every `--help` command; for mutating examples, compare the exact command against the tested CLI parser without running it. Record the review checklist in the implementation commit message or Pull Request body.
 
 - [ ] **Step 5: 运行完整本地验证**
 
@@ -1153,7 +1180,7 @@ Expected: PASS。
 - [ ] **Step 6: 提交文档与最终本地状态**
 
 ```bash
-git add deploy/RELEASE.md deploy/README.md deploy/PRODUCTION.md README.md tests/integration/release_deployment_test.go
+git add deploy/RELEASE.md deploy/README.md deploy/PRODUCTION.md README.md
 git commit -m "docs: 完成生产发布与回滚手册"
 git status --short
 ```
