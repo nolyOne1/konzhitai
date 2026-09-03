@@ -57,10 +57,16 @@ type StoredRelease struct {
 }
 
 type AuditEvent struct {
-	Operation  string    `json:"operation"`
-	TargetID   string    `json:"target_id"`
-	Status     string    `json:"status"`
-	OccurredAt time.Time `json:"occurred_at"`
+	Operation      string    `json:"operation"`
+	TargetID       string    `json:"target_id"`
+	Status         string    `json:"status"`
+	OccurredAt     time.Time `json:"occurred_at"`
+	Actor          string    `json:"actor,omitempty"`
+	WorkflowRunID  int64     `json:"workflow_run_id,omitempty"`
+	WorkflowURL    string    `json:"workflow_url,omitempty"`
+	SourceSHA      string    `json:"source_sha,omitempty"`
+	RollbackStatus string    `json:"rollback_status,omitempty"`
+	DiagnosticID   string    `json:"diagnostic_id,omitempty"`
 }
 
 type stateTransaction struct {
@@ -263,6 +269,13 @@ func (store *StateStore) writeSuccess(release StoredRelease) error {
 		if readErr == nil && bytes.Equal(existing, data) {
 			return nil
 		}
+		if readErr == nil {
+			var recorded StoredRelease
+			if decodeErr := decodeStrictJSON(bytes.NewReader(existing), &recorded); decodeErr == nil &&
+				sameReleaseIdentity(recorded, release) {
+				return nil
+			}
+		}
 		return ErrReleaseExists
 	}
 	if err != nil {
@@ -356,6 +369,7 @@ func (store *StateStore) loadReleaseFile(path string, requireSuccess bool) (Stor
 	if err := validateStoredRelease(release, requireSuccess); err != nil {
 		return StoredRelease{}, err
 	}
+	release.validated = true
 	return release, nil
 }
 
