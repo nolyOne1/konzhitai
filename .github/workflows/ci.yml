@@ -24,6 +24,24 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: 安装 Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: 运行 Go 测试与竞态检测
+        run: go test -race -p=1 ./... -count=1
+      - name: 编译五个服务程序
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p "$RUNNER_TEMP/yunling-bin"
+          go build -trimpath -o "$RUNNER_TEMP/yunling-bin/yunling-api" ./cmd/api
+          go build -trimpath -o "$RUNNER_TEMP/yunling-bin/yunling-scheduler" ./cmd/scheduler
+          go build -trimpath -o "$RUNNER_TEMP/yunling-bin/yunling-ops" ./cmd/ops
+          go build -trimpath -o "$RUNNER_TEMP/yunling-bin/yunling-agent" ./cmd/agent
+          go build -trimpath -o "$RUNNER_TEMP/yunling-bin/yunling-bootstrap" ./cmd/bootstrap
 
   web:
     name: 前端测试与构建
@@ -32,6 +50,18 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: 安装 Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: 安装前端依赖
+        run: npm ci
+      - name: 运行前端单元与组件测试
+        run: npm run test:web
+      - name: 构建前端生产资源
+        run: npm run build:web
 
   e2e:
     name: 端到端测试

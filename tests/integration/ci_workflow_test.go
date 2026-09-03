@@ -116,3 +116,31 @@ func TestCIConfigFilesAreForcedToLF(t *testing.T) {
 		"*.yaml text eol=lf",
 	)
 }
+
+func TestCIBackendAndWebJobsRunCompleteGates(t *testing.T) {
+	workflow := readRepoText(t, ".github/workflows/ci.yml")
+	backend := ciJob(t, workflow, "backend")
+	requireCIText(t, backend,
+		"uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6",
+		"go-version-file: go.mod",
+		"cache-dependency-path: go.sum",
+		"go test -race -p=1 ./... -count=1",
+		"./cmd/api",
+		"./cmd/scheduler",
+		"./cmd/ops",
+		"./cmd/agent",
+		"./cmd/bootstrap",
+		"CGO_ENABLED: \"0\"",
+	)
+
+	web := ciJob(t, workflow, "web")
+	requireCIText(t, web,
+		"uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5",
+		"node-version: \"24\"",
+		"cache: npm",
+		"cache-dependency-path: package-lock.json",
+		"npm ci",
+		"npm run test:web",
+		"npm run build:web",
+	)
+}
