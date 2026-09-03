@@ -156,7 +156,7 @@ func normalizeHostConfig(config HostConfig) HostConfig {
 		config.ComposeFile = filepath.Join(config.RootDir, "deploy", "docker-compose.yml")
 	}
 	if config.OverrideFile == "" {
-		config.OverrideFile = filepath.Join(config.RootDir, "deploy", "release.override.yml")
+		config.OverrideFile = filepath.Join(config.RootDir, "deploy", "docker-compose.release.yml")
 	}
 	if config.EnvFile == "" {
 		config.EnvFile = filepath.Join(config.RootDir, "deploy", ".env")

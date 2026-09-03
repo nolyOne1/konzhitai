@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -49,6 +50,9 @@ type Result struct {
 	Operation      Operation `json:"operation"`
 	TargetID       string    `json:"target_id"`
 	SourceSHA      string    `json:"source_sha,omitempty"`
+	Actor          string    `json:"actor"`
+	WorkflowRunID  int64     `json:"workflow_run_id"`
+	WorkflowURL    string    `json:"workflow_url"`
 	Status         string    `json:"status"`
 	RollbackStatus string    `json:"rollback_status,omitempty"`
 	DiagnosticID   string    `json:"diagnostic_id,omitempty"`
@@ -71,6 +75,7 @@ func (deployer *Deployer) Execute(ctx context.Context, request Request) (Result,
 	startedAt := deployer.now()
 	result := Result{
 		Operation: request.Operation, TargetID: request.TargetID,
+		Actor: request.Actor, WorkflowRunID: request.WorkflowRunID, WorkflowURL: request.WorkflowURL,
 		Status: "failed", RollbackStatus: "not-required", StartedAt: startedAt,
 	}
 	fail := func(cause error) (Result, error) {
@@ -163,6 +168,26 @@ func (deployer *Deployer) Execute(ctx context.Context, request Request) (Result,
 		return result, fmt.Errorf("写入发布审计：%w", err)
 	}
 	return result, nil
+}
+
+func DecodeRequest(reader io.Reader) (Request, error) {
+	var request Request
+	if err := decodeStrictJSON(reader, &request); err != nil {
+		return Request{}, fmt.Errorf("解码生产发布请求：%w", err)
+	}
+	return request, nil
+}
+
+func DecodeResult(reader io.Reader) (Result, error) {
+	var result Result
+	if err := decodeStrictJSON(reader, &result); err != nil {
+		return Result{}, fmt.Errorf("解码生产发布结果：%w", err)
+	}
+	return result, nil
+}
+
+func ValidateRequest(request Request, policy ManifestPolicy) error {
+	return validateDeploymentRequest(request, policy)
 }
 
 func (deployer *Deployer) resolveTarget(request Request, current StoredRelease) (StoredRelease, error) {
