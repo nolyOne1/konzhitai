@@ -1,0 +1,155 @@
+name: 云令 CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端测试与构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: 安装 Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: 运行 Go 测试与竞态检测
+        run: go test -race -p=1 ./... -count=1
+      - name: 编译五个服务程序
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p "$RUNNER_TEMP/yunling-bin"
+          go build -trimpath -o "$RUNNER_TEMP/yunling-bin/yunling-api" ./cmd/api
+          go build -trimpath -o "$RUNNER_TEMP/yunling-bin/yunling-scheduler" ./cmd/scheduler
+          go build -trimpath -o "$RUNNER_TEMP/yunling-bin/yunling-ops" ./cmd/ops
+          go build -trimpath -o "$RUNNER_TEMP/yunling-bin/yunling-agent" ./cmd/agent
+          go build -trimpath -o "$RUNNER_TEMP/yunling-bin/yunling-bootstrap" ./cmd/bootstrap
+
+  web:
+    name: 前端测试与构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: 安装 Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: 安装前端依赖
+        run: npm ci
+      - name: 运行前端单元与组件测试
+        run: npm run test:web
+      - name: 构建前端生产资源
+        run: npm run build:web
+
+  e2e:
+    name: 端到端测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: 安装 Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: 安装前端依赖
+        run: npm ci
+      - name: 安装 Chromium 与系统依赖
+        run: npx playwright install --with-deps chromium
+      - name: 运行端到端测试
+        run: npm run test:e2e
+      - name: 上传失败诊断
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-failure-diagnostics
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  agent:
+    name: 代理安装与打包
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: 安装 Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: 检查代理 Shell 语法
+        run: bash -n deploy/agent/*.sh
+      - name: 验证代理安装与失败恢复
+        run: bash deploy/agent/install_test.sh
+      - name: 验证代理发布包约束
+        run: sh deploy/agent/package_test.sh
+      - name: 真实构建并校验双架构发布包
+        env:
+          AGENT_VERSION: 0.1.0
+        run: |
+          release_dir="$RUNNER_TEMP/yunling-agent-release"
+          mkdir -p "$release_dir"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.agentVersion=${AGENT_VERSION}" -o "$RUNNER_TEMP/yunling-agent-linux-amd64" ./cmd/agent
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.agentVersion=${AGENT_VERSION}" -o "$RUNNER_TEMP/yunling-agent-linux-arm64" ./cmd/agent
+          sh deploy/agent/package.sh "$AGENT_VERSION" "$RUNNER_TEMP/yunling-agent-linux-amd64" "$RUNNER_TEMP/yunling-agent-linux-arm64" "$release_dir"
+          test "$(jq -r '.version' "$release_dir/manifest.json")" = "$AGENT_VERSION"
+          test "$(jq '[.artifacts[] | select(.os == "linux" and (.arch == "amd64" or .arch == "arm64"))] | length' "$release_dir/manifest.json")" = "2"
+          for arch in amd64 arm64; do
+            file_name="$(jq -r --arg arch "$arch" '.artifacts[] | select(.arch == $arch) | .file_name' "$release_dir/manifest.json")"
+            expected_sha="$(jq -r --arg arch "$arch" '.artifacts[] | select(.arch == $arch) | .sha256' "$release_dir/manifest.json")"
+            byte_size="$(jq -r --arg arch "$arch" '.artifacts[] | select(.arch == $arch) | .byte_size' "$release_dir/manifest.json")"
+            test -f "$release_dir/$file_name"
+            test "$(sha256sum "$release_dir/$file_name" | cut -d ' ' -f 1)" = "$expected_sha"
+            test "$(wc -c < "$release_dir/$file_name" | tr -d '[:space:]')" = "$byte_size"
+          done
+
+  deployment:
+    name: 部署配置与镜像
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: 验证 Linux 文件换行
+        run: |
+          failed=0
+          while IFS= read -r -d '' file; do
+            if LC_ALL=C grep -q $'\r' "$file"; then
+              echo "::error file=$file::文件必须使用 LF 换行"
+              failed=1
+            fi
+          done < <(git ls-files -z -- '*.sh' '*.service' 'Makefile' 'Dockerfile*' '*.yml' '*.yaml')
+          test "$failed" -eq 0
+      - name: 解析 Compose 配置
+        run: docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet
+      - name: 构建云令应用镜像
+        run: docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml build web api scheduler ops bootstrap

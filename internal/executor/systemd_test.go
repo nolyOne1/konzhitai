@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -158,6 +159,24 @@ func TestSystemdProcessStreamsLogsBeforeTaskFinishes(t *testing.T) {
 	}
 }
 
+func TestSystemdLogTailOnlyUsesWriterContract(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stdout.log")
+	if err := os.WriteFile(path, []byte("实时日志"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination := &readerFromTrapWriter{}
+	tail := systemdLogTail{path: path, destination: destination}
+	if err := tail.copyAvailable(); err != nil {
+		t.Fatalf("复制日志不得绕过 io.Writer.Write：%v", err)
+	}
+	if destination.readFromCalled {
+		t.Fatal("复制日志不得调用目标对象的可选 ReadFrom 方法")
+	}
+	if got := destination.String(); got != "实时日志" {
+		t.Fatalf("日志内容不正确：got=%q", got)
+	}
+}
+
 func TestSystemdProcessReportsBoundedSystemctlDiagnostic(t *testing.T) {
 	directory := t.TempDir()
 	specPath := filepath.Join(directory, systemdSpecFileName)
@@ -208,6 +227,16 @@ func (p instantSystemdTestProcess) KillGroup() error   { return nil }
 type synchronizedBuffer struct {
 	mu sync.Mutex
 	bytes.Buffer
+}
+
+type readerFromTrapWriter struct {
+	bytes.Buffer
+	readFromCalled bool
+}
+
+func (w *readerFromTrapWriter) ReadFrom(io.Reader) (int64, error) {
+	w.readFromCalled = true
+	return 0, errors.New("ReadFrom 不应被调用")
 }
 
 func (b *synchronizedBuffer) Write(value []byte) (int, error) {

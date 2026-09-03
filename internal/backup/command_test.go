@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const backupHelperProcessTimeout = 5 * time.Second
+
 func TestCommandRunnerAllowsOnlyPinnedAbsoluteTools(t *testing.T) {
 	want := []string{
 		"/usr/bin/pg_dump",
@@ -30,7 +32,7 @@ func TestCommandRunnerAllowsOnlyPinnedAbsoluteTools(t *testing.T) {
 }
 
 func TestCommandRunnerBoundsOutputAndDoesNotLeakEnvironment(t *testing.T) {
-	runner := NewCommandRunner(time.Second)
+	runner := NewCommandRunner(backupHelperProcessTimeout)
 	runner.commands["/usr/bin/pg_dump"] = os.Args[0]
 	secret := "command-secret-must-not-leak"
 	result, err := runner.Run(context.Background(), "/usr/bin/pg_dump", []string{
@@ -67,7 +69,7 @@ func TestCommandRunnerTimesOutAndKillsProcess(t *testing.T) {
 
 func TestCommandRunnerDoesNotInheritUnrelatedParentSecrets(t *testing.T) {
 	t.Setenv("YUNLING_DATABASE_URL", "postgres://admin:parent-secret@postgres/yunling")
-	runner := NewCommandRunner(time.Second)
+	runner := NewCommandRunner(backupHelperProcessTimeout)
 	runner.commands["/usr/bin/pg_dump"] = os.Args[0]
 	result, err := runner.Run(context.Background(), "/usr/bin/pg_dump", []string{
 		"-test.run=TestBackupCommandHelperProcess", "--", "parent-environment",

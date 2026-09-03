@@ -14,6 +14,10 @@
 - `deploy`：Docker Compose、Caddy、代理安装和恢复文档
 - `tests/integration`：调度恢复与代理重连集成测试
 
+## 持续集成
+
+GitHub Actions 会并行运行五项完整质量门禁，但不会部署或连接生产环境。检查名称、失败诊断和 `main` 分支保护要求见 [docs/CI.md](docs/CI.md)。
+
 ## 本地验证
 
 需要 Go 1.27、Node.js 24 和 npm。PostgreSQL 相关测试会自动启动临时数据库。
