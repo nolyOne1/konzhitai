@@ -194,6 +194,10 @@ type systemdLogTail struct {
 	offset      int64
 }
 
+// writerOnly 防止 io.Copy 选用目标对象可选的 ReaderFrom 方法，
+// 从而绕过 Write 方法实现的并发同步。
+type writerOnly struct{ io.Writer }
+
 func (tail *systemdLogTail) copyAvailable() error {
 	if tail.destination == nil {
 		return nil
@@ -213,7 +217,7 @@ func (tail *systemdLogTail) copyAvailable() error {
 	if _, err := file.Seek(tail.offset, io.SeekStart); err != nil {
 		return fmt.Errorf("定位任务日志 %q：%w", tail.path, err)
 	}
-	written, err := io.Copy(tail.destination, file)
+	written, err := io.Copy(writerOnly{Writer: tail.destination}, file)
 	tail.offset += written
 	if err != nil {
 		return fmt.Errorf("读取任务日志 %q：%w", tail.path, err)
