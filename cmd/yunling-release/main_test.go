@@ -128,6 +128,27 @@ func TestBootstrapRequiresRealRootAndRunsExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestCandidateAuthorizeValidatesBoundedGitHubEventFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "workflow-run.json")
+	trusted := `{"name":"云令 CI","conclusion":"success","head_branch":"main","event":"push","repository":{"id":1354623243}}`
+	if err := os.WriteFile(path, []byte(trusted), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+	code := run([]string{"candidate", "authorize", "--input", path, "--repository-id", "1354623243"}, strings.NewReader(""), stdout, stderr, dependencies{})
+	if code != 0 || stdout.Len() != 0 {
+		t.Fatalf("可信候选运行授权失败：code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(trusted, `"head_branch":"main"`, `"head_branch":"feature"`, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr.Reset()
+	code = run([]string{"candidate", "authorize", "--input", path, "--repository-id", "1354623243"}, strings.NewReader(""), stdout, stderr, dependencies{})
+	if code == 0 || stdout.Len() != 0 {
+		t.Fatalf("非主分支候选必须拒绝：code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 func TestManifestCreateComputesCompatibilityAndValidateAcceptsIt(t *testing.T) {
 	repositoryRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {

@@ -1,0 +1,155 @@
+name: 云令候选版本
+
+"on":
+  workflow_run:
+    workflows: ["云令 CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.repository.id == github.repository_id
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: 检出精确提交
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: 安装 Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: 构建候选授权程序
+        env:
+          CGO_ENABLED: "0"
+        run: go build -trimpath -o ./yunling-release ./cmd/yunling-release
+
+      - name: 授权候选来源
+        run: |
+          umask 077
+          jq -c '.workflow_run' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/workflow-run.json"
+          test "$(wc -c < "$RUNNER_TEMP/workflow-run.json")" -le 262144
+          ./yunling-release candidate authorize --input "$RUNNER_TEMP/workflow-run.json" --repository-id "${{ github.repository_id }}"
+
+      - name: 登录 GHCR
+        uses: docker/login-action@f4ef78c080cd8ba55a85445d5b36e214a81df20a # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build-services
+        name: 构建 services 镜像
+        uses: docker/build-push-action@3b5e8027fcad23fda98b2e3ac259d8d67585f671 # v6
+        with:
+          context: .
+          file: deploy/Dockerfile.services
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/nolyone1/yunling-services:sha-${{ github.event.workflow_run.head_sha }}
+
+      - id: build-web
+        name: 构建 web 镜像
+        uses: docker/build-push-action@3b5e8027fcad23fda98b2e3ac259d8d67585f671 # v6
+        with:
+          context: .
+          file: deploy/Dockerfile.web
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/nolyone1/yunling-web:sha-${{ github.event.workflow_run.head_sha }}
+
+      - id: build-ops
+        name: 构建 ops 镜像
+        uses: docker/build-push-action@3b5e8027fcad23fda98b2e3ac259d8d67585f671 # v6
+        with:
+          context: .
+          file: deploy/Dockerfile.ops
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/nolyone1/yunling-ops:sha-${{ github.event.workflow_run.head_sha }}
+
+      - name: 生成并校验候选清单
+        run: |
+          ./yunling-release manifest create \
+            --candidate-run-id "${{ github.run_id }}" \
+            --repository-id "${{ github.repository_id }}" \
+            --source-sha "${{ github.event.workflow_run.head_sha }}" \
+            --services "ghcr.io/nolyone1/yunling-services@${{ steps.build-services.outputs.digest }}" \
+            --web "ghcr.io/nolyone1/yunling-web@${{ steps.build-web.outputs.digest }}" \
+            --ops "ghcr.io/nolyone1/yunling-ops@${{ steps.build-ops.outputs.digest }}" \
+            --repository-root . \
+            --agent-lock deploy/agent/release-lock.json \
+            --output release-manifest.json
+          ./yunling-release manifest validate --input release-manifest.json
+
+      - name: 证明 services 镜像
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+        with:
+          subject-name: ghcr.io/nolyone1/yunling-services
+          subject-digest: ${{ steps.build-services.outputs.digest }}
+          push-to-registry: true
+
+      - name: 证明 web 镜像
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+        with:
+          subject-name: ghcr.io/nolyone1/yunling-web
+          subject-digest: ${{ steps.build-web.outputs.digest }}
+          push-to-registry: true
+
+      - name: 证明 ops 镜像
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+        with:
+          subject-name: ghcr.io/nolyone1/yunling-ops
+          subject-digest: ${{ steps.build-ops.outputs.digest }}
+          push-to-registry: true
+
+      - name: 生成首次安装包与校验和
+        run: |
+          stage="$(mktemp -d)"
+          trap 'rm -rf "$stage"' EXIT
+          install -D -m 0755 ./yunling-release "$stage/deploy/release/yunling-release-linux-amd64"
+          install -D -m 0755 deploy/release/install.sh "$stage/deploy/release/install.sh"
+          install -D -m 0644 deploy/docker-compose.yml "$stage/deploy/docker-compose.yml"
+          install -D -m 0600 deploy/agent/release-lock.json "$stage/deploy/agent/release-lock.json"
+          tar -C "$stage" -czf yunling-release-bootstrap.tar.gz \
+            deploy/release/yunling-release-linux-amd64 \
+            deploy/release/install.sh \
+            deploy/docker-compose.yml \
+            deploy/agent/release-lock.json
+          sha256sum release-manifest.json yunling-release-bootstrap.tar.gz > SHA256SUMS
+
+      - name: 证明 bootstrap 包
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+        with:
+          subject-path: yunling-release-bootstrap.tar.gz
+
+      - name: 上传候选产物
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: yunling-release-${{ github.event.workflow_run.head_sha }}
+          path: |
+            release-manifest.json
+            SHA256SUMS
+            yunling-release-bootstrap.tar.gz
+          retention-days: 90
+          if-no-files-found: error

@@ -47,6 +47,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, dependency de
 		return runManifest(args[1:], stdout, stderr, dependency)
 	case "request":
 		return runRequest(args[1:], stdout, stderr)
+	case "candidate":
+		return runCandidate(args[1:], stderr)
 	case "execute":
 		return runExecute(args[1:], stdin, stdout, stderr, dependency)
 	case "bootstrap":
@@ -63,6 +65,36 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, dependency de
 		writeUsage(stderr)
 		return 2
 	}
+}
+
+func runCandidate(args []string, stderr io.Writer) int {
+	if len(args) == 0 || args[0] != "authorize" {
+		fmt.Fprintln(stderr, "candidate 只支持 authorize")
+		return 2
+	}
+	flags := flag.NewFlagSet("candidate authorize", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	inputPath := flags.String("input", "", "GitHub workflow_run 元数据文件")
+	repositoryID := flags.Int64("repository-id", trustedRepositoryID, "受信任仓库数字 ID")
+	if err := flags.Parse(args[1:]); err != nil {
+		return flagExitCode(err)
+	}
+	if flags.NArg() != 0 || *inputPath == "" || *repositoryID <= 0 {
+		fmt.Fprintln(stderr, "candidate authorize 参数无效")
+		return 2
+	}
+	body, err := readBoundedFile(*inputPath, maxCLIInputBytes)
+	if err != nil {
+		fmt.Fprintln(stderr, "候选来源元数据文件无效")
+		return 1
+	}
+	run, err := release.DecodeRunMetadata(bytes.NewReader(body))
+	if err != nil || release.ValidateCandidateRun(run, release.CandidatePolicy{RepositoryID: *repositoryID}) != nil {
+		fmt.Fprintln(stderr, "候选来源运行不受信任")
+		return 1
+	}
+	fmt.Fprintln(stderr, "候选来源运行已授权")
+	return 0
 }
 
 func runBootstrap(args []string, stderr io.Writer, dependency dependencies) int {
@@ -476,5 +508,5 @@ func flagExitCode(err error) int {
 }
 
 func writeUsage(writer io.Writer) {
-	fmt.Fprintln(writer, "用法：yunling-release <manifest|request|execute|bootstrap|preflight|notify> [参数]")
+	fmt.Fprintln(writer, "用法：yunling-release <manifest|candidate|request|execute|bootstrap|preflight|notify> [参数]")
 }
