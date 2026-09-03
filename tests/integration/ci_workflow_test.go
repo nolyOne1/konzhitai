@@ -144,3 +144,31 @@ func TestCIBackendAndWebJobsRunCompleteGates(t *testing.T) {
 		"npm run build:web",
 	)
 }
+
+func TestCIEndToEndJobRunsLocallyAndUploadsOnlyFailureDiagnostics(t *testing.T) {
+	workflow := readRepoText(t, ".github/workflows/ci.yml")
+	e2e := ciJob(t, workflow, "e2e")
+	requireCIText(t, e2e,
+		"uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5",
+		"node-version: \"24\"",
+		"npm ci",
+		"npx playwright install --with-deps chromium",
+		"npm run test:e2e",
+		"if: ${{ failure() || cancelled() }}",
+		"uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4",
+		"name: playwright-failure-diagnostics",
+		"apps/web/playwright-report",
+		"apps/web/test-results",
+		"retention-days: 7",
+	)
+	if strings.Contains(e2e, "YUNLING_E2E_BASE_URL") {
+		t.Error("CI E2E 必须由 Playwright 启动本地 Vite，不得指定外部地址")
+	}
+	playwrightConfig := readRepoText(t, "apps/web/playwright.config.ts")
+	requireCIText(t, playwrightConfig,
+		"['github']",
+		"['html', { outputFolder: 'playwright-report', open: 'never' }]",
+		"screenshot: 'only-on-failure'",
+		"trace: 'retain-on-failure'",
+	)
+}
