@@ -100,6 +100,37 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: 安装 Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: 检查代理 Shell 语法
+        run: bash -n deploy/agent/*.sh
+      - name: 验证代理安装与失败恢复
+        run: bash deploy/agent/install_test.sh
+      - name: 验证代理发布包约束
+        run: sh deploy/agent/package_test.sh
+      - name: 真实构建并校验双架构发布包
+        env:
+          AGENT_VERSION: 0.1.0
+        run: |
+          release_dir="$RUNNER_TEMP/yunling-agent-release"
+          mkdir -p "$release_dir"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.agentVersion=${AGENT_VERSION}" -o "$RUNNER_TEMP/yunling-agent-linux-amd64" ./cmd/agent
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.agentVersion=${AGENT_VERSION}" -o "$RUNNER_TEMP/yunling-agent-linux-arm64" ./cmd/agent
+          sh deploy/agent/package.sh "$AGENT_VERSION" "$RUNNER_TEMP/yunling-agent-linux-amd64" "$RUNNER_TEMP/yunling-agent-linux-arm64" "$release_dir"
+          test "$(jq -r '.version' "$release_dir/manifest.json")" = "$AGENT_VERSION"
+          test "$(jq '[.artifacts[] | select(.os == "linux" and (.arch == "amd64" or .arch == "arm64"))] | length' "$release_dir/manifest.json")" = "2"
+          for arch in amd64 arm64; do
+            file_name="$(jq -r --arg arch "$arch" '.artifacts[] | select(.arch == $arch) | .file_name' "$release_dir/manifest.json")"
+            expected_sha="$(jq -r --arg arch "$arch" '.artifacts[] | select(.arch == $arch) | .sha256' "$release_dir/manifest.json")"
+            byte_size="$(jq -r --arg arch "$arch" '.artifacts[] | select(.arch == $arch) | .byte_size' "$release_dir/manifest.json")"
+            test -f "$release_dir/$file_name"
+            test "$(sha256sum "$release_dir/$file_name" | cut -d ' ' -f 1)" = "$expected_sha"
+            test "$(wc -c < "$release_dir/$file_name" | tr -d '[:space:]')" = "$byte_size"
+          done
 
   deployment:
     name: 部署配置与镜像

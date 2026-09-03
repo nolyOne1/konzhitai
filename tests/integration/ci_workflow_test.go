@@ -172,3 +172,24 @@ func TestCIEndToEndJobRunsLocallyAndUploadsOnlyFailureDiagnostics(t *testing.T) 
 		"trace: 'retain-on-failure'",
 	)
 }
+
+func TestCIAgentJobTestsAndPackagesBothArchitectures(t *testing.T) {
+	workflow := readRepoText(t, ".github/workflows/ci.yml")
+	agent := ciJob(t, workflow, "agent")
+	requireCIText(t, agent,
+		"uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6",
+		"go-version-file: go.mod",
+		"bash -n deploy/agent/*.sh",
+		"bash deploy/agent/install_test.sh",
+		"sh deploy/agent/package_test.sh",
+		"GOARCH=amd64",
+		"GOARCH=arm64",
+		"sh deploy/agent/package.sh",
+		"manifest.json",
+		"sha256sum",
+		"byte_size",
+	)
+	if strings.Contains(agent, "actions/upload-artifact") {
+		t.Error("代理发布包只能在 Runner 临时验证，不得上传")
+	}
+}
