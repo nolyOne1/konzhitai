@@ -193,3 +193,25 @@ func TestCIAgentJobTestsAndPackagesBothArchitectures(t *testing.T) {
 		t.Error("代理发布包只能在 Runner 临时验证，不得上传")
 	}
 }
+
+func TestCIDeploymentJobValidatesWithoutStartingOrDeploying(t *testing.T) {
+	workflow := readRepoText(t, ".github/workflows/ci.yml")
+	deployment := ciJob(t, workflow, "deployment")
+	requireCIText(t, deployment,
+		"git ls-files -z -- '*.sh' '*.service' 'Makefile' 'Dockerfile*' '*.yml' '*.yaml'",
+		"文件必须使用 LF 换行",
+		"docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet",
+		"docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml build web api scheduler ops bootstrap",
+	)
+	for _, forbidden := range []string{
+		"docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml up",
+		"docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml run",
+		"build web api scheduler ops bootstrap minio",
+		"docker push",
+		"ssh ",
+	} {
+		if strings.Contains(deployment, forbidden) {
+			t.Errorf("部署验证 Job 包含越界命令 %q", forbidden)
+		}
+	}
+}
