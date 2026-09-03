@@ -74,6 +74,7 @@ services:
     environment: *api-environment
     volumes:
       - yunling_api_secrets:/run/secrets:ro
+      - yunling_agent_releases:/opt/yunling/releases/agent:ro
     tmpfs:
       - /tmp:size=64m,uid=10001,gid=10001,mode=1770
     expose:
@@ -384,6 +385,7 @@ volumes:
   yunling_database_secrets:
   yunling_minio_backup_secrets:
   yunling_ops_data:
+  yunling_agent_releases:
 
 networks:
   frontend:

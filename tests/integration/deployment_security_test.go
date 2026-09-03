@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.yaml.in/yaml/v3"
 	"yunling.local/platform/internal/testpostgres"
 )
 
@@ -167,14 +168,36 @@ func TestServiceBuildUsesReachableVerifiedGoModuleMirror(t *testing.T) {
 	}
 }
 
-func TestAPIDeploymentUsesEmbeddedReadOnlyAgentReleases(t *testing.T) {
+func TestAPIDeploymentUsesDedicatedReadOnlyAgentReleaseVolume(t *testing.T) {
 	root := testpostgres.RepositoryRoot(t)
-	compose := mustReadDeploymentFile(t, root, "deploy", "docker-compose.yml")
-	if !strings.Contains(compose, "YUNLING_AGENT_RELEASE_DIR: /opt/yunling/releases/agent") {
-		t.Fatal("API 必须显式读取镜像内的代理发布目录")
+	contents := mustReadDeploymentFile(t, root, "deploy", "docker-compose.yml")
+	var compose struct {
+		Services map[string]struct {
+			Volumes []string `yaml:"volumes"`
+		} `yaml:"services"`
+		Volumes map[string]any `yaml:"volumes"`
 	}
-	if strings.Contains(compose, ":/opt/yunling/releases/agent") {
-		t.Fatal("代理发布目录必须来自只读服务镜像，不能由宿主机卷覆盖")
+	if err := yaml.Unmarshal([]byte(contents), &compose); err != nil {
+		t.Fatalf("解析 Compose：%v", err)
+	}
+	api, ok := compose.Services["api"]
+	if !ok {
+		t.Fatal("Compose 缺少 API 服务")
+	}
+	want := []string{
+		"yunling_api_secrets:/run/secrets:ro",
+		"yunling_agent_releases:/opt/yunling/releases/agent:ro",
+	}
+	if len(api.Volumes) != len(want) {
+		t.Fatalf("API 卷数量：got=%v want=%v", api.Volumes, want)
+	}
+	for index := range want {
+		if api.Volumes[index] != want[index] {
+			t.Fatalf("API 卷：got=%v want=%v", api.Volumes, want)
+		}
+	}
+	if _, ok := compose.Volumes["yunling_agent_releases"]; !ok {
+		t.Fatal("Compose 必须声明代理发布命名卷")
 	}
 }
 

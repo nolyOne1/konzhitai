@@ -267,14 +267,16 @@ Require exactly Linux amd64 and arm64, fixed filenames derived from version, pos
 }
 ```
 
-Before committing, perform the separately approved read-only verification:
+Before committing, perform the separately approved read-only verification. The public API adds a derived `download_url`, so do not hash the public response as though it were the on-disk manifest:
 
 ```bash
 curl --fail --silent --show-error https://aiwise.top/api/releases/agent/latest -o "$TMPDIR/yunling-agent-manifest.json"
-sha256sum "$TMPDIR/yunling-agent-manifest.json"
+jq -c '{version,artifacts:[.artifacts[]|{os,arch,file_name,byte_size,sha256}]}' \
+  "$TMPDIR/yunling-agent-manifest.json" >"$TMPDIR/yunling-agent-manifest.raw.json"
+sha256sum "$TMPDIR/yunling-agent-manifest.raw.json"
 ```
 
-Expected manifest hash: `c80466d68f50e4ed25a2e8f32280df0768fba7306a43165874dc3996391cd1a7`; each downloaded package must match the two exact sizes and hashes above. Stop if any value differs and amend the spec with the observed production values before implementation continues.
+Expected reconstructed raw manifest hash: `c80466d68f50e4ed25a2e8f32280df0768fba7306a43165874dc3996391cd1a7`. The public API response observed on 2026-09-03 is 686 bytes with SHA-256 `701f55df14c49d85a7cf048645600904cfc93e486412765b79a152f775db87a4`; this is informational and may change if the derived URL representation changes. Each downloaded package must match the two exact sizes and hashes above. Stop if the reconstructed raw manifest or either package differs and amend the spec with the observed production values before implementation continues.
 
 - [ ] **Step 5: 改写服务镜像和 Compose 契约测试**
 
