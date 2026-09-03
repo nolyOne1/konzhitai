@@ -49,6 +49,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, dependency de
 		return runRequest(args[1:], stdout, stderr)
 	case "candidate":
 		return runCandidate(args[1:], stderr)
+	case "production":
+		return runProduction(args[1:], stdout, stderr)
+	case "result":
+		return runResult(args[1:], stderr)
 	case "execute":
 		return runExecute(args[1:], stdin, stdout, stderr, dependency)
 	case "bootstrap":
@@ -63,6 +67,80 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, dependency de
 	default:
 		fmt.Fprintln(stderr, "未知子命令")
 		writeUsage(stderr)
+		return 2
+	}
+}
+
+func runResult(args []string, stderr io.Writer) int {
+	if len(args) == 0 || args[0] != "validate" {
+		fmt.Fprintln(stderr, "result 只支持 validate")
+		return 2
+	}
+	flags := flag.NewFlagSet("result validate", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	inputPath := flags.String("input", "", "生产发布结果文件")
+	if err := flags.Parse(args[1:]); err != nil {
+		return flagExitCode(err)
+	}
+	if flags.NArg() != 0 || *inputPath == "" {
+		fmt.Fprintln(stderr, "result validate 参数无效")
+		return 2
+	}
+	body, err := readBoundedFile(*inputPath, 64<<10)
+	if err != nil {
+		fmt.Fprintln(stderr, "生产发布结果超过 64 KiB 安全限制")
+		return 1
+	}
+	result, err := release.DecodeResult(bytes.NewReader(body))
+	if err != nil || release.ValidateResult(result) != nil {
+		fmt.Fprintln(stderr, "生产发布结果无效")
+		return 1
+	}
+	fmt.Fprintln(stderr, "生产发布结果有效")
+	return 0
+}
+
+func runProduction(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "production 需要 validate-input 或 ssh-arguments")
+		return 2
+	}
+	switch args[0] {
+	case "validate-input":
+		flags := flag.NewFlagSet("production validate-input", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		operation := flags.String("operation", "", "deploy 或 rollback")
+		targetID := flags.String("target-id", "", "候选运行编号或 bootstrap")
+		if err := flags.Parse(args[1:]); err != nil {
+			return flagExitCode(err)
+		}
+		if flags.NArg() != 0 || release.ValidateProductionInput(release.ProductionInput{Operation: *operation, TargetID: *targetID}) != nil {
+			fmt.Fprintln(stderr, "生产发布输入无效")
+			return 1
+		}
+		fmt.Fprintln(stderr, "生产发布输入有效")
+		return 0
+	case "ssh-arguments":
+		flags := flag.NewFlagSet("production ssh-arguments", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		host := flags.String("host", "", "生产 SSH 主机")
+		identity := flags.String("identity", "", "SSH 私钥绝对路径")
+		knownHosts := flags.String("known-hosts", "", "known_hosts 绝对路径")
+		if err := flags.Parse(args[1:]); err != nil {
+			return flagExitCode(err)
+		}
+		arguments, err := release.SSHArguments(*host, *identity, *knownHosts)
+		if flags.NArg() != 0 || err != nil {
+			fmt.Fprintln(stderr, "生产 SSH 参数无效")
+			return 1
+		}
+		if err := json.NewEncoder(stdout).Encode(arguments); err != nil {
+			fmt.Fprintln(stderr, "写入生产 SSH 参数失败")
+			return 1
+		}
+		return 0
+	default:
+		fmt.Fprintln(stderr, "production 只支持 validate-input 或 ssh-arguments")
 		return 2
 	}
 }
@@ -508,5 +586,5 @@ func flagExitCode(err error) int {
 }
 
 func writeUsage(writer io.Writer) {
-	fmt.Fprintln(writer, "用法：yunling-release <manifest|candidate|request|execute|bootstrap|preflight|notify> [参数]")
+	fmt.Fprintln(writer, "用法：yunling-release <manifest|candidate|production|request|result|execute|bootstrap|preflight|notify> [参数]")
 }

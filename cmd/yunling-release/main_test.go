@@ -149,6 +149,63 @@ func TestCandidateAuthorizeValidatesBoundedGitHubEventFile(t *testing.T) {
 	}
 }
 
+func TestProductionCommandsValidateInputAndEmitFixedSSHArguments(t *testing.T) {
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+	code := run([]string{"production", "validate-input", "--operation", "rollback", "--target-id", "bootstrap"}, strings.NewReader(""), stdout, stderr, dependencies{})
+	if code != 0 || stdout.Len() != 0 {
+		t.Fatalf("合法生产输入被拒绝：code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	key := filepath.Join(t.TempDir(), "deploy-key")
+	knownHosts := filepath.Join(t.TempDir(), "known-hosts")
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"production", "ssh-arguments", "--host", "134.175.131.19", "--identity", key, "--known-hosts", knownHosts}, strings.NewReader(""), stdout, stderr, dependencies{})
+	if code != 0 {
+		t.Fatalf("SSH 参数生成失败：code=%d stderr=%q", code, stderr)
+	}
+	var arguments []string
+	if err := json.Unmarshal(stdout.Bytes(), &arguments); err != nil {
+		t.Fatal(err)
+	}
+	if len(arguments) == 0 || arguments[len(arguments)-1] != "execute" || !containsString(arguments, "StrictHostKeyChecking=yes") {
+		t.Fatalf("SSH 参数未固定：%v", arguments)
+	}
+}
+
+func TestResultValidateRequiresOneBoundedStrictResult(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "result.json")
+	result := release.Result{
+		Operation: release.OperationDeploy, TargetID: "123", Actor: "nolyOne1",
+		WorkflowRunID: 456, WorkflowURL: "https://github.com/nolyOne1/konzhitai/actions/runs/456",
+		Status: "succeeded", RollbackStatus: "not-required",
+		StartedAt: time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC), FinishedAt: time.Date(2026, 9, 3, 12, 1, 0, 0, time.UTC),
+	}
+	body := mustJSON(t, result)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+	if code := run([]string{"result", "validate", "--input", path}, strings.NewReader(""), stdout, stderr, dependencies{}); code != 0 || stdout.Len() != 0 {
+		t.Fatalf("合法结果被拒绝：code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if err := os.WriteFile(path, append(body, body...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr.Reset()
+	if code := run([]string{"result", "validate", "--input", path}, strings.NewReader(""), stdout, stderr, dependencies{}); code == 0 {
+		t.Fatal("多个结果对象必须失败")
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestManifestCreateComputesCompatibilityAndValidateAcceptsIt(t *testing.T) {
 	repositoryRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {

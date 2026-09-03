@@ -108,6 +108,79 @@ jobs:
           if-no-files-found: error
 `
 
+const validProductionWorkflowFixture = `name: 云令生产发布
+"on":
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 操作
+        required: true
+        type: choice
+        options: [deploy, rollback]
+      target_id:
+        description: 目标编号
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - run: yunling-release production validate-input --operation "${{ inputs.operation }}" --target-id "${{ inputs.target_id }}"
+      - if: inputs.operation == 'deploy'
+        run: gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${{ inputs.target_id }}"
+  deploy:
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://aiwise.top
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: 写入生产 SSH 材料
+        env:
+          PRODUCTION_SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_PRIVATE_KEY }}
+          PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          printf '%s\n' "$PRODUCTION_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/deploy-key"
+          printf '%s\n' "$PRODUCTION_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/known-hosts"
+      - name: 执行固定生产命令
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+        run: |
+          yunling-release production ssh-arguments --host "$PRODUCTION_SSH_HOST" --identity "$RUNNER_TEMP/deploy-key" --known-hosts "$RUNNER_TEMP/known-hosts" > "$RUNNER_TEMP/ssh-arguments.json"
+          mapfile -t ssh_args < <(jq -r '.[]' "$RUNNER_TEMP/ssh-arguments.json")
+          ssh "${ssh_args[@]}" < request.json | head -c 65537 > result.json
+          test "$(wc -c < result.json)" -le 65536
+          yunling-release result validate --input result.json
+      - name: 发送飞书结果
+        if: always()
+        continue-on-error: true
+        env:
+          PRODUCTION_FEISHU_WEBHOOK: ${{ secrets.PRODUCTION_FEISHU_WEBHOOK }}
+          PRODUCTION_FEISHU_SIGNING_SECRET: ${{ secrets.PRODUCTION_FEISHU_SIGNING_SECRET }}
+        run: yunling-release notify < result.json
+      - name: 恢复部署退出码
+        if: always()
+        run: exit "$deploy_exit"
+`
+
 func TestValidateWorkflowFilesRejectsCandidateSecurityRegressions(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -179,6 +252,54 @@ func TestValidateWorkflowFilesAcceptsCandidatePolicyFixture(t *testing.T) {
 	}
 }
 
+func TestValidateWorkflowFilesRejectsProductionSecurityRegressions(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"非手工触发", func(root map[string]any) { root["on"] = map[string]any{"push": map[string]any{}} }},
+		{"目标编号非必填", func(root map[string]any) {
+			productionInputs(root)["target_id"].(map[string]any)["required"] = false
+		}},
+		{"生产发布可取消", func(root map[string]any) {
+			root["concurrency"].(map[string]any)["cancel-in-progress"] = true
+		}},
+		{"审批前读取生产密钥", func(root map[string]any) {
+			productionJob(root, "preflight")["env"] = map[string]any{"PRODUCTION_SSH_PRIVATE_KEY": "${{ secrets.PRODUCTION_SSH_PRIVATE_KEY }}"}
+		}},
+		{"缺少生产审批环境", func(root map[string]any) { delete(productionJob(root, "deploy"), "environment") }},
+		{"密码 SSH", func(root map[string]any) {
+			productionJob(root, "deploy")["steps"] = append(productionSteps(root, "deploy"), map[string]any{"run": "sshpass -p password ssh host execute"})
+		}},
+		{"关闭主机校验", func(root map[string]any) {
+			productionJob(root, "deploy")["steps"] = append(productionSteps(root, "deploy"), map[string]any{"run": "ssh -o StrictHostKeyChecking=no host execute"})
+		}},
+		{"不安全 HTTPS", func(root map[string]any) {
+			productionJob(root, "deploy")["steps"] = append(productionSteps(root, "deploy"), map[string]any{"run": "curl -k https://example.invalid"})
+		}},
+		{"通知掩盖错误", func(root map[string]any) {
+			for _, value := range productionSteps(root, "deploy") {
+				step := value.(map[string]any)
+				if step["name"] == "发送飞书结果" {
+					step["continue-on-error"] = false
+				}
+			}
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := decodeWorkflowFixture(t)
+			production := decodeProductionWorkflowFixture(t)
+			test.mutate(production)
+			directory := t.TempDir()
+			writeWorkflowPair(t, directory, candidate, production)
+			if err := ValidateWorkflowFiles(directory); !errors.Is(err, ErrUnsafeWorkflow) {
+				t.Fatalf("不安全生产工作流必须失败：%v", err)
+			}
+		})
+	}
+}
+
 func decodeWorkflowFixture(t *testing.T) map[string]any {
 	t.Helper()
 	var root map[string]any
@@ -190,17 +311,50 @@ func decodeWorkflowFixture(t *testing.T) map[string]any {
 
 func writeWorkflowMap(t *testing.T, root string, workflow map[string]any) {
 	t.Helper()
+	writeWorkflowPair(t, root, workflow, decodeProductionWorkflowFixture(t))
+}
+
+func writeWorkflowPair(t *testing.T, root string, candidate, production map[string]any) {
+	t.Helper()
 	directory := filepath.Join(root, ".github", "workflows")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	body, err := yaml.Marshal(workflow)
+	body, err := yaml.Marshal(candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(directory, "publish-candidate.yml"), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	body, err = yaml.Marshal(production)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "deploy-production.yml"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func decodeProductionWorkflowFixture(t *testing.T) map[string]any {
+	t.Helper()
+	var root map[string]any
+	if err := yaml.Unmarshal([]byte(validProductionWorkflowFixture), &root); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func productionInputs(root map[string]any) map[string]any {
+	return root["on"].(map[string]any)["workflow_dispatch"].(map[string]any)["inputs"].(map[string]any)
+}
+
+func productionJob(root map[string]any, name string) map[string]any {
+	return root["jobs"].(map[string]any)[name].(map[string]any)
+}
+
+func productionSteps(root map[string]any, name string) []any {
+	return productionJob(root, name)["steps"].([]any)
 }
 
 func workflowRun(root map[string]any) map[string]any {

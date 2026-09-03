@@ -1,6 +1,7 @@
 package release
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -19,7 +20,10 @@ var (
 	sshCommandPattern  = regexp.MustCompile(`(^|[^a-z0-9_-])(ssh|scp|sftp)([^a-z0-9_-]|$)`)
 )
 
-const maxWorkflowBytes = 1 << 20
+const (
+	maxWorkflowBytes       = 1 << 20
+	fixedProductionSSHLine = `ssh "${ssh_args[@]}" < request.json | head -c 65537 > result.json`
+)
 
 type workflowDocument struct {
 	Name        string                     `yaml:"name"`
@@ -27,11 +31,19 @@ type workflowDocument struct {
 	Permissions map[string]string          `yaml:"permissions"`
 	Concurrency workflowConcurrency        `yaml:"concurrency"`
 	Jobs        map[string]workflowJob     `yaml:"jobs"`
+	raw         map[string]any
 }
 
 type workflowTrigger struct {
-	Workflows []string `yaml:"workflows"`
-	Types     []string `yaml:"types"`
+	Workflows []string                 `yaml:"workflows"`
+	Types     []string                 `yaml:"types"`
+	Inputs    map[string]workflowInput `yaml:"inputs"`
+}
+
+type workflowInput struct {
+	Required bool     `yaml:"required"`
+	Type     string   `yaml:"type"`
+	Options  []string `yaml:"options"`
 }
 
 type workflowConcurrency struct {
@@ -41,6 +53,7 @@ type workflowConcurrency struct {
 
 type workflowJob struct {
 	If          string            `yaml:"if"`
+	Needs       string            `yaml:"needs"`
 	RunsOn      string            `yaml:"runs-on"`
 	Environment any               `yaml:"environment"`
 	Permissions map[string]string `yaml:"permissions"`
@@ -48,13 +61,175 @@ type workflowJob struct {
 	Steps       []workflowStep    `yaml:"steps"`
 }
 
+func validateProductionWorkflow(workflow workflowDocument) error {
+	if workflow.Name != "云令生产发布" || len(workflow.On) != 1 ||
+		!equalPermissions(workflow.Permissions, map[string]string{"contents": "read"}) ||
+		workflow.Concurrency.Group != "production-release" || workflow.Concurrency.CancelInProgress {
+		return unsafeWorkflow("生产触发器、顶层权限或并发策略不匹配")
+	}
+	dispatch, ok := workflow.On["workflow_dispatch"]
+	if !ok || len(dispatch.Inputs) != 2 {
+		return unsafeWorkflow("生产工作流必须只声明两个手工输入")
+	}
+	operation, operationOK := dispatch.Inputs["operation"]
+	target, targetOK := dispatch.Inputs["target_id"]
+	if !operationOK || !targetOK || !operation.Required || operation.Type != "choice" ||
+		!equalStrings(operation.Options, []string{"deploy", "rollback"}) || !target.Required || target.Type != "string" {
+		return unsafeWorkflow("生产手工输入定义不安全")
+	}
+	if len(workflow.Jobs) != 2 {
+		return unsafeWorkflow("生产工作流 Job 数量不匹配")
+	}
+	preflight, preflightOK := workflow.Jobs["preflight"]
+	deploy, deployOK := workflow.Jobs["deploy"]
+	permissions := map[string]string{"actions": "read", "contents": "read", "packages": "read", "attestations": "read"}
+	if !preflightOK || !deployOK || preflight.RunsOn != "ubuntu-latest" || deploy.RunsOn != "ubuntu-latest" ||
+		preflight.Environment != nil || deploy.Needs != "preflight" ||
+		!equalPermissions(preflight.Permissions, permissions) || !equalPermissions(deploy.Permissions, permissions) {
+		return unsafeWorkflow("生产 Job 依赖、权限或运行环境不匹配")
+	}
+	environment, ok := deploy.Environment.(map[string]any)
+	if !ok || len(environment) != 2 || fmt.Sprint(environment["name"]) != "production" || fmt.Sprint(environment["url"]) != "https://aiwise.top" {
+		return unsafeWorkflow("生产审批环境必须精确为 production")
+	}
+	jobsRaw, ok := workflow.raw["jobs"].(map[string]any)
+	if !ok || containsSecretReference(jobsRaw["preflight"]) {
+		return unsafeWorkflow("生产密钥出现在审批前 Job")
+	}
+	rootWithoutJobs := make(map[string]any, len(workflow.raw))
+	for key, value := range workflow.raw {
+		if key != "jobs" {
+			rootWithoutJobs[key] = value
+		}
+	}
+	if containsSecretReference(rootWithoutJobs) {
+		return unsafeWorkflow("生产密钥出现在 Job 之外")
+	}
+	if err := validateProductionPreflight(preflight.Steps); err != nil {
+		return err
+	}
+	return validateProductionDeploy(deploy.Steps)
+}
+
+func validateProductionPreflight(steps []workflowStep) error {
+	validatedInput := false
+	queriedCandidate := false
+	for _, step := range steps {
+		if step.Uses != "" && !immutableActionRef.MatchString(step.Uses) {
+			return unsafeWorkflow("生产预检使用可变 Action")
+		}
+		if strings.Contains(step.Run, "yunling-release production validate-input") &&
+			strings.Contains(step.Run, `--operation "${{ inputs.operation }}"`) && strings.Contains(step.Run, `--target-id "${{ inputs.target_id }}"`) {
+			validatedInput = true
+		}
+		if strings.Contains(step.Run, `gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${{ inputs.target_id }}"`) &&
+			strings.Contains(step.If, "inputs.operation == 'deploy'") {
+			queriedCandidate = true
+		}
+	}
+	if !validatedInput || !queriedCandidate {
+		return unsafeWorkflow("生产预检缺少输入或候选运行核对")
+	}
+	return nil
+}
+
+func validateProductionDeploy(steps []workflowStep) error {
+	sshExecuted := false
+	resultValidated := false
+	privateKeyWritten := false
+	notificationCount := 0
+	finalExit := false
+	for _, step := range steps {
+		if step.Uses != "" && !immutableActionRef.MatchString(step.Uses) {
+			return unsafeWorkflow("生产发布使用可变 Action")
+		}
+		lowerRun := strings.ToLower(step.Run)
+		if strings.Contains(lowerRun, "sshpass") || strings.Contains(lowerRun, "stricthostkeychecking=no") ||
+			strings.Contains(lowerRun, "userknownhostsfile=/dev/null") || strings.Contains(lowerRun, "passwordauthentication=yes") ||
+			regexp.MustCompile(`(^|[[:space:]])curl[[:space:]]+[^\n]*-k`).MatchString(lowerRun) {
+			return unsafeWorkflow("生产发布包含不安全网络参数")
+		}
+		for _, line := range strings.Split(step.Run, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if sshCommandPattern.MatchString(strings.ToLower(trimmed)) && trimmed != fixedProductionSSHLine {
+				return unsafeWorkflow("生产发布包含非固定 SSH 命令：%s", trimmed)
+			}
+		}
+		if strings.Contains(step.Run, "yunling-release production ssh-arguments") &&
+			strings.Contains(step.Run, fixedProductionSSHLine) {
+			sshExecuted = true
+		}
+		if strings.Contains(step.Run, "wc -c") && strings.Contains(step.Run, "65536") &&
+			strings.Contains(step.Run, "yunling-release result validate --input result.json") {
+			resultValidated = true
+		}
+		if containsEnvKeys(step.Env, "PRODUCTION_SSH_PRIVATE_KEY", "PRODUCTION_SSH_KNOWN_HOSTS") &&
+			strings.Contains(step.Run, "umask 077") && strings.Contains(step.Run, "$RUNNER_TEMP/deploy-key") &&
+			strings.Contains(step.Run, "$RUNNER_TEMP/known-hosts") {
+			privateKeyWritten = true
+		}
+		if strings.Contains(step.Run, "yunling-release notify") {
+			notificationCount++
+			if step.If != "always()" || !step.ContinueOnError ||
+				!containsEnvKeys(step.Env, "PRODUCTION_FEISHU_WEBHOOK", "PRODUCTION_FEISHU_SIGNING_SECRET") {
+				return unsafeWorkflow("飞书通知条件、密钥或失败策略不安全")
+			}
+		} else if step.ContinueOnError {
+			return unsafeWorkflow("只有飞书通知允许 continue-on-error")
+		}
+		if step.If == "always()" && strings.Contains(step.Run, `exit "$deploy_exit"`) {
+			finalExit = true
+		}
+	}
+	if !sshExecuted || !resultValidated || !privateKeyWritten || notificationCount != 1 || !finalExit {
+		return unsafeWorkflow("生产发布缺少 SSH、结果校验、密钥写入、通知或退出码恢复")
+	}
+	return nil
+}
+
+func unsafeWorkflow(format string, arguments ...any) error {
+	return fmt.Errorf("%w：%s", ErrUnsafeWorkflow, fmt.Sprintf(format, arguments...))
+}
+
+func containsEnvKeys(values map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		value, ok := values[key]
+		if !ok || !strings.Contains(fmt.Sprint(value), "${{ secrets."+key) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsSecretReference(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if strings.Contains(strings.ToLower(key), "secret") || containsSecretReference(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if containsSecretReference(child) {
+				return true
+			}
+		}
+	case string:
+		return strings.Contains(strings.ToLower(typed), "secrets.")
+	}
+	return false
+}
+
 type workflowStep struct {
-	ID   string         `yaml:"id"`
-	Name string         `yaml:"name"`
-	Uses string         `yaml:"uses"`
-	Run  string         `yaml:"run"`
-	Env  map[string]any `yaml:"env"`
-	With map[string]any `yaml:"with"`
+	ID              string         `yaml:"id"`
+	Name            string         `yaml:"name"`
+	Uses            string         `yaml:"uses"`
+	Run             string         `yaml:"run"`
+	Env             map[string]any `yaml:"env"`
+	With            map[string]any `yaml:"with"`
+	If              string         `yaml:"if"`
+	ContinueOnError bool           `yaml:"continue-on-error"`
 }
 
 func ValidateWorkflowFiles(repositoryRoot string) error {
@@ -67,7 +242,14 @@ func ValidateWorkflowFiles(repositoryRoot string) error {
 	if err != nil {
 		return err
 	}
-	return validateCandidateWorkflow(workflow)
+	if err := validateCandidateWorkflow(workflow); err != nil {
+		return err
+	}
+	production, err := loadWorkflow(filepath.Join(root, ".github", "workflows", "deploy-production.yml"))
+	if err != nil {
+		return err
+	}
+	return validateProductionWorkflow(production)
 }
 
 func loadWorkflow(path string) (workflowDocument, error) {
@@ -75,12 +257,11 @@ func loadWorkflow(path string) (workflowDocument, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maxWorkflowBytes {
 		return workflowDocument{}, fmt.Errorf("%w：工作流必须是小于 1 MiB 的普通文件", ErrUnsafeWorkflow)
 	}
-	file, err := os.Open(path)
+	body, err := os.ReadFile(path)
 	if err != nil {
-		return workflowDocument{}, fmt.Errorf("%w：打开工作流：%v", ErrUnsafeWorkflow, err)
+		return workflowDocument{}, fmt.Errorf("%w：读取工作流：%v", ErrUnsafeWorkflow, err)
 	}
-	defer file.Close()
-	decoder := yaml.NewDecoder(io.LimitReader(file, maxWorkflowBytes+1))
+	decoder := yaml.NewDecoder(io.LimitReader(bytes.NewReader(body), maxWorkflowBytes+1))
 	var workflow workflowDocument
 	if err := decoder.Decode(&workflow); err != nil {
 		return workflowDocument{}, fmt.Errorf("%w：解析工作流：%v", ErrUnsafeWorkflow, err)
@@ -88,6 +269,9 @@ func loadWorkflow(path string) (workflowDocument, error) {
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return workflowDocument{}, fmt.Errorf("%w：工作流包含多个 YAML 文档", ErrUnsafeWorkflow)
+	}
+	if err := yaml.Unmarshal(body, &workflow.raw); err != nil {
+		return workflowDocument{}, fmt.Errorf("%w：解析工作流语义树：%v", ErrUnsafeWorkflow, err)
 	}
 	return workflow, nil
 }

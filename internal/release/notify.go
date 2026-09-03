@@ -121,6 +121,10 @@ func validateNotificationResult(result Result) error {
 	return nil
 }
 
+func ValidateResult(result Result) error {
+	return validateNotificationResult(result)
+}
+
 func releaseCard(result Result) map[string]any {
 	title := "生产发布成功"
 	color := "green"
