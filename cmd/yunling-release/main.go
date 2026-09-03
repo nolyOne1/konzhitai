@@ -24,6 +24,7 @@ const (
 )
 
 type dependencies struct {
+	bootstrap   func(context.Context) error
 	execute     func(context.Context, release.Request) (release.Result, error)
 	preflight   func(context.Context) error
 	notify      func(context.Context, string, string, release.Result) error
@@ -48,6 +49,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, dependency de
 		return runRequest(args[1:], stdout, stderr)
 	case "execute":
 		return runExecute(args[1:], stdin, stdout, stderr, dependency)
+	case "bootstrap":
+		return runBootstrap(args[1:], stderr, dependency)
 	case "preflight":
 		return runPreflight(args[1:], stderr, dependency)
 	case "notify":
@@ -60,6 +63,32 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, dependency de
 		writeUsage(stderr)
 		return 2
 	}
+}
+
+func runBootstrap(args []string, stderr io.Writer, dependency dependencies) int {
+	flags := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	if err := flags.Parse(args); err != nil {
+		return flagExitCode(err)
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "bootstrap 不接受位置参数")
+		return 2
+	}
+	if dependency.requireRoot && (dependency.isRoot == nil || !dependency.isRoot()) {
+		fmt.Fprintln(stderr, "生产基线导入必须由 root 调用")
+		return 1
+	}
+	if dependency.bootstrap == nil {
+		fmt.Fprintln(stderr, "生产基线导入依赖不可用")
+		return 1
+	}
+	if err := dependency.bootstrap(context.Background()); err != nil {
+		fmt.Fprintln(stderr, "生产基线导入失败")
+		return 1
+	}
+	fmt.Fprintln(stderr, "生产基线导入完成")
+	return 0
 }
 
 func runExecute(args []string, stdin io.Reader, stdout, stderr io.Writer, dependency dependencies) int {
@@ -322,9 +351,16 @@ func realDependencies() dependencies {
 		Config: config, Policy: policy, Store: store, Runner: runner,
 		Resources: resources, Locker: locker, Health: health, Now: time.Now,
 	}
+	bootstrapper := &release.Bootstrapper{
+		RootDir: productionRoot, ComposeFile: config.ComposeFile, OverrideFile: config.OverrideFile,
+		AgentLockPath: productionRoot + "/deploy/agent/release-lock.json", Store: store,
+		Host:   release.NewDockerBootstrapHost(runner, "yunling-api-1", "yunling_agent_releases"),
+		Locker: locker, Now: time.Now,
+	}
 	notifier := release.NewNotifier(http.DefaultClient, time.Now)
 	return dependencies{
 		requireRoot: true, isRoot: currentUserIsRoot, now: time.Now,
+		bootstrap: bootstrapper.Run,
 		execute: func(ctx context.Context, request release.Request) (release.Result, error) {
 			if healthErr != nil {
 				return release.Result{}, healthErr
@@ -440,5 +476,5 @@ func flagExitCode(err error) int {
 }
 
 func writeUsage(writer io.Writer) {
-	fmt.Fprintln(writer, "用法：yunling-release <manifest|request|execute|preflight|notify> [参数]")
+	fmt.Fprintln(writer, "用法：yunling-release <manifest|request|execute|bootstrap|preflight|notify> [参数]")
 }

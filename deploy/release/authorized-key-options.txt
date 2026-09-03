@@ -1,0 +1,1 @@
+restrict,command="/usr/bin/sudo -n /usr/local/sbin/yunling-release execute"

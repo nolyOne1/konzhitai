@@ -97,6 +97,37 @@ func TestExecuteRealModeRequiresRootAndIgnoresSSHOriginalCommand(t *testing.T) {
 	}
 }
 
+func TestBootstrapRequiresRealRootAndRunsExactlyOnce(t *testing.T) {
+	tests := []struct {
+		name      string
+		isRoot    bool
+		args      []string
+		wantCode  int
+		wantCalls int
+	}{
+		{name: "root 可导入", isRoot: true, args: []string{"bootstrap"}, wantCode: 0, wantCalls: 1},
+		{name: "非 root 拒绝", isRoot: false, args: []string{"bootstrap"}, wantCode: 1},
+		{name: "拒绝额外参数", isRoot: true, args: []string{"bootstrap", "again"}, wantCode: 2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+			code := run(test.args, strings.NewReader(""), stdout, stderr, dependencies{
+				requireRoot: true,
+				isRoot:      func() bool { return test.isRoot },
+				bootstrap: func(context.Context) error {
+					calls++
+					return nil
+				},
+			})
+			if code != test.wantCode || calls != test.wantCalls || stdout.Len() != 0 {
+				t.Fatalf("code=%d calls=%d stdout=%q stderr=%q", code, calls, stdout, stderr)
+			}
+		})
+	}
+}
+
 func TestManifestCreateComputesCompatibilityAndValidateAcceptsIt(t *testing.T) {
 	repositoryRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
