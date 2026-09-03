@@ -7,6 +7,13 @@ bin
 coverage
 deploy/.env
 deploy/secrets
+deploy/agent
+**/.env
+**/releases
+**/backups
+**/*.pem
+**/id_rsa*
+**/id_ed25519*
 work
 outputs
 *.log
