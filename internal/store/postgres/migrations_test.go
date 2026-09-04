@@ -4,7 +4,31 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestMemberLifecycleMigrationAddsCompatibleUserState(t *testing.T) {
+	db := startPostgres(t)
+	applyMigrations(t, db)
+	ctx := context.Background()
+
+	var mustChange bool
+	var removedAt *time.Time
+	err := db.QueryRow(ctx, `
+		INSERT INTO users (email, display_name, password_hash)
+		VALUES ('existing@example.com', '现有成员', 'hash')
+		RETURNING must_change_password, removed_at
+	`).Scan(&mustChange, &removedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mustChange || removedAt != nil {
+		t.Fatalf("现有账号默认值错误：mustChange=%v removedAt=%v", mustChange, removedAt)
+	}
+	if !tableIndexExists(t, db, "users_removed_at_idx") {
+		t.Fatal("成员软删除筛选索引不存在")
+	}
+}
 
 func TestInitialMigrationCreatesCoreTables(t *testing.T) {
 	db := startPostgres(t)

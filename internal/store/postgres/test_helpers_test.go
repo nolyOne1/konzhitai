@@ -42,3 +42,17 @@ func tableExists(t *testing.T, db *pgxpool.Pool, table string) bool {
 	}
 	return exists
 }
+
+func tableIndexExists(t *testing.T, db *pgxpool.Pool, index string) bool {
+	t.Helper()
+	var exists bool
+	err := db.QueryRow(
+		context.Background(),
+		`SELECT to_regclass('public.' || $1) IS NOT NULL`,
+		index,
+	).Scan(&exists)
+	if err != nil {
+		t.Fatalf("检查索引 %s：%v", index, err)
+	}
+	return exists
+}
