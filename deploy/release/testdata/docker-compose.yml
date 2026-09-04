@@ -1,0 +1,91 @@
+x-infrastructure: &infrastructure
+  image: alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+  command: ["/bin/sh", "-ec", "while :; do sleep 3600; done"]
+  read_only: true
+  restart: "no"
+  security_opt:
+    - no-new-privileges:true
+  healthcheck:
+    test: ["CMD", "true"]
+    interval: 1s
+    timeout: 1s
+    retries: 20
+  tmpfs:
+    - /tmp:size=4m,mode=1777
+
+x-application: &application
+  image: nginx:1.29.8-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+  entrypoint: ["/usr/sbin/nginx"]
+  command: ["-c", "/etc/nginx/nginx.conf", "-g", "daemon off;"]
+  read_only: true
+  restart: "no"
+  security_opt:
+    - no-new-privileges:true
+  volumes:
+    - ./nginx.conf:/etc/nginx/nginx.conf:ro
+  tmpfs:
+    - /tmp:size=4m,mode=1777
+    - /var/cache/nginx:size=4m,mode=1777
+    - /var/run:size=4m,mode=1777
+  healthcheck:
+    test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz | grep -q ok"]
+    interval: 1s
+    timeout: 1s
+    retries: 20
+
+services:
+  registry:
+    image: registry:3.1.1@sha256:1be55279f18a2fe1a74edf2664cac61c1bea305b7b4642dab412e7affdcb3e33
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1::5000"
+    volumes:
+      - registry-data:/var/lib/registry
+    healthcheck:
+      test: ["CMD", "/bin/registry", "--version"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+
+  postgres:
+    <<: *infrastructure
+    volumes:
+      - postgres-data:/data
+
+  redis:
+    <<: *infrastructure
+    volumes:
+      - redis-data:/data
+
+  minio:
+    <<: *infrastructure
+    volumes:
+      - minio-data:/data
+
+  caddy:
+    <<: *infrastructure
+    volumes:
+      - caddy-data:/data
+
+  api:
+    <<: *application
+
+  scheduler:
+    <<: *application
+
+  web:
+    <<: *application
+    ports:
+      - "127.0.0.1::8080"
+
+  ops:
+    <<: *application
+
+volumes:
+  registry-data:
+  postgres-data:
+  redis-data:
+  minio-data:
+  caddy-data:

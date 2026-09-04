@@ -1,8 +1,7 @@
-FROM golang:1.27.0-alpine3.24 AS builder
+FROM golang:1.27.0-alpine3.24@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS builder
 
 ARG GOPROXY=https://mirrors.cloud.tencent.com/go,direct
 ARG GOSUMDB=sum.golang.google.cn
-ARG AGENT_VERSION=0.1.0
 ENV GOPROXY=${GOPROXY} GOSUMDB=${GOSUMDB}
 
 WORKDIR /src
@@ -12,21 +11,15 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/yunling-api ./cmd/api && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/yunling-scheduler ./cmd/scheduler && \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X main.agentVersion=${AGENT_VERSION}" -o /out/yunling-agent ./cmd/agent && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.agentVersion=${AGENT_VERSION}" -o /out/yunling-agent-linux-amd64 ./cmd/agent && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.agentVersion=${AGENT_VERSION}" -o /out/yunling-agent-linux-arm64 ./cmd/agent && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/yunling-bootstrap ./cmd/bootstrap
-RUN sh deploy/agent/package.sh "${AGENT_VERSION}" /out/yunling-agent-linux-amd64 /out/yunling-agent-linux-arm64 /out/agent-releases
 
-FROM alpine:3.24
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S -g 10001 yunling && \
     adduser -S -D -H -u 10001 -G yunling yunling
 COPY --from=builder /out/yunling-api /usr/local/bin/yunling-api
 COPY --from=builder /out/yunling-scheduler /usr/local/bin/yunling-scheduler
-COPY --from=builder /out/yunling-agent /usr/local/bin/yunling-agent
 COPY --from=builder /out/yunling-bootstrap /usr/local/bin/yunling-bootstrap
-COPY --from=builder --chown=10001:10001 /out/agent-releases /opt/yunling/releases/agent
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/yunling-api"]

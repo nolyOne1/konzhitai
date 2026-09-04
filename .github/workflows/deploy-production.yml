@@ -1,0 +1,254 @@
+name: 云令生产发布
+
+"on":
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 生产操作
+        required: true
+        type: choice
+        options:
+          - deploy
+          - rollback
+      target_id:
+        description: 候选运行编号；回滚可填写历史编号或 bootstrap
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: 无密钥生产预检
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      attestations: read
+    outputs:
+      head_sha: ${{ steps.candidate.outputs.head_sha }}
+      artifact_digest: ${{ steps.artifact.outputs.artifact_digest }}
+    steps:
+      - name: 检出发布工具
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: 安装 Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: 构建并校验生产输入
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -o ./yunling-release ./cmd/yunling-release
+          ./yunling-release production validate-input --operation "${{ inputs.operation }}" --target-id "${{ inputs.target_id }}"
+
+      - id: candidate
+        name: 核对候选运行来源
+        if: inputs.operation == 'deploy'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}
+        run: |
+          umask 077
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${{ inputs.target_id }}" > "$RUNNER_TEMP/candidate-run.json"
+          jq -e --argjson repository_id "$EXPECTED_REPOSITORY_ID" '
+            .name == "云令候选版本" and
+            .event == "workflow_run" and
+            .head_branch == "main" and
+            .conclusion == "success" and
+            .repository.id == $repository_id and
+            (.head_sha | test("^[0-9a-f]{40}$"))
+          ' "$RUNNER_TEMP/candidate-run.json" >/dev/null
+          head_sha="$(jq -er '.head_sha' "$RUNNER_TEMP/candidate-run.json")"
+          printf 'head_sha=%s\n' "$head_sha" >> "$GITHUB_OUTPUT"
+
+      - id: artifact
+        name: 核对候选产物元数据
+        if: inputs.operation == 'deploy'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.candidate.outputs.head_sha }}
+        run: |
+          umask 077
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${{ inputs.target_id }}/artifacts?per_page=100" > "$RUNNER_TEMP/artifacts.json"
+          jq -e --arg name "yunling-release-${HEAD_SHA}" '
+            [.artifacts[] | select(.name == $name and .expired == false and (.digest | test("^sha256:[0-9a-f]{64}$")))] | length == 1
+          ' "$RUNNER_TEMP/artifacts.json" >/dev/null
+          artifact_digest="$(jq -er --arg name "yunling-release-${HEAD_SHA}" '.artifacts[] | select(.name == $name) | .digest' "$RUNNER_TEMP/artifacts.json")"
+          printf 'artifact_digest=%s\n' "$artifact_digest" >> "$GITHUB_OUTPUT"
+
+      - name: 下载唯一候选产物
+        if: inputs.operation == 'deploy'
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: yunling-release-${{ steps.candidate.outputs.head_sha }}
+          path: ${{ runner.temp }}/candidate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.target_id }}
+
+      - name: 校验候选清单、校验和与来源证明
+        if: inputs.operation == 'deploy'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.candidate.outputs.head_sha }}
+        working-directory: ${{ runner.temp }}/candidate
+        run: |
+          test -f SHA256SUMS && test ! -L SHA256SUMS
+          test -f release-manifest.json && test ! -L release-manifest.json
+          test -f yunling-release-bootstrap.tar.gz && test ! -L yunling-release-bootstrap.tar.gz
+          sha256sum -c SHA256SUMS
+          "$GITHUB_WORKSPACE/yunling-release" manifest validate --input release-manifest.json
+          jq -e --argjson target_id "${{ inputs.target_id }}" --arg head_sha "$HEAD_SHA" '
+            .candidate_run_id == $target_id and .repository_id == ${{ github.repository_id }} and .source_sha == $head_sha
+          ' release-manifest.json >/dev/null
+          services="$(jq -er '.images.services' release-manifest.json)"
+          web="$(jq -er '.images.web' release-manifest.json)"
+          ops="$(jq -er '.images.ops' release-manifest.json)"
+          gh attestation verify "oci://${services}" --repo "$GITHUB_REPOSITORY"
+          gh attestation verify "oci://${web}" --repo "$GITHUB_REPOSITORY"
+          gh attestation verify "oci://${ops}" --repo "$GITHUB_REPOSITORY"
+          gh attestation verify yunling-release-bootstrap.tar.gz --repo "$GITHUB_REPOSITORY"
+
+  deploy:
+    name: 审批后执行生产操作
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://aiwise.top
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      attestations: read
+    steps:
+      - name: 检出发布工具
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+
+      - name: 安装 Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: 构建固定生产入口
+        env:
+          CGO_ENABLED: "0"
+        run: go build -trimpath -o ./yunling-release ./cmd/yunling-release
+
+      - name: 重新下载已预检候选
+        if: inputs.operation == 'deploy'
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: yunling-release-${{ needs.preflight.outputs.head_sha }}
+          path: ${{ runner.temp }}/candidate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.target_id }}
+
+      - name: 审批后重新校验候选
+        if: inputs.operation == 'deploy'
+        env:
+          HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
+        working-directory: ${{ runner.temp }}/candidate
+        run: |
+          test -f SHA256SUMS && test ! -L SHA256SUMS
+          sha256sum -c SHA256SUMS
+          "$GITHUB_WORKSPACE/yunling-release" manifest validate --input release-manifest.json
+          jq -e --argjson target_id "${{ inputs.target_id }}" --arg head_sha "$HEAD_SHA" '
+            .candidate_run_id == $target_id and .repository_id == ${{ github.repository_id }} and .source_sha == $head_sha
+          ' release-manifest.json >/dev/null
+
+      - name: 写入生产 SSH 材料
+        env:
+          PRODUCTION_SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_PRIVATE_KEY }}
+          PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          printf '%s\n' "$PRODUCTION_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/deploy-key"
+          printf '%s\n' "$PRODUCTION_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/known-hosts"
+          chmod 0600 "$RUNNER_TEMP/deploy-key" "$RUNNER_TEMP/known-hosts"
+
+      - id: execute
+        name: 执行固定生产命令并保存结论
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+        run: |
+          deploy_exit=0
+          request_args=(
+            request create
+            --operation "${{ inputs.operation }}"
+            --target-id "${{ inputs.target_id }}"
+            --actor "${{ github.actor }}"
+            --workflow-run-id "${{ github.run_id }}"
+            --workflow-url "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          )
+          if [[ "${{ inputs.operation }}" == deploy ]]; then
+            request_args+=(--manifest "$RUNNER_TEMP/candidate/release-manifest.json")
+          fi
+          if ! ./yunling-release "${request_args[@]}" > request.json; then
+            deploy_exit=1
+          fi
+          if ! ./yunling-release production ssh-arguments \
+            --host "$PRODUCTION_SSH_HOST" \
+            --identity "$RUNNER_TEMP/deploy-key" \
+            --known-hosts "$RUNNER_TEMP/known-hosts" > "$RUNNER_TEMP/ssh-arguments.json"; then
+            deploy_exit=1
+          fi
+          if [[ "$deploy_exit" -eq 0 ]]; then
+            mapfile -t ssh_args < <(jq -er '.[] | strings' "$RUNNER_TEMP/ssh-arguments.json")
+            set +e
+            set -o pipefail
+            ssh "${ssh_args[@]}" < request.json | head -c 65537 > result.json
+            ssh_status="${PIPESTATUS[0]}"
+            set +o pipefail
+            set -e
+            if [[ "$ssh_status" -ne 0 ]]; then
+              deploy_exit="$ssh_status"
+            fi
+          fi
+          if [[ ! -f result.json ]] || [[ "$(wc -c < result.json)" -gt 65536 ]] || ! ./yunling-release result validate --input result.json; then
+            deploy_exit=1
+          fi
+          printf '%s\n' "$deploy_exit" > "$RUNNER_TEMP/deploy-exit-code"
+
+      - id: notify
+        name: 发送飞书结果
+        if: always()
+        continue-on-error: true
+        env:
+          PRODUCTION_FEISHU_WEBHOOK: ${{ secrets.PRODUCTION_FEISHU_WEBHOOK }}
+          PRODUCTION_FEISHU_SIGNING_SECRET: ${{ secrets.PRODUCTION_FEISHU_SIGNING_SECRET }}
+        run: |
+          if ! ./yunling-release notify < result.json; then
+            echo 'notification_failed' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: 恢复部署退出码
+        if: always()
+        run: |
+          deploy_exit=1
+          if [[ -f "$RUNNER_TEMP/deploy-exit-code" ]]; then
+            deploy_exit="$(cat "$RUNNER_TEMP/deploy-exit-code")"
+          fi
+          exit "$deploy_exit"

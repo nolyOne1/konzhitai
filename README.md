@@ -35,6 +35,6 @@ Windows 未安装 `make` 时，可以直接执行 Makefile 中对应的 Go 与 n
 
 ## 部署
 
-生产部署采用 Caddy 作为唯一入口，只对外开放 80/443；API、调度器、PostgreSQL、Redis 和 MinIO 均不映射宿主机端口。完整的初始化、腾讯云安全组、执行服务器接入、备份和恢复步骤见 [deploy/README.md](deploy/README.md)，当前腾讯云上线状态见 [deploy/PRODUCTION.md](deploy/PRODUCTION.md)。
+生产部署采用 Caddy 作为唯一入口，只对外开放 80/443；API、调度器、PostgreSQL、Redis 和 MinIO 均不映射宿主机端口。日常更新必须使用不可变候选和 GitHub `production` 环境人工审批，详见 [生产发布与回滚手册](deploy/RELEASE.md)。完整的初始化、腾讯云安全组、执行服务器接入、备份和恢复步骤见 [deploy/README.md](deploy/README.md)，当前腾讯云上线状态见 [deploy/PRODUCTION.md](deploy/PRODUCTION.md)。
 
 不要把 `.env`、主密钥、管理员初始化密码、代理一次性注册令牌或代理凭据提交到仓库。

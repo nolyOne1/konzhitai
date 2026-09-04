@@ -194,7 +194,7 @@ func TestCIAgentJobTestsAndPackagesBothArchitectures(t *testing.T) {
 	}
 }
 
-func TestCIDeploymentJobValidatesWithoutStartingOrDeploying(t *testing.T) {
+func TestCIDeploymentJobNeverStartsProductionCompose(t *testing.T) {
 	workflow := readRepoText(t, ".github/workflows/ci.yml")
 	deployment := ciJob(t, workflow, "deployment")
 	requireCIText(t, deployment,
@@ -214,4 +214,15 @@ func TestCIDeploymentJobValidatesWithoutStartingOrDeploying(t *testing.T) {
 			t.Errorf("部署验证 Job 包含越界命令 %q", forbidden)
 		}
 	}
+}
+
+func TestCIDeploymentJobRunsReleaseTransactionDrill(t *testing.T) {
+	workflow := readRepoText(t, ".github/workflows/ci.yml")
+	deployment := ciJob(t, workflow, "deployment")
+	requireCIText(t, deployment,
+		"uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6",
+		"go-version-file: go.mod",
+		"name: 演练应用发布与自动回滚",
+		"go test -tags=releaseintegration ./tests/releaseintegration -count=1",
+	)
 }

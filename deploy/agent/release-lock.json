@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "version": "0.1.0",
+  "manifest_sha256": "c80466d68f50e4ed25a2e8f32280df0768fba7306a43165874dc3996391cd1a7",
+  "artifacts": [
+    {
+      "os": "linux",
+      "arch": "amd64",
+      "file_name": "yunling-agent-0.1.0-linux-amd64.tar.gz",
+      "byte_size": 3424904,
+      "sha256": "64982ac930917ac9a90e4a118d05214bee2ac421cee8d853e7e821d8acbcf3e4"
+    },
+    {
+      "os": "linux",
+      "arch": "arm64",
+      "file_name": "yunling-agent-0.1.0-linux-arm64.tar.gz",
+      "byte_size": 3066090,
+      "sha256": "fdfb55e5936a7ee5ab4529734a05b35267f1735346aca4aa78aabb9a2d041fd1"
+    }
+  ]
+}

@@ -139,6 +139,12 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: 安装 Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
       - name: 验证 Linux 文件换行
         run: |
           failed=0
@@ -153,3 +159,5 @@ jobs:
         run: docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet
       - name: 构建云令应用镜像
         run: docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml build web api scheduler ops bootstrap
+      - name: 演练应用发布与自动回滚
+        run: go test -tags=releaseintegration ./tests/releaseintegration -count=1

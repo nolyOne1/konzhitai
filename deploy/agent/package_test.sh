@@ -44,11 +44,3 @@ if sh "$root_dir/deploy/agent/package.sh" \
   echo '代理二进制不可执行时必须失败' >&2
   exit 1
 fi
-
-dockerfile="$root_dir/deploy/Dockerfile.services"
-grep -Fq 'ARG AGENT_VERSION=0.1.0' "$dockerfile"
-grep -Fq 'CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w -X main.agentVersion=${AGENT_VERSION}" -o /out/yunling-agent ./cmd/agent' "$dockerfile"
-grep -Fq 'GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.agentVersion=${AGENT_VERSION}" -o /out/yunling-agent-linux-amd64 ./cmd/agent' "$dockerfile"
-grep -Fq 'GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.agentVersion=${AGENT_VERSION}" -o /out/yunling-agent-linux-arm64 ./cmd/agent' "$dockerfile"
-grep -Fq 'sh deploy/agent/package.sh "${AGENT_VERSION}" /out/yunling-agent-linux-amd64 /out/yunling-agent-linux-arm64 /out/agent-releases' "$dockerfile"
-grep -Fq 'COPY --from=builder --chown=10001:10001 /out/agent-releases /opt/yunling/releases/agent' "$dockerfile"
