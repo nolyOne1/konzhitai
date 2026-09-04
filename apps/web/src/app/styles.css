@@ -3398,6 +3398,19 @@ h1 {
 .role-choice strong,
 .role-choice small { display: block; }
 .role-choice small { margin-top: 4px; color: var(--muted); line-height: 1.45; }
+.member-panel-header { align-items: flex-end; }
+.member-filters { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 18px; border-bottom: 1px solid var(--border); }
+.filter-button { min-height: 36px; padding: 0 12px; border: 1px solid var(--border); border-radius: 999px; color: #4f6259; background: var(--surface); cursor: pointer; font-size: 13px; }
+.filter-button:hover { border-color: #9ccdb6; background: #f0f8f4; }
+.filter-button[aria-pressed="true"] { border-color: #6db18e; color: #164d36; background: var(--success-soft); font-weight: 600; }
+.member-actions { position: relative; display: inline-flex; }
+.member-action-menu { position: absolute; z-index: 2; top: calc(100% + 4px); right: 0; min-width: 132px; display: grid; padding: 5px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); box-shadow: 0 8px 20px rgba(16, 36, 28, .13); }
+.member-action-menu button { min-height: 36px; padding: 0 10px; border: 0; border-radius: 6px; color: var(--text); background: transparent; cursor: pointer; text-align: left; }
+.member-action-menu button:hover { background: var(--success-soft); }
+.action-impact { margin: 20px 0; padding: 13px; border: 1px solid #c9e6d7; border-radius: 9px; color: #245f48; background: #f0f8f4; font-size: 13px; line-height: 1.6; }
+.action-impact-danger { border-color: #efc6c1; color: #7c3b35; background: var(--danger-soft); }
+.danger-action { min-height: 44px; padding: 0 18px; border: 0; border-radius: 9px; color: #ffffff; background: var(--danger); cursor: pointer; }
+.copy-status { margin: 12px 0 0; color: #277153; font-size: 13px; }
 
 .alert-list { margin: 0; padding: 0; list-style: none; }
 .alert-item { min-height: 80px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 14px 18px; border-bottom: 1px solid #edf1ef; }
@@ -3441,6 +3454,9 @@ h1 {
   .security-summary > div { border-right: 0; border-bottom: 1px solid var(--border); }
   .security-summary > div:last-child { border-bottom: 0; }
   .role-grid { grid-template-columns: 1fr; }
+  .member-panel-header { display: grid; align-items: start; }
+  .member-filters { overflow-x: auto; flex-wrap: nowrap; }
+  .member-filters .filter-button { flex: 0 0 auto; }
   .alert-item { grid-template-columns: auto minmax(0, 1fr); }
   .alert-item > :last-child { grid-column: 2; width: fit-content; }
   .audit-panel .panel-header { display: grid; align-items: start; }
