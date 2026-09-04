@@ -291,6 +291,7 @@ export interface SessionUser {
   displayName: string
   email: string
   roles: RoleName[]
+  mustChangePassword: boolean
 }
 
 export interface SecretMetadata {
@@ -307,7 +308,22 @@ export interface Member {
   displayName: string
   enabled: boolean
   roles: RoleName[]
+  mustChangePassword: boolean
+  removedAt: string | null
   createdAt: string
+}
+
+export type MemberStatus = 'active' | 'disabled' | 'removed' | 'all'
+
+export interface TemporaryPasswordResult {
+  member: Member
+  temporaryPassword: string
+}
+
+export interface CreateMemberInput {
+  displayName: string
+  email: string
+  roles: RoleName[]
 }
 
 export interface AuditEvent {
@@ -548,8 +564,8 @@ export async function validateTaskCron(input: Pick<TaskScheduleInput, 'cronExpre
 }
 
 export async function getSession(): Promise<SessionUser> {
-  const response = await request<{ user: { user_id: string; display_name: string; email: string; roles: RoleName[] } }>('/api/auth/session')
-  return { id: response.user.user_id, displayName: response.user.display_name, email: response.user.email, roles: response.user.roles }
+  const response = await request<{ user: { user_id: string; display_name: string; email: string; roles: RoleName[]; must_change_password: boolean } }>('/api/auth/session')
+  return { id: response.user.user_id, displayName: response.user.display_name, email: response.user.email, roles: response.user.roles, mustChangePassword: response.user.must_change_password }
 }
 
 export async function logout(): Promise<void> {
@@ -690,9 +706,31 @@ export async function createSecret(name: string, value: string): Promise<SecretM
   })
 }
 
-export async function getMembers(): Promise<Member[]> {
-  const response = await request<{ members: Member[] }>('/api/members')
+export async function getMembers(status: MemberStatus = 'all'): Promise<Member[]> {
+  const response = await request<{ members: Member[] }>(`/api/members?status=${encodeURIComponent(status)}`)
   return response.members
+}
+
+export async function createMember(input: CreateMemberInput): Promise<TemporaryPasswordResult> {
+  return request<TemporaryPasswordResult>('/api/members', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+  })
+}
+
+export async function setMemberEnabled(id: string, enabled: boolean): Promise<Member> {
+  return request<Member>(`/api/members/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}`, { method: 'POST' })
+}
+
+export async function removeMember(id: string): Promise<void> {
+  await request<void>(`/api/members/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export async function restoreMember(id: string): Promise<Member> {
+  return request<Member>(`/api/members/${encodeURIComponent(id)}/restore`, { method: 'POST' })
+}
+
+export async function resetMemberPassword(id: string): Promise<TemporaryPasswordResult> {
+  return request<TemporaryPasswordResult>(`/api/members/${encodeURIComponent(id)}/password/reset`, { method: 'POST' })
 }
 
 export async function updateMemberRoles(id: string, roles: RoleName[]): Promise<Member> {
