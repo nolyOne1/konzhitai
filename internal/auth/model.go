@@ -4,6 +4,18 @@ import "time"
 
 type RoleName string
 
+// MemberStatus controls which lifecycle state a team member list returns.
+// MemberStatusAll excludes removed members; removed members require the
+// explicit MemberStatusRemoved filter.
+type MemberStatus string
+
+const (
+	MemberStatusActive   MemberStatus = "active"
+	MemberStatusDisabled MemberStatus = "disabled"
+	MemberStatusRemoved  MemberStatus = "removed"
+	MemberStatusAll      MemberStatus = "all"
+)
+
 const (
 	RoleAdmin     RoleName = "admin"
 	RoleOperator  RoleName = "operator"
