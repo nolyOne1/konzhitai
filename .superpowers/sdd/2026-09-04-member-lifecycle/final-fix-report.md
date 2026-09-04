@@ -164,3 +164,44 @@ Windows 普通权限还无法创建 symlink，所以既有迁移摘要 symlink �
 3. 迁移 13 尚未在生产执行。生产仍为版本 12；必须先走独立审批、双份成功备份、版本 12 隔离恢复核验和候选绑定 rollout，不能直接部署新应用或手工补基线。
 4. v13 使用事务内普通 `CREATE INDEX`，真实锁时长取决于生产 `users` 表规模。审批前必须记录表规模和锁窗口；若不可接受，应停止该候选并另行设计在线索引迁移，不能现场修改已摘要绑定的 SQL。
 5. 迁移基线入口刻意只支持本次 12→13 成员生命周期迁移；未来迁移摘要变化仍会被默认发布链拒绝，必须另行设计、测试和审批。
+
+## 补充复核修复：迁移基线可恢复原子发布
+
+最终复核发现 `SaveMigrationBaseline` 过去直接以 `O_CREATE|O_EXCL` 打开最终路径；如果写入、同步或进程在完成前中断，会暴露空文件或截断 JSON。相同绑定候选重试时，旧实现把这个无效文件当作既有发布冲突返回 `ErrReleaseExists`，破坏 v13 rollout 的可恢复重试契约。
+
+### RED/GREEN
+
+先在 `internal/release/migration_test.go` 增加四类真实文件系统行为测试，再修改实现：
+
+- 空文件和截断 JSON：RED 时两项均返回 `发布历史已存在`，无法恢复；GREEN 时两项都被完整、有效且身份绑定一致的基线替换；生产 Linux 使用原子替换。
+- 完整同身份基线：修改前后均保持幂等成功且字节不变，用作必须保留的契约测试。
+- 完整不同身份基线：修改前后均保持 `ErrReleaseExists` 且字节不变，用作不可覆盖保护测试。
+- 发布前失败：RED 时以目录占用最终路径得到未归一化的 `open ... is a directory`；GREEN 时在临时文件已经写入、同步并关闭后拒绝非普通最终目标，延迟清理临时文件，最终目录保持不变。
+- 另补最终路径符号链接测试，要求拒绝且不得改写链接目标；本机 Windows 普通权限无法创建符号链接，因此该子测试明确 SKIP，需由具备权限的 Linux CI 执行。非 Windows 的恢复测试还验证最终文件权限为 `0600`。
+
+聚焦 RED 命令为 `go test ./internal/release -run 'TestSaveMigrationBaseline' -count=1 -v`；测试组按上述空/截断与失败清理场景失败。最小实现完成后同一命令 GREEN：恢复、幂等、冲突和失败清理全部 PASS，包耗时 `1.029s`，符号链接用例仅因本机权限 SKIP。
+
+### 实现与崩溃边界
+
+- 每次保存都在 `migration-baselines/` 同目录创建权限 `0600` 的临时文件，完成 `Write`、`Sync`、`Close` 后才发布最终名称。
+- 最终路径不存在时使用硬链接以“不覆盖”的方式原子发布已同步的 inode；并发出现目标时重新检查其身份，不会覆盖另一份完整基线。
+- 最终路径为损坏的普通文件时，Linux 使用同目录 `rename` 原子替换，因此生产 Linux 不会暴露半写最终文件。
+- Windows 无法用 `rename` 覆盖已存在目标时，重新检查目标状态后才移除损坏文件并重命名完整临时文件；若进程在两步之间中断，最终路径至多缺失且完整临时文件仍在，下一次同候选保存可重新发布，不会把半写内容暴露为最终文件。
+- 成功发布后清理临时名字并同步目录；任何发布前错误也延迟清理临时文件。`Lstat` 仍拒绝符号链接、目录及其他非普通文件，并拒绝超限文件，没有降低既有路径保护。
+
+### 补充验证与提交
+
+所有 Go 命令继续使用仓库内 Go 1.27.1、`.tools/gomodcache`、`.tools/gocache` 与 `GOPROXY=off`：
+
+| 验证 | 结果 |
+| --- | --- |
+| `go test ./internal/release -run 'TestSaveMigrationBaseline' -count=1 -v` | PASS；恢复、幂等、冲突、失败清理全部通过；Windows symlink 权限项 SKIP |
+| `go test ./internal/release ./cmd/yunling-release -count=1` | PASS；`release 2.270s`，`cmd/yunling-release 0.435s` |
+| `go test ./... -count=1` | PASS，退出码 0；`internal/auth 376.443s`，`internal/release 7.111s`，全仓所有包完成 |
+| `git diff --check` | PASS；无空白错误 |
+
+本轮只影响 Go 的 release 状态持久化边界，没有修改 Web 或 E2E 代码；按受影响范围不重复运行前端单测、前端构建和 Playwright，前一节记录的全量结果仍是该分支最近一次前端验证。没有执行生产迁移或任何远程操作。
+
+代码提交：`19ce5c5ec674132efa16313de10f68f9afc5886c` — `fix(release): make migration baseline publication recoverable`。
+
+报告继续单独提交，因此补充报告提交 SHA 不在文件内自引用。残余验证风险仍是本机缺少 GCC/CGO，无法执行 race；此外 Windows symlink 拒绝用例因权限跳过，须在 Linux CI 作为合并门禁运行。
