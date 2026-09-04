@@ -105,7 +105,7 @@ func NewStoredRelease(manifest Manifest, policy ManifestPolicy) (StoredRelease, 
 }
 
 func (store *StateStore) SaveValidated(release StoredRelease) error {
-	if store == nil || !release.validated || release.Origin != OriginGHCR {
+	if store == nil || !release.validated || (release.Origin != OriginGHCR && release.Origin != originReleaseIntegration) {
 		return ErrInvalidRelease
 	}
 	if err := validateStoredRelease(release, false); err != nil {

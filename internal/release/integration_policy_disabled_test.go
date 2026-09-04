@@ -23,4 +23,8 @@ func TestProductionBuildRejectsReleaseIntegrationOrigin(t *testing.T) {
 	if _, err := RenderComposeOverride(release); !errors.Is(err, ErrInvalidRelease) {
 		t.Fatalf("生产构建接受了演练来源：%v", err)
 	}
+	release.validated = true
+	if err := NewStateStore(t.TempDir()).SaveValidated(release); !errors.Is(err, ErrInvalidRelease) {
+		t.Fatalf("生产状态仓库接受了演练来源：%v", err)
+	}
 }
