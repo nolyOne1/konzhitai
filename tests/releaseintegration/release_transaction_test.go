@@ -140,8 +140,7 @@ func startHarness(t *testing.T, project string) *releaseHarness {
 	}
 
 	harness.compose(t, "up", "-d", "--no-deps", "api", "scheduler", "web", "ops")
-	webURL := "http://127.0.0.1:" + harness.publishedPort(t, "web", "8080")
-	harness.health = &composeHealthChecker{harness: harness, webURL: webURL, client: &http.Client{Timeout: 2 * time.Second}}
+	harness.health = &composeHealthChecker{harness: harness, client: &http.Client{Timeout: 2 * time.Second}}
 	if err := harness.health.Wait(context.Background(), 30*time.Second, 250*time.Millisecond); err != nil {
 		t.Fatalf("启动基线应用：%v", err)
 	}
@@ -259,17 +258,27 @@ func (harness *releaseHarness) publishedPort(t *testing.T, service, port string)
 	for time.Now().Before(deadline) {
 		output, err := harness.composeResult(context.Background(), "port", service, port)
 		if err == nil {
-			address := strings.TrimSpace(output)
-			if index := strings.LastIndex(address, ":"); index >= 0 && index+1 < len(address) {
-				if number, parseErr := strconv.Atoi(address[index+1:]); parseErr == nil && number > 0 && number <= 65535 {
-					return strconv.Itoa(number)
-				}
+			if published, ok := parsePublishedPort(output); ok {
+				return published
 			}
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	t.Fatalf("无法读取 %s 的随机本机端口", service)
 	return ""
+}
+
+func parsePublishedPort(output string) (string, bool) {
+	address := strings.TrimSpace(output)
+	index := strings.LastIndex(address, ":")
+	if index < 0 || index+1 >= len(address) {
+		return "", false
+	}
+	number, err := strconv.Atoi(address[index+1:])
+	if err != nil || number <= 0 || number > 65535 {
+		return "", false
+	}
+	return strconv.Itoa(number), true
 }
 
 func (harness *releaseHarness) containerIDs(t *testing.T, services []string) map[string]string {
@@ -402,7 +411,6 @@ func safeTemporaryImage(project, registry, image string) bool {
 
 type composeHealthChecker struct {
 	harness        *releaseHarness
-	webURL         string
 	client         *http.Client
 	internalChecks int
 	publicChecks   int
@@ -435,8 +443,17 @@ func (checker *composeHealthChecker) CheckOnce(ctx context.Context) error {
 		}
 		checker.internalChecks++
 	}
+	output, err := checker.harness.composeResult(ctx, "port", "web", "8080")
+	if err != nil {
+		return fmt.Errorf("%w：读取本机公开端口失败", release.ErrHealthCheckFailed)
+	}
+	webPort, ok := parsePublishedPort(output)
+	if !ok {
+		return fmt.Errorf("%w：本机公开端口无效", release.ErrHealthCheckFailed)
+	}
+	webURL := "http://127.0.0.1:" + webPort
 	for _, path := range []string{"/healthz", "/api/health"} {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, checker.webURL+path, nil)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, webURL+path, nil)
 		if err != nil {
 			return err
 		}
