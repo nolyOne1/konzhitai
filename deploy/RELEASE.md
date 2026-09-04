@@ -6,7 +6,7 @@
 
 - 发布对象只有 `api`、`scheduler`、`web`、`ops` 四个应用服务。PostgreSQL、Redis、MinIO、Caddy 及所有命名卷不得被重建或删除。
 - 发布清单只接受 `ghcr.io/nolyone1/yunling-services`、`yunling-web`、`yunling-ops` 的 `sha256` 摘要引用，禁止使用 `latest`、分支名或普通标签。
-- 普通控制面发布不执行数据库迁移，不更新执行节点代理。迁移树、部署契约或代理锁摘要不同时，候选版本必须在更新容器前被拒绝。
+- 普通控制面发布不执行数据库迁移，不更新执行节点代理。迁移树、部署契约或代理锁摘要不同时，候选版本必须在更新容器前被拒绝；迁移 13 只有完成第四节的候选绑定 rollout 后才能获得一次精确授权。
 - 代理发布内容保存在 `yunling_agent_releases` 命名卷，API 只读挂载。不得用普通发布替换或写入该卷。
 - 永远禁止 `docker compose down -v`、删除生产命名卷、关闭 SSH 主机指纹校验、密码 SSH 发布、`curl -k` 或把私钥/飞书密钥写入仓库。
 
@@ -23,6 +23,7 @@
 - `current.json`：当前最后成功版本；
 - `previous.json`：上一个成功版本；
 - `<候选运行编号>/release-manifest.json` 和 `successful.json`：历史候选与成功标记；
+- `migration-baselines/<候选运行编号>.json`：完成数据库迁移后写入的不可变、候选绑定基线；
 - `audit.jsonl`：每次发布或回滚的追加审计记录；
 - `diagnostics/<diagnostic_id>/`：更新后失败时保存的限长、脱敏容器状态与日志。
 
@@ -50,7 +51,33 @@ gh attestation verify yunling-release-bootstrap.tar.gz --repo nolyOne1/konzhitai
 
 `candidate_run_id`、下载的运行编号和产物名必须一致；`source_sha` 必须是预期的 `main` 提交；三个镜像必须是允许的 GHCR 名称和完整摘要。任何一项不一致都不得进入审批。
 
-## 四、人工审批发布
+## 四、成员生命周期迁移 13 的受控 rollout
+
+本节只适用于首次引入 `000013_member_lifecycle`、且当前生产迁移版本仍为 `12` 的候选。普通发布仍不会执行迁移：候选迁移摘要与 `current.json` 不同时，标准发布必须先以 `ErrIncompatibleRelease` 拒绝。不得手工修改 `current.json`、候选清单或摘要来绕过门禁，也不得把本节当成以后迁移的通用授权。
+
+1. 按第三节核验唯一候选产物、`SHA256SUMS` 及四份来源证明。候选 bootstrap 包必须包含同一源提交构建的 `yunling-release-linux-amd64` 和完整 `migrations/`；清单中的全树摘要会在执行前、执行后各核对一次，v1–v12 的历史树摘要还必须与当前生产基线完全一致。
+2. 建立单独的迁移变更审批并暂停该时段的其他发布。确认旧版应用仍健康，从“运维中心—备份与恢复”手动创建备份，等待本机和 COS 均成功，再对该备份执行隔离恢复核验。只有恢复核验为 `succeeded` 且报告迁移版本 `12` 才可继续；记录该备份运行 UUID，不能使用仅本机成功、失败、过期或其他版本的恢复点。
+3. 在审批中记录 `users` 表规模、低流量维护窗口和可接受的锁等待。迁移使用事务内普通 `CREATE INDEX`，会对 `users` 取得锁；若现有规模无法接受该锁窗口，停止本候选，另行设计并复核在线索引迁移，不得现场把候选 SQL 改成 `CONCURRENTLY`。
+4. 把已经验证的 `release-manifest.json`、`SHA256SUMS` 和 bootstrap 包传入生产机的 root-only 临时目录。再次执行 `sha256sum -c SHA256SUMS`，先检查归档成员没有绝对路径、`..` 或符号链接，再解压到权限 `0700` 的新目录。不要覆盖 `/opt/yunling` 中的程序、Compose 或迁移文件。
+5. 在旧版应用仍运行时，从该候选的 root-only 解压目录显式执行一次：
+
+```bash
+cd "/root/yunling-migration-<候选运行编号>"
+sudo ./deploy/release/yunling-release-linux-amd64 migration apply \
+  --manifest "/root/yunling-migration-<候选运行编号>/release-manifest.json" \
+  --migrations "/root/yunling-migration-<候选运行编号>/migrations" \
+  --actor "<已审批操作者>" \
+  --recovery-point "<已成功隔离恢复核验的备份运行 UUID>"
+```
+
+`--actor` 只填写审批记录中的字母、数字或连字符身份。程序与标准发布共用 `/opt/yunling/releases/release.lock`；它先验证候选来源、完整迁移树、不可变 v1–v12 历史、恢复点及数据库版本，再在显式事务中执行 v13。随后必须确认版本 `13`、两个字段、索引、用户数和活动会话数，最后才以排他创建方式写入 `migration-baselines/<候选运行编号>.json`。任何失败都不得手工补写基线；修复原因后只能用同一候选和同一恢复点重试。
+
+6. 只读核对数据库版本为 `13`、基线文件内容绑定当前目标、候选运行编号、完整源 SHA、迁移前后摘要、迁移文件摘要、恢复点和操作者。再确认现有管理员会话可用、旧账号可重新登录；不要为了验收创建生产测试账号。
+7. 基线成功后再按第五节发起同一候选的标准生产发布。发布成功后由管理员验收成员创建、首次登录强制改密、停用/恢复和旧密码失效，并把真实结果写入 `PRODUCTION.md`；本手册和代码中的测试结果不得记作生产成功。
+
+失败处置保持保守：迁移事务失败会自动回滚且不会写基线，继续运行旧版并停止发布；若数据库已到 v13 但后置核验或基线写入失败，旧版仍与新增字段兼容，应先保留现场、查明原因并重试受控命令。应用发布失败则使用标准自动/人工应用回滚，但保留 v13 的加法式结构。不得执行 `000013_member_lifecycle.down.sql` 作为常规回滚，因为它会删除生命周期数据；只有经事故审批、确认必须恢复整个 v12 恢复点时，才按灾难恢复流程整体恢复数据库，并复核恢复后的版本与应用目标。
+
+## 五、人工审批发布
 
 1. 打开“云令生产发布”，点击“运行工作流”，选择 `main`。
 2. `operation` 选 `deploy`，`target_id` 填写纯十进制的候选运行编号，不是提交 SHA。
@@ -60,7 +87,7 @@ gh attestation verify yunling-release-bootstrap.tar.gz --repo nolyOne1/konzhitai
 
 工作流使用固定并发组 `production-release` 且不取消进行中的发布。后续请求必须排队，不要强制终止正在更新或回滚的运行。
 
-## 五、自动回滚与人工回滚
+## 六、自动回滚与人工回滚
 
 更新四个应用容器后，任一容器健康、内部探测或公开探测失败，程序立即写回上一个成功版本的覆盖配置并重新检查健康。失败候选不会成为 `current.json`。
 
@@ -72,7 +99,7 @@ gh attestation verify yunling-release-bootstrap.tar.gz --repo nolyOne1/konzhitai
 
 人工回滚不依赖已过期的 Actions 产物，但目标必须存在于生产机 root-only 历史中且有 `successful.json`。不得用镜像标签、手工改 Compose 或删卷的方式“回滚”。
 
-## 六、读取审计与诊断
+## 七、读取审计与诊断
 
 使用腾讯云网页终端或已批准的运维连接执行只读检查：
 
@@ -88,7 +115,7 @@ sudo sed -n '1,200p' "releases/diagnostics/<diagnostic_id>/compose-ps.log"
 
 `diagnostic_id` 必须来自发布结果或审计记录，不要猜测路径。诊断文件已做关键字脱敏和总量限制，仍不得整份粘贴到公开聊天或工单。
 
-## 七、首次启用发布入口
+## 八、首次启用发布入口
 
 这是一次性操作，必须在腾讯云网页终端中由 root 执行，且先备份 `/opt/yunling/deploy/docker-compose.yml`、当前四个应用容器的镜像 ID 和代理发布清单。
 
@@ -111,7 +138,7 @@ sudo /usr/local/sbin/yunling-release preflight
 
 `bootstrap` 会锁定当前四个应用镜像，核对当前 API 容器里的代理包，将其发布到只读命名卷，并创建 `bootstrap`、`current`、覆盖文件和审计基线。任一摘要、文件类型或健康检查不一致都必须停止，不得手工补状态。
 
-## 八、轮换或紧急停用发布密钥
+## 九、轮换或紧急停用发布密钥
 
 专用私钥只存在 GitHub `production` 环境秘密 `PRODUCTION_SSH_PRIVATE_KEY`。服务器只保存公钥，账号固定为 `yunling-deploy`，入口被限制为 `/usr/bin/sudo -n /usr/local/sbin/yunling-release execute`。
 
@@ -127,7 +154,7 @@ sudo /usr/local/sbin/yunling-release preflight
 
 SSH 主机密钥轮换时，必须先在云厂商控制台核对新指纹，再替换 `PRODUCTION_SSH_KNOWN_HOSTS`。禁止设置 `StrictHostKeyChecking=no` 或 `UserKnownHostsFile=/dev/null`。
 
-## 九、故障处理
+## 十、故障处理
 
 ### 候选、GHCR 或来源证明失败
 
@@ -149,7 +176,7 @@ SSH 主机密钥轮换时，必须先在云厂商控制台核对新指纹，再�
 
 工作流摘要会记录 `notification_failed`，但最终结论仍以真实发布退出码为准。先从 Actions、公开健康地址和生产审计确认发布结果，再在 GitHub `production` 环境轮换 `PRODUCTION_FEISHU_WEBHOOK` 和 `PRODUCTION_FEISHU_SIGNING_SECRET`。不要在日志中打印完整 Webhook 或签名密钥。
 
-## 十、GitHub `production` 环境配置清单
+## 十一、GitHub `production` 环境配置清单
 
 环境必须要求人工审核，只允许受保护的 `main` 分支，禁止管理员绕过。只在该环境保存以下秘密：
 

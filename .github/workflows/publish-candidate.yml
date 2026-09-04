@@ -131,11 +131,14 @@ jobs:
           install -D -m 0755 deploy/release/install.sh "$stage/deploy/release/install.sh"
           install -D -m 0644 deploy/docker-compose.yml "$stage/deploy/docker-compose.yml"
           install -D -m 0600 deploy/agent/release-lock.json "$stage/deploy/agent/release-lock.json"
+          install -d -m 0700 "$stage/migrations"
+          cp -a migrations/. "$stage/migrations/"
           tar -C "$stage" -czf yunling-release-bootstrap.tar.gz \
             deploy/release/yunling-release-linux-amd64 \
             deploy/release/install.sh \
             deploy/docker-compose.yml \
-            deploy/agent/release-lock.json
+            deploy/agent/release-lock.json \
+            migrations
           sha256sum release-manifest.json yunling-release-bootstrap.tar.gz > SHA256SUMS
 
       - name: 证明 bootstrap 包

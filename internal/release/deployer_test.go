@@ -424,11 +424,17 @@ type deploymentFixture struct {
 
 func newDeploymentFixture(t *testing.T) *deploymentFixture {
 	t.Helper()
+	return newDeploymentFixtureWithCompatibility(t, validManifest().Compatibility)
+}
+
+func newDeploymentFixtureWithCompatibility(t *testing.T, compatibility Compatibility) *deploymentFixture {
+	t.Helper()
 	root := t.TempDir()
 	stateRoot := filepath.Join(root, "releases")
 	store := NewStateStore(stateRoot)
 	manifest := validManifest()
 	manifest.CandidateRunID = 101
+	manifest.Compatibility = compatibility
 	bootstrapImages := ServiceImages{
 		API:       "yunling-local-bootstrap/api:111111111111",
 		Scheduler: "yunling-local-bootstrap/scheduler:222222222222",

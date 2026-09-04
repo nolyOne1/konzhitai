@@ -128,6 +128,58 @@ func TestBootstrapRequiresRealRootAndRunsExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestMigrationApplyRequiresRootAndPassesExplicitInputs(t *testing.T) {
+	manifest := *validCLIRequest().Manifest
+	root := t.TempDir()
+	manifestPath := filepath.Join(root, "release-manifest.json")
+	if err := os.WriteFile(manifestPath, append(mustJSON(t, manifest), '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	migrationsDir := filepath.Join(root, "migrations")
+	if err := os.Mkdir(migrationsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{
+		"migration", "apply", "--manifest", manifestPath, "--migrations", migrationsDir,
+		"--actor", "release-admin", "--recovery-point", "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+	}
+
+	t.Run("root 显式执行", func(t *testing.T) {
+		calls := 0
+		stderr := new(bytes.Buffer)
+		code := run(args, strings.NewReader(""), new(bytes.Buffer), stderr, dependencies{
+			requireRoot: true,
+			isRoot:      func() bool { return true },
+			migration: func(_ context.Context, request release.MigrationRequest) error {
+				calls++
+				if request.Manifest.CandidateRunID != manifest.CandidateRunID || request.Actor != "release-admin" ||
+					request.MigrationsDir != migrationsDir || request.RecoveryPointID != "dddddddd-dddd-4ddd-8ddd-dddddddddddd" {
+					t.Fatalf("迁移请求不匹配：%+v", request)
+				}
+				return nil
+			},
+		})
+		if code != 0 || calls != 1 || !strings.Contains(stderr.String(), "迁移与发布基线更新完成") {
+			t.Fatalf("迁移命令结果错误：code=%d calls=%d stderr=%q", code, calls, stderr)
+		}
+	})
+
+	t.Run("非 root 拒绝", func(t *testing.T) {
+		called := false
+		code := run(args, strings.NewReader(""), new(bytes.Buffer), new(bytes.Buffer), dependencies{
+			requireRoot: true,
+			isRoot:      func() bool { return false },
+			migration: func(context.Context, release.MigrationRequest) error {
+				called = true
+				return nil
+			},
+		})
+		if code == 0 || called {
+			t.Fatalf("非 root 不得执行迁移：code=%d called=%v", code, called)
+		}
+	})
+}
+
 func TestCandidateAuthorizeValidatesBoundedGitHubEventFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "workflow-run.json")
 	trusted := `{"name":"云令 CI","conclusion":"success","head_branch":"main","event":"push","repository":{"id":1354623243}}`
