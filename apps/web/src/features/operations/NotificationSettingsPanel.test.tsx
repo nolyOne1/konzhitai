@@ -23,7 +23,7 @@ const webhook = 'https://open.feishu.cn/open-apis/bot/v2/hook/01234567-89ab-cdef
 
 describe('飞书通知设置面板', () => {
   beforeEach(() => {
-    vi.mocked(getSession).mockResolvedValue({ id: 'admin-1', displayName: '管理员', email: 'admin@example.com', roles: ['admin'] })
+    vi.mocked(getSession).mockResolvedValue({ id: 'admin-1', displayName: '管理员', email: 'admin@example.com', roles: ['admin'], mustChangePassword: false })
     vi.mocked(getFeishuNotificationConfig).mockResolvedValue({ configured: false, enabled: false, maskedDestination: '' })
     vi.mocked(updateFeishuNotificationConfig).mockResolvedValue({ configured: true, enabled: true, maskedDestination: '飞书机器人 …cdef' })
   })
@@ -45,7 +45,7 @@ describe('飞书通知设置面板', () => {
   })
 
   it('viewer 只能查看脱敏配置', async () => {
-    vi.mocked(getSession).mockResolvedValue({ id: 'viewer-1', displayName: '观察员', email: 'viewer@example.com', roles: ['viewer'] })
+    vi.mocked(getSession).mockResolvedValue({ id: 'viewer-1', displayName: '观察员', email: 'viewer@example.com', roles: ['viewer'], mustChangePassword: false })
     vi.mocked(getFeishuNotificationConfig).mockResolvedValue({ configured: true, enabled: true, maskedDestination: '飞书机器人 …cdef' })
     render(<NotificationSettingsPanel pollIntervalMs={1} />)
 

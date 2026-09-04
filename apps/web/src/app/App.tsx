@@ -1,9 +1,10 @@
 import './styles.css'
-import { useState } from 'react'
-import { BrowserRouter, Link, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { BrowserRouter, Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 
-import { logout } from '../api/client'
+import { getSession, logout, type SessionUser } from '../api/client'
 import { LoginPage } from '../features/auth/LoginPage'
+import { RequiredPasswordPage } from '../features/auth/RequiredPasswordPage'
 import { DashboardPage } from '../features/dashboard/DashboardPage'
 import { ServersPage } from '../features/servers/ServersPage'
 import { ScriptEditorPage } from '../features/scripts/ScriptEditorPage'
@@ -36,26 +37,68 @@ export function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
-        <Route element={<ConsoleShell />}>
-          <Route index element={<DashboardPage />} />
-          <Route path="/scripts" element={<ScriptsPage />} />
-          <Route path="/scripts/:id" element={<ScriptEditorPage />} />
-          <Route path="/tasks" element={<TasksPage />} />
-          <Route path="/tasks/new" element={<TaskEditorPage />} />
-          <Route path="/tasks/:id" element={<TaskEditorPage />} />
-          <Route path="/runs" element={<RunsPage />} />
-          <Route path="/runs/:id" element={<RunDetailPage />} />
-          <Route path="/servers" element={<ServersPage />} />
-          <Route path="/operations" element={<OperationsPage />} />
-          <Route path="/sync" element={<SyncPage />} />
-          <Route path="/secrets" element={<SecretsPage />} />
-          <Route path="/members" element={<MembersPage />} />
-          <Route path="/settings" element={<AuditPage />} />
-          <Route path="*" element={<PlaceholderPage />} />
+        <Route element={<ConsoleAccessGate />}>
+          <Route path="/password-required" element={null} />
+          <Route element={<ConsoleShell />}>
+            <Route index element={<DashboardPage />} />
+            <Route path="/scripts" element={<ScriptsPage />} />
+            <Route path="/scripts/:id" element={<ScriptEditorPage />} />
+            <Route path="/tasks" element={<TasksPage />} />
+            <Route path="/tasks/new" element={<TaskEditorPage />} />
+            <Route path="/tasks/:id" element={<TaskEditorPage />} />
+            <Route path="/runs" element={<RunsPage />} />
+            <Route path="/runs/:id" element={<RunDetailPage />} />
+            <Route path="/servers" element={<ServersPage />} />
+            <Route path="/operations" element={<OperationsPage />} />
+            <Route path="/sync" element={<SyncPage />} />
+            <Route path="/secrets" element={<SecretsPage />} />
+            <Route path="/members" element={<MembersPage />} />
+            <Route path="/settings" element={<AuditPage />} />
+            <Route path="*" element={<PlaceholderPage />} />
+          </Route>
         </Route>
       </Routes>
     </BrowserRouter>
   )
+}
+
+function ConsoleAccessGate() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const [session, setSession] = useState<SessionUser | null>()
+
+  useEffect(() => {
+    let active = true
+    void getSession().then(
+      (user) => { if (active) setSession(user) },
+      () => { if (active) setSession(null) },
+    )
+    return () => { active = false }
+  }, [])
+
+  async function finishRequiredPasswordChange() {
+    try {
+      const refreshed = await getSession()
+      setSession({ ...refreshed, mustChangePassword: false })
+      navigate('/', { replace: true })
+    } catch {
+      setSession(null)
+      navigate('/login', { replace: true })
+    }
+  }
+
+  if (session === undefined) {
+    return <main className="console-access-progress" role="status">正在检查登录状态…</main>
+  }
+  if (session === null) return <Navigate to="/login" replace />
+  if (session.mustChangePassword && location.pathname !== '/password-required') {
+    return <Navigate to="/password-required" replace />
+  }
+  if (session.mustChangePassword) {
+    return <RequiredPasswordPage onChanged={() => void finishRequiredPasswordChange()} />
+  }
+  if (location.pathname === '/password-required') return <Navigate to="/" replace />
+  return <Outlet />
 }
 
 function ConsoleShell() {

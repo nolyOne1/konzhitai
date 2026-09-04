@@ -9,7 +9,12 @@ interface PasswordFormError {
   field?: PasswordField
 }
 
-export function AccountSecurityPanel() {
+interface AccountSecurityPanelProps {
+  required?: boolean
+  onChanged?: () => void
+}
+
+export function AccountSecurityPanel({ required = false, onChanged }: AccountSecurityPanelProps) {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmation, setConfirmation] = useState('')
@@ -56,6 +61,7 @@ export function AccountSecurityPanel() {
       setNewPassword('')
       setConfirmation('')
       setStatus('密码已更新，其他设备已退出')
+      onChanged?.()
     } catch (reason) {
       setError({ message: reason instanceof Error ? reason.message : '密码更新失败，请稍后重试' })
     } finally {
@@ -67,8 +73,8 @@ export function AccountSecurityPanel() {
     <section className="panel settings-panel account-security-panel" aria-labelledby="account-security-title">
       <header className="panel-header">
         <div>
-          <h2 id="account-security-title">账号安全</h2>
-          <p>修改密码后，当前会话继续保留，其他设备需要重新登录。</p>
+          <h2 id="account-security-title">{required ? '设置新密码' : '账号安全'}</h2>
+          <p>{required ? '当前密码是管理员分配的临时密码。' : '修改密码后，当前会话继续保留，其他设备需要重新登录。'}</p>
         </div>
         <span>至少 12 位</span>
       </header>
@@ -77,8 +83,8 @@ export function AccountSecurityPanel() {
         <div className="session-safety-note" aria-label="会话安全说明">
           <span className="session-safety-mark" aria-hidden="true" />
           <div>
-            <strong>本次登录不会中断</strong>
-            <p>提交成功后，其他浏览器和设备上的会话会立即失效。</p>
+            <strong>{required ? '更新后即可进入控制台' : '本次登录不会中断'}</strong>
+            <p>{required ? '请设置仅由你本人掌握的新密码，提交成功后即可继续。' : '提交成功后，其他浏览器和设备上的会话会立即失效。'}</p>
           </div>
         </div>
 

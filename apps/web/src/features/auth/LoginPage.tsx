@@ -1,4 +1,5 @@
 import { FormEvent, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import '../../app/styles.css'
 
@@ -6,7 +7,12 @@ type ErrorResponse = {
   message?: string
 }
 
+type LoginResponse = {
+  must_change_password: boolean
+}
+
 export function LoginPage() {
+  const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -29,7 +35,8 @@ export function LoginPage() {
         setError(body.message || '登录失败，请稍后重试')
         return
       }
-      window.location.assign('/')
+      const body = await response.json() as LoginResponse
+      navigate(body.must_change_password ? '/password-required' : '/', { replace: true })
     } catch {
       setError('无法连接登录服务，请检查网络后重试')
     } finally {

@@ -3301,6 +3301,42 @@ h1 {
   padding: 18px;
 }
 
+.console-access-progress,
+.required-password-page {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: var(--background);
+}
+
+.console-access-progress {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.required-password-card {
+  width: min(760px, 100%);
+}
+
+.required-password-heading {
+  display: grid;
+  gap: 34px;
+  margin-bottom: 18px;
+}
+
+.required-password-heading h1 {
+  margin: 7px 0 8px;
+  font-size: clamp(28px, 5vw, 40px);
+}
+
+.required-password-heading > div > p:last-child {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
 .session-safety-note {
   display: flex;
   align-items: flex-start;
@@ -3450,6 +3486,7 @@ h1 {
 }
 
 @media (max-width: 700px) {
+  .required-password-page { padding: 24px 18px; }
   .security-summary { grid-template-columns: 1fr; }
   .security-summary > div { border-right: 0; border-bottom: 1px solid var(--border); }
   .security-summary > div:last-child { border-bottom: 0; }
