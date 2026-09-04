@@ -35,8 +35,9 @@ func Handler(service *Service) http.Handler {
 
 		http.SetCookie(w, sessionCookie(session.Token, session.ExpiresAt))
 		writeJSON(w, http.StatusOK, map[string]any{
-			"message":    "登录成功",
-			"expires_at": session.ExpiresAt,
+			"message":              "登录成功",
+			"expires_at":           session.ExpiresAt,
+			"must_change_password": session.MustChangePassword,
 		})
 	})
 

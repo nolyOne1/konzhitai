@@ -54,22 +54,24 @@ func (r RoleName) Allows(permission string) bool {
 }
 
 type User struct {
-	ID           string
-	Email        string
-	DisplayName  string
-	PasswordHash string
-	Enabled      bool
-	Roles        []RoleName
-	CreatedAt    time.Time
+	ID                 string
+	Email              string
+	DisplayName        string
+	PasswordHash       string
+	Enabled            bool
+	MustChangePassword bool
+	Roles              []RoleName
+	CreatedAt          time.Time
 }
 
 type Session struct {
-	ID        string
-	UserID    string
-	Token     string
-	Roles     []RoleName
-	ExpiresAt time.Time
-	CreatedAt time.Time
+	ID                 string
+	UserID             string
+	Token              string
+	Roles              []RoleName
+	MustChangePassword bool
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
 }
 
 type StoredSession struct {
@@ -81,8 +83,9 @@ type StoredSession struct {
 }
 
 type Principal struct {
-	UserID      string     `json:"user_id"`
-	Email       string     `json:"email"`
-	DisplayName string     `json:"display_name"`
-	Roles       []RoleName `json:"roles"`
+	UserID             string     `json:"user_id"`
+	Email              string     `json:"email"`
+	DisplayName        string     `json:"display_name"`
+	Roles              []RoleName `json:"roles"`
+	MustChangePassword bool       `json:"must_change_password"`
 }

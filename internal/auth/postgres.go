@@ -27,6 +27,7 @@ func (r *PostgresRepository) FindByEmail(ctx context.Context, email string) (Use
 			u.display_name,
 			u.password_hash,
 			u.enabled,
+			u.must_change_password,
 			u.created_at,
 			COALESCE(
 				array_agg(ro.name ORDER BY ro.name) FILTER (WHERE ro.name IS NOT NULL),
@@ -36,6 +37,7 @@ func (r *PostgresRepository) FindByEmail(ctx context.Context, email string) (Use
 		LEFT JOIN user_roles ur ON ur.user_id = u.id
 		LEFT JOIN roles ro ON ro.id = ur.role_id
 		WHERE lower(u.email) = lower($1)
+		  AND u.removed_at IS NULL
 		GROUP BY u.id
 	`, email).Scan(
 		&user.ID,
@@ -43,6 +45,7 @@ func (r *PostgresRepository) FindByEmail(ctx context.Context, email string) (Use
 		&user.DisplayName,
 		&user.PasswordHash,
 		&user.Enabled,
+		&user.MustChangePassword,
 		&user.CreatedAt,
 		&roles,
 	)
@@ -75,6 +78,7 @@ func (r *PostgresRepository) FindPrincipal(ctx context.Context, tokenHash []byte
 			u.id,
 			u.email,
 			u.display_name,
+			u.must_change_password,
 			COALESCE(
 				array_agg(ro.name ORDER BY ro.name) FILTER (WHERE ro.name IS NOT NULL),
 				ARRAY[]::text[]
@@ -87,11 +91,13 @@ func (r *PostgresRepository) FindPrincipal(ctx context.Context, tokenHash []byte
 		  AND s.revoked_at IS NULL
 		  AND s.expires_at > now()
 		  AND u.enabled = true
+		  AND u.removed_at IS NULL
 		GROUP BY u.id
 	`, tokenHash).Scan(
 		&principal.UserID,
 		&principal.Email,
 		&principal.DisplayName,
+		&principal.MustChangePassword,
 		&roles,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

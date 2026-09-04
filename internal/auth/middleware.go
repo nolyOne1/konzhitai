@@ -30,7 +30,12 @@ func Authenticate(service *Service) func(http.Handler) http.Handler {
 				writeAuthError(w, http.StatusUnauthorized, "登录已失效，请重新登录")
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), principal)))
+			r = r.WithContext(WithPrincipal(r.Context(), principal))
+			if principal.MustChangePassword && r.URL.Path != "/api/auth/password" {
+				writeAuthCodeError(w, http.StatusForbidden, "password_change_required", "请先修改临时密码")
+				return
+			}
+			next.ServeHTTP(w, r)
 		})
 	}
 }
@@ -58,4 +63,10 @@ func writeAuthError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"message": message})
+}
+
+func writeAuthCodeError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": message})
 }

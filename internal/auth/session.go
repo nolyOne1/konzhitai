@@ -73,12 +73,13 @@ func (s *Service) Login(ctx context.Context, email, password string) (Session, e
 		return Session{}, fmt.Errorf("保存会话：%w", err)
 	}
 	return Session{
-		ID:        stored.ID,
-		UserID:    stored.UserID,
-		Token:     token,
-		Roles:     append([]RoleName(nil), user.Roles...),
-		ExpiresAt: stored.ExpiresAt,
-		CreatedAt: stored.CreatedAt,
+		ID:                 stored.ID,
+		UserID:             stored.UserID,
+		Token:              token,
+		Roles:              append([]RoleName(nil), user.Roles...),
+		MustChangePassword: user.MustChangePassword,
+		ExpiresAt:          stored.ExpiresAt,
+		CreatedAt:          stored.CreatedAt,
 	}, nil
 }
 
