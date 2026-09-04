@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -137,6 +138,138 @@ func TestMigrationRolloutRejectsTamperingAndNeverWritesUnverifiedBaseline(t *tes
 	}
 }
 
+func TestSaveMigrationBaselineRecoversInterruptedFinalFile(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body []byte
+	}{
+		{name: "空文件", body: []byte{}},
+		{name: "截断 JSON", body: []byte(`{"schema_version":1,"target_id":"101"`)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, baseline, path := newMigrationBaselineFixture(t)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, test.body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := store.SaveMigrationBaseline(baseline); err != nil {
+				t.Fatalf("中断留下的最终文件必须可恢复重试：%v", err)
+			}
+			got, err := store.LoadMigrationBaseline(baseline.TargetID)
+			if err != nil || !sameMigrationBaselineIdentity(got, baseline) {
+				t.Fatalf("恢复后的基线无效：got=%+v err=%v", got, err)
+			}
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := marshalJSONLine(baseline)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(body, want) {
+				t.Fatalf("最终文件不是完整基线：got=%q want=%q", body, want)
+			}
+			if runtime.GOOS != "windows" {
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != 0o600 {
+					t.Fatalf("最终基线权限必须为 0600：mode=%v", info.Mode().Perm())
+				}
+			}
+		})
+	}
+}
+
+func TestSaveMigrationBaselineIsIdempotentOnlyForSameIdentity(t *testing.T) {
+	t.Run("完整同身份基线幂等成功", func(t *testing.T) {
+		store, baseline, path := newMigrationBaselineFixture(t)
+		if err := store.SaveMigrationBaseline(baseline); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveMigrationBaseline(baseline); err != nil {
+			t.Fatalf("同身份重试必须幂等：%v", err)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatalf("幂等重试不得改写完整基线：err=%v", err)
+		}
+	})
+
+	t.Run("完整不同身份基线保持不可变", func(t *testing.T) {
+		store, baseline, path := newMigrationBaselineFixture(t)
+		if err := store.SaveMigrationBaseline(baseline); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		other := baseline
+		other.Actor = "other-admin"
+		if err := store.SaveMigrationBaseline(other); !errors.Is(err, ErrReleaseExists) {
+			t.Fatalf("不同身份不得覆盖已完成基线：%v", err)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatalf("冲突重试不得改写原基线：err=%v", err)
+		}
+	})
+}
+
+func TestSaveMigrationBaselinePublishFailureCleansTemporaryFile(t *testing.T) {
+	store, baseline, path := newMigrationBaselineFixture(t)
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SaveMigrationBaseline(baseline); !errors.Is(err, ErrReleaseExists) {
+		t.Fatalf("非普通最终路径必须拒绝发布：%v", err)
+	}
+	temporary, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".migration-baseline-101-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(temporary) != 0 {
+		t.Fatalf("发布失败不得遗留临时文件：%v", temporary)
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("发布失败不得把非普通目标变成损坏文件：info=%v err=%v", info, err)
+	}
+}
+
+func TestSaveMigrationBaselineNeverFollowsFinalSymlink(t *testing.T) {
+	store, baseline, path := newMigrationBaselineFixture(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "outside.json")
+	if err := os.WriteFile(target, []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("当前平台不能创建符号链接：%v", err)
+	}
+
+	if err := store.SaveMigrationBaseline(baseline); !errors.Is(err, ErrReleaseExists) {
+		t.Fatalf("符号链接最终路径必须拒绝发布：%v", err)
+	}
+	body, err := os.ReadFile(target)
+	if err != nil || string(body) != "outside\n" {
+		t.Fatalf("发布不得跟随或改写符号链接目标：body=%q err=%v", body, err)
+	}
+}
+
 func TestMemberLifecycleMigrationArtifactAndRunbookAreBound(t *testing.T) {
 	workflow, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "publish-candidate.yml"))
 	if err != nil {
@@ -163,6 +296,34 @@ func TestMemberLifecycleMigrationArtifactAndRunbookAreBound(t *testing.T) {
 			t.Fatalf("迁移操作手册缺少受控步骤 %q", required)
 		}
 	}
+}
+
+func newMigrationBaselineFixture(t *testing.T) (*StateStore, MigrationBaseline, string) {
+	t.Helper()
+	migrations := candidateMigrationTree(t)
+	compatibility := validManifest().Compatibility
+	compatibility.MigrationTreeSHA256 = historicalMigrationTreeDigest(t, migrations)
+	fixture := newDeploymentFixtureWithCompatibility(t, compatibility)
+	targetDigest, err := MigrationTreeDigest(migrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrationDigest, err := FileSHA256(filepath.Join(migrations, memberLifecycleMigrationFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := MigrationBaseline{
+		SchemaVersion: migrationBaselineSchemaVersion, CurrentTargetID: "bootstrap",
+		TargetID: "101", TargetSourceSHA: fixture.manifest.SourceSHA,
+		FromMigrationTreeSHA256: compatibility.MigrationTreeSHA256,
+		ToMigrationTreeSHA256:   targetDigest,
+		MigrationVersion:        memberLifecycleMigration,
+		MigrationFileSHA256:     migrationDigest,
+		RecoveryPointID:         "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+		Actor:                   "release-admin",
+		AppliedAt:               time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC),
+	}
+	return fixture.store, baseline, filepath.Join(fixture.store.root, migrationBaselineDirectory, baseline.TargetID+".json")
 }
 
 type migrationRunner struct {

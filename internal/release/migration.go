@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 const (
 	migrationBaselineSchemaVersion = 1
 	migrationBaselineDirectory     = "migration-baselines"
+	migrationBaselineMaximumBytes  = 64 << 10
 	memberLifecycleMigrationFile   = "000013_member_lifecycle.up.sql"
 	memberLifecycleRollbackFile    = "000013_member_lifecycle.down.sql"
 	memberLifecycleMigration       = 13
@@ -357,36 +359,135 @@ func (store *StateStore) SaveMigrationBaseline(baseline MigrationBaseline) error
 	if err != nil {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		existing, readErr := store.LoadMigrationBaseline(baseline.TargetID)
-		if readErr == nil && sameMigrationBaselineIdentity(existing, baseline) {
-			return nil
-		}
-		return ErrReleaseExists
-	}
+	temporary, err := os.CreateTemp(directory, ".migration-baseline-"+baseline.TargetID+"-")
 	if err != nil {
-		return fmt.Errorf("创建迁移基线：%w", err)
+		return fmt.Errorf("创建迁移基线临时文件：%w", err)
 	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return fmt.Errorf("限制迁移基线临时文件权限：%w", err)
+	}
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
 		return fmt.Errorf("写入迁移基线：%w", err)
 	}
-	if err := file.Sync(); err != nil {
-		file.Close()
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
 		return fmt.Errorf("同步迁移基线：%w", err)
 	}
-	if err := file.Close(); err != nil {
+	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("关闭迁移基线：%w", err)
 	}
+	if err := store.publishMigrationBaseline(temporaryPath, path, baseline); err != nil {
+		return err
+	}
+	if err := os.Remove(temporaryPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("清理迁移基线临时文件：%w", err)
+	}
 	return syncDirectory(directory)
+}
+
+type migrationBaselineFileState uint8
+
+const (
+	migrationBaselineAbsent migrationBaselineFileState = iota
+	migrationBaselineRecoverable
+	migrationBaselineMatching
+	migrationBaselineConflict
+)
+
+func (store *StateStore) publishMigrationBaseline(temporaryPath, path string, baseline MigrationBaseline) error {
+	for attempt := 0; attempt < 3; attempt++ {
+		state, err := store.inspectMigrationBaseline(path, baseline)
+		if err != nil {
+			return err
+		}
+		switch state {
+		case migrationBaselineMatching:
+			return nil
+		case migrationBaselineConflict:
+			return ErrReleaseExists
+		case migrationBaselineAbsent:
+			if err := os.Link(temporaryPath, path); err == nil {
+				return nil
+			} else if errors.Is(err, os.ErrExist) {
+				continue
+			} else {
+				return fmt.Errorf("原子发布迁移基线：%w", err)
+			}
+		case migrationBaselineRecoverable:
+			return store.replaceRecoverableMigrationBaseline(temporaryPath, path, baseline)
+		}
+	}
+	return ErrReleaseExists
+}
+
+func (store *StateStore) inspectMigrationBaseline(path string, baseline MigrationBaseline) (migrationBaselineFileState, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return migrationBaselineAbsent, nil
+	}
+	if err != nil {
+		return migrationBaselineConflict, fmt.Errorf("读取迁移基线目标：%w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > migrationBaselineMaximumBytes {
+		return migrationBaselineConflict, nil
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return migrationBaselineConflict, fmt.Errorf("读取迁移基线目标：%w", err)
+	}
+	var existing MigrationBaseline
+	if err := decodeStrictJSON(bytes.NewReader(body), &existing); err != nil || validateMigrationBaseline(existing) != nil {
+		return migrationBaselineRecoverable, nil
+	}
+	if sameMigrationBaselineIdentity(existing, baseline) {
+		return migrationBaselineMatching, nil
+	}
+	return migrationBaselineConflict, nil
+}
+
+func (store *StateStore) replaceRecoverableMigrationBaseline(temporaryPath, path string, baseline MigrationBaseline) error {
+	if err := os.Rename(temporaryPath, path); err == nil {
+		return nil
+	} else if runtime.GOOS != "windows" {
+		return fmt.Errorf("原子替换损坏迁移基线：%w", err)
+	}
+
+	state, err := store.inspectMigrationBaseline(path, baseline)
+	if err != nil {
+		return err
+	}
+	switch state {
+	case migrationBaselineMatching:
+		return nil
+	case migrationBaselineConflict:
+		return ErrReleaseExists
+	case migrationBaselineAbsent:
+		if err := os.Rename(temporaryPath, path); err != nil {
+			return fmt.Errorf("发布恢复后的迁移基线：%w", err)
+		}
+		return nil
+	case migrationBaselineRecoverable:
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("移除损坏迁移基线：%w", err)
+		}
+		if err := os.Rename(temporaryPath, path); err != nil {
+			return fmt.Errorf("发布恢复后的迁移基线：%w", err)
+		}
+		return nil
+	default:
+		return ErrReleaseExists
+	}
 }
 
 func (store *StateStore) LoadMigrationBaseline(targetID string) (MigrationBaseline, error) {
 	if store == nil || !targetIDPattern.MatchString(targetID) {
 		return MigrationBaseline{}, ErrInvalidMigrationRequest
 	}
-	body, err := readRegularFile(filepath.Join(store.root, migrationBaselineDirectory, targetID+".json"), 64<<10)
+	body, err := readRegularFile(filepath.Join(store.root, migrationBaselineDirectory, targetID+".json"), migrationBaselineMaximumBytes)
 	if err != nil {
 		return MigrationBaseline{}, err
 	}
