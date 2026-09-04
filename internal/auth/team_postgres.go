@@ -69,6 +69,10 @@ func (r *PostgresRepository) ListMembers(ctx context.Context, status MemberStatu
 }
 
 func (r *PostgresRepository) CreateMember(ctx context.Context, actorID string, record CreateMemberRecord) (Member, error) {
+	actorID, err := NormalizeUserID(actorID)
+	if err != nil {
+		return Member{}, err
+	}
 	roles, err := normalizeRoles(record.Roles)
 	if err != nil {
 		return Member{}, err
@@ -111,6 +115,10 @@ func (r *PostgresRepository) CreateMember(ctx context.Context, actorID string, r
 }
 
 func (r *PostgresRepository) ReplaceMemberRoles(ctx context.Context, actorID, targetID string, requestedRoles []RoleName) (Member, error) {
+	actorID, targetID, err := normalizeMemberMutationIDs(actorID, targetID)
+	if err != nil {
+		return Member{}, err
+	}
 	roles, err := normalizeRoles(requestedRoles)
 	if err != nil {
 		return Member{}, err
@@ -120,6 +128,9 @@ func (r *PostgresRepository) ReplaceMemberRoles(ctx context.Context, actorID, ta
 		return Member{}, fmt.Errorf("开始替换成员角色事务：%w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockAdminMutation(ctx, tx); err != nil {
+		return Member{}, err
+	}
 	state, err := lockMember(ctx, tx, targetID)
 	if err != nil {
 		return Member{}, err
@@ -152,11 +163,18 @@ func (r *PostgresRepository) ReplaceMemberRoles(ctx context.Context, actorID, ta
 }
 
 func (r *PostgresRepository) SetMemberEnabled(ctx context.Context, actorID, targetID string, enabled bool) (Member, error) {
+	actorID, targetID, err := normalizeMemberMutationIDs(actorID, targetID)
+	if err != nil {
+		return Member{}, err
+	}
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return Member{}, fmt.Errorf("开始更新成员状态事务：%w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockAdminMutation(ctx, tx); err != nil {
+		return Member{}, err
+	}
 	state, err := lockMember(ctx, tx, targetID)
 	if err != nil {
 		return Member{}, err
@@ -193,11 +211,18 @@ func (r *PostgresRepository) SetMemberEnabled(ctx context.Context, actorID, targ
 }
 
 func (r *PostgresRepository) RemoveMember(ctx context.Context, actorID, targetID string) (Member, error) {
+	actorID, targetID, err := normalizeMemberMutationIDs(actorID, targetID)
+	if err != nil {
+		return Member{}, err
+	}
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return Member{}, fmt.Errorf("开始移除成员事务：%w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockAdminMutation(ctx, tx); err != nil {
+		return Member{}, err
+	}
 	state, err := lockMember(ctx, tx, targetID)
 	if err != nil {
 		return Member{}, err
@@ -230,6 +255,10 @@ func (r *PostgresRepository) RemoveMember(ctx context.Context, actorID, targetID
 }
 
 func (r *PostgresRepository) RestoreMember(ctx context.Context, actorID, targetID string) (Member, error) {
+	actorID, targetID, err := normalizeMemberMutationIDs(actorID, targetID)
+	if err != nil {
+		return Member{}, err
+	}
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return Member{}, fmt.Errorf("开始恢复成员事务：%w", err)
@@ -259,6 +288,10 @@ func (r *PostgresRepository) RestoreMember(ctx context.Context, actorID, targetI
 }
 
 func (r *PostgresRepository) ResetMemberPassword(ctx context.Context, actorID, targetID, passwordHash string) (Member, error) {
+	actorID, targetID, err := normalizeMemberMutationIDs(actorID, targetID)
+	if err != nil {
+		return Member{}, err
+	}
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return Member{}, fmt.Errorf("开始重置成员密码事务：%w", err)
@@ -339,9 +372,6 @@ func lockMember(ctx context.Context, tx pgx.Tx, targetID string) (lockedMember, 
 }
 
 func preserveLastAdmin(ctx context.Context, tx pgx.Tx) error {
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('yunling-member-admin'))`); err != nil {
-		return fmt.Errorf("锁定管理员变更：%w", err)
-	}
 	var count int
 	if err := tx.QueryRow(ctx, `
 		SELECT count(DISTINCT u.id)
@@ -356,6 +386,28 @@ func preserveLastAdmin(ctx context.Context, tx pgx.Tx) error {
 		return ErrLastAdmin
 	}
 	return nil
+}
+
+func lockAdminMutation(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('yunling-member-admin'))`); err != nil {
+		return fmt.Errorf("锁定管理员变更：%w", err)
+	}
+	return nil
+}
+
+func normalizeMemberMutationIDs(actorID, targetID string) (string, string, error) {
+	actorID, err := NormalizeUserID(actorID)
+	if err != nil {
+		return "", "", err
+	}
+	targetID, err = NormalizeUserID(targetID)
+	if err != nil {
+		return "", "", err
+	}
+	if actorID == targetID {
+		return "", "", ErrCannotModifySelf
+	}
+	return actorID, targetID, nil
 }
 
 func ensureRoles(ctx context.Context, tx pgx.Tx, roles []RoleName) error {

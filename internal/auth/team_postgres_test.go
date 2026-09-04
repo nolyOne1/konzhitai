@@ -8,12 +8,15 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"yunling.local/platform/internal/auth"
 	"yunling.local/platform/internal/testpostgres"
 )
+
+const nonexistentActorID = "00000000-0000-0000-0000-000000000000"
 
 func TestPostgresMemberListFiltersLifecycleStates(t *testing.T) {
 	db, _, targetID := memberDatabase(t)
@@ -103,7 +106,7 @@ func TestPostgresMemberReplaceRolesProtectsLastAdminAndAudits(t *testing.T) {
 	assertMemberAudit(t, db, actorID, targetID, "member.roles.update", "password", "hash")
 
 	singleDB, onlyAdminID := singleAdminDatabase(t)
-	_, err = auth.NewPostgresRepository(singleDB).ReplaceMemberRoles(context.Background(), "other-admin-id", onlyAdminID, []auth.RoleName{auth.RoleViewer})
+	_, err = auth.NewPostgresRepository(singleDB).ReplaceMemberRoles(context.Background(), nonexistentActorID, onlyAdminID, []auth.RoleName{auth.RoleViewer})
 	if !errors.Is(err, auth.ErrLastAdmin) {
 		t.Fatalf("最后管理员不应被移除管理员角色：%v", err)
 	}
@@ -226,15 +229,15 @@ func TestPostgresMemberMutationPreservesLastAdmin(t *testing.T) {
 		call func(*auth.PostgresRepository, string) error
 	}{
 		{name: "disable", call: func(repository *auth.PostgresRepository, id string) error {
-			_, err := repository.SetMemberEnabled(context.Background(), "other-admin-id", id, false)
+			_, err := repository.SetMemberEnabled(context.Background(), nonexistentActorID, id, false)
 			return err
 		}},
 		{name: "remove", call: func(repository *auth.PostgresRepository, id string) error {
-			_, err := repository.RemoveMember(context.Background(), "other-admin-id", id)
+			_, err := repository.RemoveMember(context.Background(), nonexistentActorID, id)
 			return err
 		}},
 		{name: "replace roles", call: func(repository *auth.PostgresRepository, id string) error {
-			_, err := repository.ReplaceMemberRoles(context.Background(), "other-admin-id", id, []auth.RoleName{auth.RoleViewer})
+			_, err := repository.ReplaceMemberRoles(context.Background(), nonexistentActorID, id, []auth.RoleName{auth.RoleViewer})
 			return err
 		}},
 	}
@@ -247,6 +250,127 @@ func TestPostgresMemberMutationPreservesLastAdmin(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPostgresTeamServiceRejectsEquivalentUUIDSelfMutation(t *testing.T) {
+	db, actorID, _ := memberDatabase(t)
+	service := auth.NewTeamService(auth.NewPostgresRepository(db))
+
+	if _, err := service.SetEnabled(context.Background(), actorID, strings.ToUpper(actorID), false); !errors.Is(err, auth.ErrCannotModifySelf) {
+		t.Fatalf("服务到 PostgreSQL 必须拒绝等价 UUID 自停用：%v", err)
+	}
+	var enabled bool
+	if err := db.QueryRow(context.Background(), `SELECT enabled FROM users WHERE id=$1`, actorID).Scan(&enabled); err != nil {
+		t.Fatal(err)
+	}
+	if !enabled {
+		t.Fatal("等价 UUID 绕过后修改了当前管理员")
+	}
+}
+
+func TestPostgresMemberCrossAdminMutationsSerializeWithoutDeadlock(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(context.Context, *auth.PostgresRepository, string, string) error
+	}{
+		{
+			name: "交叉降权",
+			call: func(ctx context.Context, repository *auth.PostgresRepository, actorID, targetID string) error {
+				_, err := repository.ReplaceMemberRoles(ctx, actorID, targetID, []auth.RoleName{auth.RoleViewer})
+				return err
+			},
+		},
+		{
+			name: "交叉停用",
+			call: func(ctx context.Context, repository *auth.PostgresRepository, actorID, targetID string) error {
+				_, err := repository.SetMemberEnabled(ctx, actorID, targetID, false)
+				return err
+			},
+		},
+		{
+			name: "交叉移除",
+			call: func(ctx context.Context, repository *auth.PostgresRepository, actorID, targetID string) error {
+				_, err := repository.RemoveMember(ctx, actorID, targetID)
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db, firstAdminID, _ := memberDatabase(t)
+			var secondAdminID string
+			if err := db.QueryRow(context.Background(), `SELECT id::text FROM users WHERE email='admin-2@example.com'`).Scan(&secondAdminID); err != nil {
+				t.Fatal(err)
+			}
+			blocker, err := db.Acquire(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer blocker.Release()
+			if _, err := blocker.Exec(context.Background(), `SELECT pg_advisory_lock(hashtext('yunling-member-admin'))`); err != nil {
+				t.Fatal(err)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			repository := auth.NewPostgresRepository(db)
+			results := make(chan error, 2)
+			go func() { results <- test.call(ctx, repository, firstAdminID, secondAdminID) }()
+			go func() { results <- test.call(ctx, repository, secondAdminID, firstAdminID) }()
+
+			waitForAdvisoryWaiters(t, db, 2)
+			if _, err := blocker.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext('yunling-member-admin'))`); err != nil {
+				t.Fatal(err)
+			}
+
+			succeeded := 0
+			lastAdmin := 0
+			for range 2 {
+				err := <-results
+				switch {
+				case err == nil:
+					succeeded++
+				case errors.Is(err, auth.ErrLastAdmin):
+					lastAdmin++
+				default:
+					t.Fatalf("交叉操作出现死锁或未知错误：%v", err)
+				}
+			}
+			if succeeded != 1 || lastAdmin != 1 {
+				t.Fatalf("交叉操作结果错误：success=%d lastAdmin=%d", succeeded, lastAdmin)
+			}
+			var effectiveAdmins int
+			if err := db.QueryRow(context.Background(), `
+				SELECT count(DISTINCT u.id)
+				FROM users u
+				JOIN user_roles ur ON ur.user_id=u.id
+				JOIN roles r ON r.id=ur.role_id
+				WHERE u.enabled=true AND u.removed_at IS NULL AND r.name='admin'
+			`).Scan(&effectiveAdmins); err != nil {
+				t.Fatal(err)
+			}
+			if effectiveAdmins != 1 {
+				t.Fatalf("交叉操作后必须保留一名有效管理员：%d", effectiveAdmins)
+			}
+		})
+	}
+}
+
+func waitForAdvisoryWaiters(t *testing.T, db *pgxpool.Pool, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting int
+		if err := db.QueryRow(context.Background(), `SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND NOT granted`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("等待 advisory lock 的事务未达到 %d 个", want)
 }
 
 func memberDatabase(t *testing.T) (*pgxpool.Pool, string, string) {

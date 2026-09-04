@@ -60,12 +60,36 @@ func (r *PostgresRepository) FindByEmail(ctx context.Context, email string) (Use
 }
 
 func (r *PostgresRepository) Create(ctx context.Context, session StoredSession) error {
-	_, err := r.db.Exec(ctx, `
+	if session.ExpectedPasswordHash == "" {
+		return ErrInvalidCredentials
+	}
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("开始创建会话事务：%w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var current bool
+	err = tx.QueryRow(ctx, `
+		SELECT true
+		FROM users
+		WHERE id=$1 AND password_hash=$2 AND enabled=true AND removed_at IS NULL
+		FOR UPDATE
+	`, session.UserID, session.ExpectedPasswordHash).Scan(&current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrInvalidCredentials
+	}
+	if err != nil {
+		return fmt.Errorf("重新确认登录凭据：%w", err)
+	}
+	_, err = tx.Exec(ctx, `
 		INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at)
 		VALUES ($1, $2, $3, $4, $5)
 	`, session.ID, session.UserID, session.TokenHash, session.ExpiresAt, session.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("写入服务端会话：%w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("提交创建会话事务：%w", err)
 	}
 	return nil
 }

@@ -63,13 +63,17 @@ func (s *Service) Login(ctx context.Context, email, password string) (Session, e
 	}
 	now := s.now().UTC()
 	stored := StoredSession{
-		ID:        id,
-		UserID:    user.ID,
-		TokenHash: tokenHash(token),
-		ExpiresAt: now.Add(s.sessionTTL),
-		CreatedAt: now,
+		ID:                   id,
+		UserID:               user.ID,
+		TokenHash:            tokenHash(token),
+		ExpectedPasswordHash: user.PasswordHash,
+		ExpiresAt:            now.Add(s.sessionTTL),
+		CreatedAt:            now,
 	}
 	if err := s.sessions.Create(ctx, stored); err != nil {
+		if errors.Is(err, ErrInvalidCredentials) {
+			return Session{}, ErrInvalidCredentials
+		}
 		return Session{}, fmt.Errorf("保存会话：%w", err)
 	}
 	return Session{

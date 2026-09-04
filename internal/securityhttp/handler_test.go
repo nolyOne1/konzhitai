@@ -16,12 +16,18 @@ import (
 	"yunling.local/platform/internal/server"
 )
 
+const (
+	handlerActorID   = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	handlerTargetID  = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	handlerMissingID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+)
+
 func TestSecretEndpointNeverEchoesPlaintextAndOnlyAdminCanCreate(t *testing.T) {
 	secrets := &fakeSecrets{}
 	audits := &fakeAudits{}
 	handler := securityhttp.NewHandler(securityhttp.Services{Secrets: secrets, Audits: audits})
 	request := httptest.NewRequest(http.MethodPost, "/api/secrets", strings.NewReader(`{"name":"生产令牌","value":"never-echo-this"}`))
-	request = request.WithContext(auth.WithPrincipal(request.Context(), auth.Principal{UserID: "admin-1", Roles: []auth.RoleName{auth.RoleAdmin}}))
+	request = request.WithContext(auth.WithPrincipal(request.Context(), auth.Principal{UserID: handlerActorID, Roles: []auth.RoleName{auth.RoleAdmin}}))
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, request)
@@ -32,7 +38,7 @@ func TestSecretEndpointNeverEchoesPlaintextAndOnlyAdminCanCreate(t *testing.T) {
 	if strings.Contains(recorder.Body.String(), "never-echo-this") || strings.Contains(recorder.Body.String(), "cipher") {
 		t.Fatalf("接口不得回显明文或密文材料：%s", recorder.Body.String())
 	}
-	if secrets.createdBy != "admin-1" || string(secrets.plaintext) != "never-echo-this" {
+	if secrets.createdBy != handlerActorID || string(secrets.plaintext) != "never-echo-this" {
 		t.Fatalf("创建调用内容不正确：createdBy=%s plaintext=%q", secrets.createdBy, secrets.plaintext)
 	}
 	if len(audits.events) != 1 || audits.events[0].Action != "secret.create" {
@@ -53,10 +59,10 @@ func TestMemberRoleUpdateUsesLifecycleServiceWithoutSeparateAudit(t *testing.T) 
 	team := &fakeTeam{}
 	handler := securityhttp.NewHandler(securityhttp.Services{Audits: audits, Team: team})
 
-	roleRequest := adminRequest(http.MethodPut, "/api/members/user-2/roles", `{"roles":["operator"]}`)
+	roleRequest := adminRequest(http.MethodPut, "/api/members/"+handlerTargetID+"/roles", `{"roles":["operator"]}`)
 	roleRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(roleRecorder, roleRequest)
-	if roleRecorder.Code != http.StatusOK || len(team.roles) != 1 || team.roles[0] != auth.RoleOperator || team.actorID != "admin-1" {
+	if roleRecorder.Code != http.StatusOK || len(team.roles) != 1 || team.roles[0] != auth.RoleOperator || team.actorID != handlerActorID {
 		t.Fatalf("管理员角色更新失败：code=%d roles=%v actor=%s body=%s", roleRecorder.Code, team.roles, team.actorID, roleRecorder.Body.String())
 	}
 	if len(audits.events) != 0 {
@@ -68,7 +74,7 @@ func TestCredentialOperationsAreAudited(t *testing.T) {
 	audits := &fakeAudits{}
 	credentials := &fakeCredentials{}
 	handler := securityhttp.NewHandler(securityhttp.Services{Audits: audits, Credentials: credentials})
-	admin := auth.Principal{UserID: "admin-1", Roles: []auth.RoleName{auth.RoleAdmin}}
+	admin := auth.Principal{UserID: handlerActorID, Roles: []auth.RoleName{auth.RoleAdmin}}
 
 	rotateRequest := httptest.NewRequest(http.MethodPost, "/api/servers/server-1/credentials/rotate", nil)
 	rotateRequest = rotateRequest.WithContext(auth.WithPrincipal(rotateRequest.Context(), admin))
@@ -107,7 +113,7 @@ func TestMemberListFiltersLifecycleStatus(t *testing.T) {
 		{name: "filters all", target: "/api/members?status=all", want: auth.MemberStatusAll},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			team := &fakeTeam{members: []auth.Member{{ID: "user-2", Email: "ops@example.com"}}}
+			team := &fakeTeam{members: []auth.Member{{ID: handlerTargetID, Email: "ops@example.com"}}}
 			handler := securityhttp.NewHandler(securityhttp.Services{Team: team})
 			request := httptest.NewRequest(http.MethodGet, test.target, nil)
 			request = request.WithContext(auth.WithPrincipal(request.Context(), auth.Principal{UserID: "viewer-1", Roles: []auth.RoleName{auth.RoleViewer}}))
@@ -132,7 +138,7 @@ func TestMemberListFiltersLifecycleStatus(t *testing.T) {
 
 func TestMemberCreateReturnsTemporaryPasswordOnceWithoutAuditEcho(t *testing.T) {
 	team := &fakeTeam{createResult: auth.CreateMemberResult{
-		Member:            auth.Member{ID: "user-2", Email: "ops@example.com"},
+		Member:            auth.Member{ID: handlerTargetID, Email: "ops@example.com"},
 		TemporaryPassword: "temporary-password",
 	}}
 	audits := &fakeAudits{}
@@ -146,7 +152,7 @@ func TestMemberCreateReturnsTemporaryPasswordOnceWithoutAuditEcho(t *testing.T) 
 	if !strings.Contains(recorder.Body.String(), "temporary-password") {
 		t.Fatal("没有返回一次性临时密码")
 	}
-	if team.actorID != "admin-1" || team.input.Email != "ops@example.com" || len(audits.events) != 0 {
+	if team.actorID != handlerActorID || team.input.Email != "ops@example.com" || len(audits.events) != 0 {
 		t.Fatalf("创建成员调用或审计错误：actor=%s input=%+v audits=%+v", team.actorID, team.input, audits.events)
 	}
 }
@@ -162,21 +168,21 @@ func TestMemberLifecycleMutationsUseActorAndResponseContracts(t *testing.T) {
 		bodyWant   string
 		noStore    bool
 	}{
-		{name: "replace roles", method: http.MethodPut, target: "/api/members/user-2/roles", body: `{"roles":["operator"]}`, wantStatus: http.StatusOK, operation: "roles", bodyWant: "user-2"},
-		{name: "enable", method: http.MethodPost, target: "/api/members/user-2/enable", wantStatus: http.StatusOK, operation: "enable", bodyWant: "user-2"},
-		{name: "disable", method: http.MethodPost, target: "/api/members/user-2/disable", wantStatus: http.StatusOK, operation: "disable", bodyWant: "user-2"},
-		{name: "remove", method: http.MethodDelete, target: "/api/members/user-2", wantStatus: http.StatusNoContent, operation: "remove"},
-		{name: "restore", method: http.MethodPost, target: "/api/members/user-2/restore", wantStatus: http.StatusOK, operation: "restore", bodyWant: "user-2"},
-		{name: "reset password", method: http.MethodPost, target: "/api/members/user-2/password/reset", wantStatus: http.StatusOK, operation: "reset", bodyWant: "temporary-password", noStore: true},
+		{name: "replace roles", method: http.MethodPut, target: "/api/members/" + handlerTargetID + "/roles", body: `{"roles":["operator"]}`, wantStatus: http.StatusOK, operation: "roles", bodyWant: handlerTargetID},
+		{name: "enable", method: http.MethodPost, target: "/api/members/" + handlerTargetID + "/enable", wantStatus: http.StatusOK, operation: "enable", bodyWant: handlerTargetID},
+		{name: "disable", method: http.MethodPost, target: "/api/members/" + handlerTargetID + "/disable", wantStatus: http.StatusOK, operation: "disable", bodyWant: handlerTargetID},
+		{name: "remove", method: http.MethodDelete, target: "/api/members/" + handlerTargetID, wantStatus: http.StatusNoContent, operation: "remove"},
+		{name: "restore", method: http.MethodPost, target: "/api/members/" + handlerTargetID + "/restore", wantStatus: http.StatusOK, operation: "restore", bodyWant: handlerTargetID},
+		{name: "reset password", method: http.MethodPost, target: "/api/members/" + handlerTargetID + "/password/reset", wantStatus: http.StatusOK, operation: "reset", bodyWant: "temporary-password", noStore: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			team := &fakeTeam{resetResult: auth.ResetPasswordResult{Member: auth.Member{ID: "user-2"}, TemporaryPassword: "temporary-password"}}
+			team := &fakeTeam{resetResult: auth.ResetPasswordResult{Member: auth.Member{ID: handlerTargetID}, TemporaryPassword: "temporary-password"}}
 			handler := securityhttp.NewHandler(securityhttp.Services{Team: team})
 			recorder := httptest.NewRecorder()
 
 			handler.ServeHTTP(recorder, adminRequest(test.method, test.target, test.body))
 
-			if recorder.Code != test.wantStatus || team.actorID != "admin-1" || team.operation != test.operation {
+			if recorder.Code != test.wantStatus || team.actorID != handlerActorID || team.operation != test.operation {
 				t.Fatalf("成员操作错误：code=%d actor=%s operation=%s body=%s", recorder.Code, team.actorID, team.operation, recorder.Body.String())
 			}
 			if test.bodyWant != "" && !strings.Contains(recorder.Body.String(), test.bodyWant) {
@@ -199,14 +205,14 @@ func TestMemberWritesRejectUnauthorizedInputAndDomainErrors(t *testing.T) {
 		team       *fakeTeam
 		wantStatus int
 	}{
-		{name: "non admin write", method: http.MethodPost, target: "/api/members/user-2/disable", principal: auth.Principal{UserID: "viewer-1", Roles: []auth.RoleName{auth.RoleViewer}}, team: &fakeTeam{}, wantStatus: http.StatusForbidden},
-		{name: "invalid create input", method: http.MethodPost, target: "/api/members", body: `{"email":"invalid","displayName":"","roles":[]}`, principal: auth.Principal{UserID: "admin-1", Roles: []auth.RoleName{auth.RoleAdmin}}, team: &fakeTeam{}, wantStatus: http.StatusBadRequest},
-		{name: "invalid roles", method: http.MethodPut, target: "/api/members/user-2/roles", body: `{"roles":[]}`, principal: auth.Principal{UserID: "admin-1", Roles: []auth.RoleName{auth.RoleAdmin}}, team: &fakeTeam{updateErr: auth.ErrInvalidRoles}, wantStatus: http.StatusBadRequest},
-		{name: "missing member", method: http.MethodPost, target: "/api/members/missing/enable", principal: auth.Principal{UserID: "admin-1", Roles: []auth.RoleName{auth.RoleAdmin}}, team: &fakeTeam{setEnabledErr: auth.ErrMemberNotFound}, wantStatus: http.StatusNotFound},
-		{name: "duplicate email", method: http.MethodPost, target: "/api/members", body: `{"email":"ops@example.com","displayName":"值班运维","roles":["operator"]}`, principal: auth.Principal{UserID: "admin-1", Roles: []auth.RoleName{auth.RoleAdmin}}, team: &fakeTeam{createErr: auth.ErrDuplicateEmail}, wantStatus: http.StatusConflict},
-		{name: "state conflict", method: http.MethodPost, target: "/api/members/user-2/disable", principal: auth.Principal{UserID: "admin-1", Roles: []auth.RoleName{auth.RoleAdmin}}, team: &fakeTeam{setEnabledErr: auth.ErrMemberStateConflict}, wantStatus: http.StatusConflict},
-		{name: "self mutation", method: http.MethodDelete, target: "/api/members/admin-1", principal: auth.Principal{UserID: "admin-1", Roles: []auth.RoleName{auth.RoleAdmin}}, team: &fakeTeam{removeErr: auth.ErrCannotModifySelf}, wantStatus: http.StatusConflict},
-		{name: "last admin", method: http.MethodPost, target: "/api/members/user-2/restore", principal: auth.Principal{UserID: "admin-1", Roles: []auth.RoleName{auth.RoleAdmin}}, team: &fakeTeam{restoreErr: auth.ErrLastAdmin}, wantStatus: http.StatusConflict},
+		{name: "non admin write", method: http.MethodPost, target: "/api/members/" + handlerTargetID + "/disable", principal: auth.Principal{UserID: "viewer-1", Roles: []auth.RoleName{auth.RoleViewer}}, team: &fakeTeam{}, wantStatus: http.StatusForbidden},
+		{name: "invalid create input", method: http.MethodPost, target: "/api/members", body: `{"email":"invalid","displayName":"","roles":[]}`, principal: auth.Principal{UserID: handlerActorID, Roles: []auth.RoleName{auth.RoleAdmin}}, team: &fakeTeam{}, wantStatus: http.StatusBadRequest},
+		{name: "invalid roles", method: http.MethodPut, target: "/api/members/" + handlerTargetID + "/roles", body: `{"roles":[]}`, principal: auth.Principal{UserID: handlerActorID, Roles: []auth.RoleName{auth.RoleAdmin}}, team: &fakeTeam{updateErr: auth.ErrInvalidRoles}, wantStatus: http.StatusBadRequest},
+		{name: "missing member", method: http.MethodPost, target: "/api/members/" + handlerMissingID + "/enable", principal: auth.Principal{UserID: handlerActorID, Roles: []auth.RoleName{auth.RoleAdmin}}, team: &fakeTeam{setEnabledErr: auth.ErrMemberNotFound}, wantStatus: http.StatusNotFound},
+		{name: "duplicate email", method: http.MethodPost, target: "/api/members", body: `{"email":"ops@example.com","displayName":"值班运维","roles":["operator"]}`, principal: auth.Principal{UserID: handlerActorID, Roles: []auth.RoleName{auth.RoleAdmin}}, team: &fakeTeam{createErr: auth.ErrDuplicateEmail}, wantStatus: http.StatusConflict},
+		{name: "state conflict", method: http.MethodPost, target: "/api/members/" + handlerTargetID + "/disable", principal: auth.Principal{UserID: handlerActorID, Roles: []auth.RoleName{auth.RoleAdmin}}, team: &fakeTeam{setEnabledErr: auth.ErrMemberStateConflict}, wantStatus: http.StatusConflict},
+		{name: "self mutation", method: http.MethodDelete, target: "/api/members/" + handlerActorID, principal: auth.Principal{UserID: handlerActorID, Roles: []auth.RoleName{auth.RoleAdmin}}, team: &fakeTeam{removeErr: auth.ErrCannotModifySelf}, wantStatus: http.StatusConflict},
+		{name: "last admin", method: http.MethodPost, target: "/api/members/" + handlerTargetID + "/restore", principal: auth.Principal{UserID: handlerActorID, Roles: []auth.RoleName{auth.RoleAdmin}}, team: &fakeTeam{restoreErr: auth.ErrLastAdmin}, wantStatus: http.StatusConflict},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			handler := securityhttp.NewHandler(securityhttp.Services{Team: test.team})
@@ -223,6 +229,20 @@ func TestMemberWritesRejectUnauthorizedInputAndDomainErrors(t *testing.T) {
 	}
 }
 
+func TestMemberMutationRejectsInvalidPathUUIDBeforeCallingService(t *testing.T) {
+	team := &fakeTeam{}
+	handler := securityhttp.NewHandler(securityhttp.Services{Team: team})
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, adminRequest(http.MethodPost, "/api/members/not-a-uuid/disable", ""))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("非法成员 UUID 应返回 400：code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if team.operation != "" {
+		t.Fatalf("非法 UUID 不得调用成员服务：operation=%q", team.operation)
+	}
+}
+
 func TestSecretEndpointRejectsTrailingJSON(t *testing.T) {
 	secrets := &fakeSecrets{}
 	handler := securityhttp.NewHandler(securityhttp.Services{Secrets: secrets, Audits: &fakeAudits{}})
@@ -230,7 +250,7 @@ func TestSecretEndpointRejectsTrailingJSON(t *testing.T) {
 		`{"name":"生产令牌","value":"first"} {"value":"second"}`,
 	))
 	request = request.WithContext(auth.WithPrincipal(request.Context(), auth.Principal{
-		UserID: "admin-1", Roles: []auth.RoleName{auth.RoleAdmin},
+		UserID: handlerActorID, Roles: []auth.RoleName{auth.RoleAdmin},
 	}))
 	recorder := httptest.NewRecorder()
 
@@ -330,7 +350,7 @@ func (f *fakeTeam) ResetPassword(_ context.Context, actorID, _ string) (auth.Res
 func adminRequest(method, target, body string) *http.Request {
 	request := httptest.NewRequest(method, target, strings.NewReader(body))
 	return request.WithContext(auth.WithPrincipal(request.Context(), auth.Principal{
-		UserID: "admin-1", Roles: []auth.RoleName{auth.RoleAdmin},
+		UserID: handlerActorID, Roles: []auth.RoleName{auth.RoleAdmin},
 	}))
 }
 

@@ -75,11 +75,12 @@ type Session struct {
 }
 
 type StoredSession struct {
-	ID        string
-	UserID    string
-	TokenHash []byte
-	ExpiresAt time.Time
-	CreatedAt time.Time
+	ID                   string
+	UserID               string
+	TokenHash            []byte
+	ExpectedPasswordHash string
+	ExpiresAt            time.Time
+	CreatedAt            time.Time
 }
 
 type Principal struct {

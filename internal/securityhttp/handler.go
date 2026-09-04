@@ -179,6 +179,10 @@ func updateMemberRoles(manager TeamManager) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "团队服务尚未配置")
 			return
 		}
+		targetID, ok := memberTargetID(w, r)
+		if !ok {
+			return
+		}
 		var request struct {
 			Roles []auth.RoleName `json:"roles"`
 		}
@@ -186,7 +190,7 @@ func updateMemberRoles(manager TeamManager) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, auth.ErrInvalidRoles.Error())
 			return
 		}
-		member, err := manager.UpdateRoles(r.Context(), memberActorID(r), r.PathValue("id"), request.Roles)
+		member, err := manager.UpdateRoles(r.Context(), memberActorID(r), targetID, request.Roles)
 		if err != nil {
 			if writeMemberError(w, err) {
 				return
@@ -204,7 +208,11 @@ func setMemberEnabled(manager TeamManager, enabled bool) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "团队服务尚未配置")
 			return
 		}
-		member, err := manager.SetEnabled(r.Context(), memberActorID(r), r.PathValue("id"), enabled)
+		targetID, ok := memberTargetID(w, r)
+		if !ok {
+			return
+		}
+		member, err := manager.SetEnabled(r.Context(), memberActorID(r), targetID, enabled)
 		if err != nil {
 			if writeMemberError(w, err) {
 				return
@@ -222,7 +230,11 @@ func removeMember(manager TeamManager) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "团队服务尚未配置")
 			return
 		}
-		if _, err := manager.Remove(r.Context(), memberActorID(r), r.PathValue("id")); err != nil {
+		targetID, ok := memberTargetID(w, r)
+		if !ok {
+			return
+		}
+		if _, err := manager.Remove(r.Context(), memberActorID(r), targetID); err != nil {
 			if writeMemberError(w, err) {
 				return
 			}
@@ -239,7 +251,11 @@ func restoreMember(manager TeamManager) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "团队服务尚未配置")
 			return
 		}
-		member, err := manager.Restore(r.Context(), memberActorID(r), r.PathValue("id"))
+		targetID, ok := memberTargetID(w, r)
+		if !ok {
+			return
+		}
+		member, err := manager.Restore(r.Context(), memberActorID(r), targetID)
 		if err != nil {
 			if writeMemberError(w, err) {
 				return
@@ -257,7 +273,11 @@ func resetMemberPassword(manager TeamManager) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "团队服务尚未配置")
 			return
 		}
-		result, err := manager.ResetPassword(r.Context(), memberActorID(r), r.PathValue("id"))
+		targetID, ok := memberTargetID(w, r)
+		if !ok {
+			return
+		}
+		result, err := manager.ResetPassword(r.Context(), memberActorID(r), targetID)
 		if err != nil {
 			if writeMemberError(w, err) {
 				return
@@ -273,6 +293,15 @@ func resetMemberPassword(manager TeamManager) http.HandlerFunc {
 func memberActorID(r *http.Request) string {
 	principal, _ := auth.PrincipalFromContext(r.Context())
 	return principal.UserID
+}
+
+func memberTargetID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	targetID, err := auth.NormalizeUserID(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, auth.ErrInvalidMember.Error())
+		return "", false
+	}
+	return targetID, true
 }
 
 func validCreateMemberInput(input auth.CreateMemberInput) bool {

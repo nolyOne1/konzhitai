@@ -55,11 +55,12 @@ func TestPostgresRepositoryLoadsUserRolesAndSession(t *testing.T) {
 
 	tokenHash := sha256.Sum256([]byte("test-token"))
 	err = repository.Create(ctx, auth.StoredSession{
-		ID:        "123e4567-e89b-42d3-a456-426614174000",
-		UserID:    userID,
-		TokenHash: tokenHash[:],
-		ExpiresAt: time.Now().Add(time.Hour),
-		CreatedAt: time.Now(),
+		ID:                   "123e4567-e89b-42d3-a456-426614174000",
+		UserID:               userID,
+		TokenHash:            tokenHash[:],
+		ExpectedPasswordHash: passwordHash,
+		ExpiresAt:            time.Now().Add(time.Hour),
+		CreatedAt:            time.Now(),
 	})
 	if err != nil {
 		t.Fatalf("保存服务端会话：%v", err)
@@ -99,11 +100,12 @@ func TestPostgresRepositoryLoadsMustChangePassword(t *testing.T) {
 
 	tokenHash := sha256.Sum256([]byte("temporary-session"))
 	if err := repository.Create(ctx, auth.StoredSession{
-		ID:        "55555555-5555-4555-8555-555555555555",
-		UserID:    userID,
-		TokenHash: tokenHash[:],
-		ExpiresAt: time.Now().Add(time.Hour),
-		CreatedAt: time.Now(),
+		ID:                   "55555555-5555-4555-8555-555555555555",
+		UserID:               userID,
+		TokenHash:            tokenHash[:],
+		ExpectedPasswordHash: "hash",
+		ExpiresAt:            time.Now().Add(time.Hour),
+		CreatedAt:            time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
