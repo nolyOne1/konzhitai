@@ -91,16 +91,63 @@ export async function mockPasswordChange(page: Page) {
 
 export async function mockMemberLifecycle(page: Page) {
   let members = [memberFixture]
-  let session = sessionFixture
+  let session: typeof sessionFixture | null = { ...sessionFixture }
+  const accounts = new Map<string, { password: string; user: typeof sessionFixture }>([
+    [sessionFixture.email, { password: 'admin-password-2026', user: { ...sessionFixture } }],
+    [memberFixture.email, { password: 'existing-password-2026', user: memberSession(memberFixture) }],
+  ])
 
   await page.route('**/api/auth/session', async (route) => {
+    if (session === null) {
+      await json(route, { message: '请先登录' }, 401)
+      return
+    }
     await json(route, { user: session })
+  })
+  await page.route('**/api/auth/logout', async (route) => {
+    session = null
+    await route.fulfill({ status: 204 })
+  })
+  await page.route('**/api/auth/login', async (route) => {
+    const input = route.request().postDataJSON() as { email: string; password: string }
+    const account = accounts.get(input.email.toLowerCase())
+    if (!account || account.password !== input.password) {
+      await json(route, { message: '邮箱或密码错误' }, 401)
+      return
+    }
+    session = { ...account.user }
+    await json(route, { must_change_password: session.must_change_password })
+  })
+  await page.route('**/api/auth/password', async (route) => {
+    if (session === null) {
+      await json(route, { message: '请先登录' }, 401)
+      return
+    }
+    const input = route.request().postDataJSON() as { currentPassword: string; newPassword: string }
+    const account = accounts.get(session.email)
+    if (!account || account.password !== input.currentPassword) {
+      await json(route, { message: '当前密码错误' }, 401)
+      return
+    }
+    account.password = input.newPassword
+    account.user = { ...account.user, must_change_password: false }
+    session = { ...account.user }
+    members = members.map((member) => member.email === session?.email ? { ...member, mustChangePassword: false } : member)
+    await route.fulfill({ status: 204 })
   })
   await page.route('**/api/members**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
     const method = request.method()
     const memberID = url.pathname.split('/')[3]
+    if (session === null) {
+      await json(route, { message: '请先登录' }, 401)
+      return
+    }
+    if (session.must_change_password) {
+      await json(route, { code: 'password_change_required', message: '首次登录必须先修改密码' }, 403)
+      return
+    }
 
     if (method === 'GET' && url.pathname === '/api/members') {
       const status = url.searchParams.get('status')
@@ -122,7 +169,7 @@ export async function mockMemberLifecycle(page: Page) {
         enabled: true, mustChangePassword: true, removedAt: null, createdAt: '2026-09-04T00:00:00Z',
       }
       members = [created, ...members]
-      session = { user_id: created.id, display_name: created.displayName, email: created.email, roles: created.roles, must_change_password: true }
+      accounts.set(created.email, { password: 'member-temporary-password', user: memberSession(created) })
       await json(route, { member: created, temporaryPassword: 'member-temporary-password' }, 201)
       return
     }
@@ -161,12 +208,27 @@ export async function mockMemberLifecycle(page: Page) {
     if (method === 'POST' && url.pathname.endsWith('/password/reset')) {
       const updated = { ...member, mustChangePassword: true }
       replace(updated)
+      const account = accounts.get(member.email)
+      if (account) {
+        account.password = 'reset-temporary-password'
+        account.user = { ...account.user, must_change_password: true }
+      }
       await json(route, { member: updated, temporaryPassword: 'reset-temporary-password' })
       return
     }
 
     await route.fallback()
   })
+}
+
+function memberSession(member: typeof memberFixture): typeof sessionFixture {
+  return {
+    user_id: member.id,
+    display_name: member.displayName,
+    email: member.email,
+    roles: [...member.roles],
+    must_change_password: member.mustChangePassword,
+  }
 }
 
 const sessionFixture = {

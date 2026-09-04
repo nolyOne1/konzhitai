@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -41,6 +41,61 @@ describe('团队与权限', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/members?status=removed', expect.anything())
   })
 
+  it('筛选请求失败时清除上一筛选的成员，避免错贴状态标签', async () => {
+    const user = userEvent.setup()
+    stubMemberApi({ temporaryPassword: 'temporary-password', members: [member()], listErrorStatus: 'disabled' })
+    render(<MembersPage />)
+
+    expect(await screen.findByText('值班运维')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '已停用' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('读取成员失败')
+    expect(screen.queryByText('值班运维')).not.toBeInTheDocument()
+  })
+
+  it('创建成员后只在匹配当前筛选时插入列表', async () => {
+    const user = userEvent.setup()
+    stubMemberApi({ temporaryPassword: 'temporary-password' })
+    render(<MembersPage />)
+
+    await user.click(await screen.findByRole('button', { name: '已停用' }))
+    await screen.findByText('尚无成员')
+    await user.click(screen.getByRole('button', { name: '创建成员' }))
+    await user.type(screen.getByLabelText('姓名'), '值班运维')
+    await user.type(screen.getByLabelText('邮箱'), 'ops@example.com')
+    await user.click(screen.getByRole('checkbox', { name: '运维人员' }))
+    await user.click(screen.getByRole('button', { name: '确认创建' }))
+
+    await user.click(within(await screen.findByRole('dialog', { name: '一次性临时密码' })).getByRole('button', { name: '我已保存，关闭' }))
+    expect(screen.queryByText('ops@example.com')).not.toBeInTheDocument()
+  })
+
+  it('成员状态变化后立即移出不再匹配的当前筛选', async () => {
+    const user = userEvent.setup()
+    stubMemberApi({ temporaryPassword: 'temporary-password', members: [member()] })
+    render(<MembersPage />)
+
+    await user.click(await screen.findByRole('button', { name: '已启用' }))
+    await openActions(user)
+    await user.click(screen.getByRole('menuitem', { name: '停用成员' }))
+    await user.click(screen.getByRole('button', { name: '确认停用' }))
+
+    await waitFor(() => expect(screen.queryByText('ops@example.com')).not.toBeInTheDocument())
+  })
+
+  it('已停用成员启用后立即移出已停用筛选', async () => {
+    const user = userEvent.setup()
+    stubMemberApi({ temporaryPassword: 'temporary-password', members: [member({ enabled: false })] })
+    render(<MembersPage />)
+
+    await user.click(await screen.findByRole('button', { name: '已停用' }))
+    await openActions(user)
+    await user.click(screen.getByRole('menuitem', { name: '启用成员' }))
+    await user.click(screen.getByRole('button', { name: '确认启用' }))
+
+    await waitFor(() => expect(screen.queryByText('ops@example.com')).not.toBeInTheDocument())
+  })
+
   it('停用、移除和重置密码会说明会话立即失效', async () => {
     const user = userEvent.setup()
     stubMemberApi({ temporaryPassword: 'reset-password', members: [member()] })
@@ -73,7 +128,7 @@ describe('团队与权限', () => {
     expect(await within(screen.getByRole('dialog', { name: '确认停用成员' })).findByRole('alert')).toHaveTextContent('禁止操作')
   })
 
-  it('恢复成员后保持停用状态，且不能操作当前管理员本人', async () => {
+  it('恢复成员后移出已移除筛选并把焦点退回当前筛选按钮', async () => {
     const user = userEvent.setup()
     const removed = member({ id: 'user-2', enabled: false, removedAt: '2026-09-04T01:00:00Z' })
     stubMemberApi({ temporaryPassword: 'temporary-password', members: [member({ id: 'admin-1', displayName: '管理员' }), removed] })
@@ -85,8 +140,21 @@ describe('团队与权限', () => {
     expect(await screen.findByRole('dialog', { name: '确认恢复成员' })).toHaveTextContent('账号会保持停用状态')
     await user.click(screen.getByRole('button', { name: '确认恢复' }))
 
-    expect(await screen.findByText('已停用', { selector: '.status-badge' })).toBeVisible()
+    await waitFor(() => expect(screen.queryByText('ops@example.com')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: '已移除' })).toHaveFocus()
     expect(screen.queryByRole('button', { name: '更多管理员操作' })).not.toBeInTheDocument()
+  })
+
+  it('已移除成员只能恢复，不能调整角色', async () => {
+    const user = userEvent.setup()
+    stubMemberApi({ temporaryPassword: 'temporary-password', members: [member({ enabled: false, removedAt: '2026-09-04T01:00:00Z' })] })
+    render(<MembersPage />)
+
+    await user.click(await screen.findByRole('button', { name: '已移除' }))
+    await openActions(user)
+
+    expect(screen.getByRole('menuitem', { name: '恢复成员' })).toBeVisible()
+    expect(screen.queryByRole('menuitem', { name: '调整角色' })).not.toBeInTheDocument()
   })
 
   it('只读成员看不到创建和任何成员变更控件', async () => {
@@ -115,6 +183,18 @@ describe('团队与权限', () => {
     expect(within(screen.getByRole('table')).getByText('运维人员')).toBeVisible()
     expect(fetchMock).toHaveBeenCalledWith('/api/members/user-2/roles', expect.objectContaining({ method: 'PUT' }))
   })
+
+  it('角色保存失败时把焦点移到对话框错误摘要', async () => {
+    const user = userEvent.setup()
+    stubMemberApi({ temporaryPassword: 'temporary-password', members: [member()], updateError: true })
+    render(<MembersPage />)
+
+    await openActions(user)
+    await user.click(screen.getByRole('menuitem', { name: '调整角色' }))
+    await user.click(screen.getByRole('button', { name: '保存角色' }))
+
+    expect(await within(screen.getByRole('dialog', { name: '调整成员角色' })).findByRole('alert')).toHaveFocus()
+  })
 })
 
 async function openActions(user: ReturnType<typeof userEvent.setup>) {
@@ -140,7 +220,14 @@ function member(overrides: Partial<TestMember> = {}): TestMember {
   }
 }
 
-function stubMemberApi(options: { temporaryPassword: string; roles?: TestMember['roles']; members?: TestMember[]; disableError?: boolean }) {
+function stubMemberApi(options: {
+  temporaryPassword: string
+  roles?: TestMember['roles']
+  members?: TestMember[]
+  disableError?: boolean
+  updateError?: boolean
+  listErrorStatus?: 'all' | 'active' | 'disabled' | 'removed'
+}) {
   const members = options.members ?? []
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input)
@@ -154,9 +241,10 @@ function stubMemberApi(options: { temporaryPassword: string; roles?: TestMember[
     }
     if (path.startsWith('/api/members?')) {
       const status = new URL(path, 'http://localhost').searchParams.get('status')
-      return response({ members: status === 'removed' ? members.filter((item) => item.removedAt) : members.filter((item) => !item.removedAt) })
+      if (status === options.listErrorStatus) return response({ message: '读取成员失败' }, 500)
+      return response({ members: members.filter((item) => matchesStatus(item, status)) })
     }
-    if (path.includes('/roles') && init?.method === 'PUT') return response(member({ roles: ['operator'] }))
+    if (path.includes('/roles') && init?.method === 'PUT') return options.updateError ? response({ message: '保存角色失败' }, 500) : response(member({ roles: ['operator'] }))
     if (path.endsWith('/disable')) return options.disableError ? response({ message: '禁止操作' }, 403) : response({ ...target, enabled: false })
     if (path.endsWith('/enable')) return response({ ...target, enabled: true })
     if (path.endsWith('/restore')) return response({ ...target, enabled: false, removedAt: null })
@@ -166,6 +254,13 @@ function stubMemberApi(options: { temporaryPassword: string; roles?: TestMember[
   })
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
+}
+
+function matchesStatus(item: TestMember, status: string | null) {
+  if (status === 'removed') return item.removedAt !== null
+  if (status === 'active') return item.removedAt === null && item.enabled
+  if (status === 'disabled') return item.removedAt === null && !item.enabled
+  return item.removedAt === null
 }
 
 function response(body: unknown, status = 200) {
