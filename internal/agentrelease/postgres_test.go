@@ -40,8 +40,11 @@ func TestPostgresRepositorySwitchesRecommendationAndPreservesImmutableLookup(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repository.SetRecommended(ctx, a.ID); err != nil {
+	if _, err := repository.SetRecommendedBy(ctx, a.ID, actorID); err != nil {
 		t.Fatal(err)
+	}
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE actor_id=$1 AND action='agent_release.recommend' AND target_type='agent_release' AND target_id=$2`, actorID, a.ID).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("CLI 推荐版本必须记录审计：count=%d err=%v", auditCount, err)
 	}
 	if _, err := repository.SetRecommended(ctx, b.ID); err != nil {
 		t.Fatal(err)

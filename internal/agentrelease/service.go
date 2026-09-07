@@ -119,6 +119,11 @@ func (s *Service) importRelease(ctx context.Context, input ImportInput, capabili
 		return Release{}, err
 	}
 	if input.Recommend {
+		if audited, ok := s.repository.(interface {
+			SetRecommendedBy(context.Context, string, string) (Release, error)
+		}); ok && input.CreatedBy != "" {
+			return audited.SetRecommendedBy(ctx, created.ID, input.CreatedBy)
+		}
 		return s.repository.SetRecommended(ctx, created.ID)
 	}
 	return publicRelease(created), nil

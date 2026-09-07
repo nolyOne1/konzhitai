@@ -109,6 +109,7 @@ func TestPostgresManagementUsesLatestSnapshotAndPersistsDrain(t *testing.T) {
 	userID := "123e4567-e89b-42d3-a456-426614174202"
 	releaseID := "123e4567-e89b-42d3-a456-426614174203"
 	planID := "123e4567-e89b-42d3-a456-426614174204"
+	installCommandID := "123e4567-e89b-42d3-a456-426614174205"
 	if _, err := db.Exec(ctx, `INSERT INTO users(id,email,display_name,password_hash) VALUES($1,'upgrade@example.test','升级管理员','x')`, userID); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +119,7 @@ func TestPostgresManagementUsesLatestSnapshotAndPersistsDrain(t *testing.T) {
 	if _, err := db.Exec(ctx, `INSERT INTO agent_upgrade_plans(id,target_release_id,status,batch_size,drain_timeout_seconds,reconnect_timeout_seconds,verification_seconds,created_by) VALUES($1,$2,'running',1,3600,120,30,$3)`, planID, releaseID, userID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(ctx, `INSERT INTO agent_upgrade_targets(plan_id,server_id,batch_number,source_version,target_version,source_draining,status) VALUES($1,$2,1,'0.2.0','0.3.0',true,'installing')`, planID, serverID); err != nil {
+	if _, err := db.Exec(ctx, `INSERT INTO agent_upgrade_targets(plan_id,server_id,batch_number,source_version,target_version,source_draining,status,command_id,install_command_id) VALUES($1,$2,1,'0.2.0','0.3.0',true,'installing',$3,$3)`, planID, serverID, installCommandID); err != nil {
 		t.Fatal(err)
 	}
 	servers, err = repository.ListServers(ctx)

@@ -117,8 +117,20 @@ func rollbackAfterFailure(root string, spec *Spec, system SystemController, caus
 		}
 		return errors.Join(cause, restore)
 	}
-	_ = system.DaemonReload(context.Background())
-	_ = system.RestartAgent(context.Background())
+	if err := system.DaemonReload(context.Background()); err != nil {
+		spec.Phase = "rollback_failed"
+		if saveErr := saveSpec(root, *spec); saveErr != nil {
+			return errors.Join(cause, err, saveErr)
+		}
+		return errors.Join(cause, err)
+	}
+	if err := system.RestartAgent(context.Background()); err != nil {
+		spec.Phase = "rollback_failed"
+		if saveErr := saveSpec(root, *spec); saveErr != nil {
+			return errors.Join(cause, err, saveErr)
+		}
+		return errors.Join(cause, err)
+	}
 	spec.Phase = "rolled_back"
 	if err := saveSpec(root, *spec); err != nil {
 		return errors.Join(cause, err)

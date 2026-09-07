@@ -99,6 +99,14 @@ func (r *PostgresRepository) Recommended(ctx context.Context) (Release, error) {
 }
 
 func (r *PostgresRepository) SetRecommended(ctx context.Context, id string) (Release, error) {
+	return r.setRecommended(ctx, id, "")
+}
+
+func (r *PostgresRepository) SetRecommendedBy(ctx context.Context, id, actorID string) (Release, error) {
+	return r.setRecommended(ctx, id, actorID)
+}
+
+func (r *PostgresRepository) setRecommended(ctx context.Context, id, actorID string) (Release, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return Release{}, err
@@ -121,6 +129,11 @@ func (r *PostgresRepository) SetRecommended(ctx context.Context, id string) (Rel
 	}
 	if _, err := tx.Exec(ctx, `UPDATE agent_releases SET recommended = true WHERE id = $1`, id); err != nil {
 		return Release{}, err
+	}
+	if actorID != "" {
+		if _, err := tx.Exec(ctx, `INSERT INTO audit_logs(actor_id,action,target_type,target_id,details) VALUES($1::uuid,'agent_release.recommend','agent_release',$2,'{}'::jsonb)`, actorID, id); err != nil {
+			return Release{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Release{}, err

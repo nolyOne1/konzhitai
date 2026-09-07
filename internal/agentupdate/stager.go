@@ -109,7 +109,14 @@ func (m *Manager) StartApply(ctx context.Context, commandID string) error {
 	if !validCommandID(commandID) {
 		return ErrInvalidCommandID
 	}
-	return m.starter.StartUpgrade(ctx, commandID)
+	err := m.starter.StartUpgrade(ctx, commandID)
+	if err == nil {
+		return nil
+	}
+	if spec, loadErr := loadSpec(m.root, commandID); loadErr == nil && spec.Phase == "rollback_failed" {
+		return fmt.Errorf("%w：%v", ErrRollbackFailed, err)
+	}
+	return err
 }
 
 func (m *Manager) Rollback(ctx context.Context, command agentprotocol.UpgradeCommand) error {

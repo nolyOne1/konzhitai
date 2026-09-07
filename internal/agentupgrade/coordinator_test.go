@@ -198,6 +198,21 @@ func TestCoordinatorRequiresHeartbeatAfterHealthWindowStarts(t *testing.T) {
 	assertCoordinatorStatus(t, store, "target-canary", TargetRollingBack)
 }
 
+func TestCoordinatorWaitsForFirstHeartbeatInsideHealthWindow(t *testing.T) {
+	now := fixedCoordinatorNow()
+	store := coordinatorFixture()
+	store.plan.Targets[0].Status = TargetHealthChecking
+	store.plan.Targets[0].UpdatedAt = now.Add(-2 * time.Second)
+	seen := store.plan.Targets[0].UpdatedAt
+	runtime := store.runtime["s1"]
+	runtime.LastSeenAt = &seen
+	store.runtime["s1"] = runtime
+	if err := NewCoordinator(store, &fakeUpgradeSender{}, func() time.Time { return now }).Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertCoordinatorStatus(t, store, "target-canary", TargetHealthChecking)
+}
+
 func TestCoordinatorRetriesSchedulingRestoreBeforeCompletingTarget(t *testing.T) {
 	now := fixedCoordinatorNow()
 	store := coordinatorFixture()

@@ -101,9 +101,24 @@ func TestUpgradeClientReportsStageFailure(t *testing.T) {
 	}
 }
 
+func TestUpgradeClientReportsLocalRollbackFailure(t *testing.T) {
+	manager := &fakeUpgradeManager{startErr: agentupdate.ErrRollbackFailed}
+	transport, cancel := upgradeTransportWithCommands(validUpgradeCommand("upgrade-1"))
+	transport.cancelAt = 5
+	transport.cancel = cancel
+	if err := NewUpgradeClient(manager, transport, fixedUpgradeNow).Run(transport.ctx); err != nil {
+		t.Fatal(err)
+	}
+	last := transport.events[len(transport.events)-1]
+	if last.Stage != agentprotocol.StageFailed || last.ErrorCode != "rollback_failed" {
+		t.Fatalf("本地恢复失败必须上报人工介入错误：%+v", last)
+	}
+}
+
 type fakeUpgradeManager struct {
 	stageCalls, startCalls, rollbackCalls int
 	stageErr                              error
+	startErr                              error
 	rollbackErr                           error
 	state                                 *agentprotocol.UpgradeRuntimeState
 }
@@ -112,7 +127,10 @@ func (m *fakeUpgradeManager) Stage(context.Context, agentprotocol.UpgradeCommand
 	m.stageCalls++
 	return agentupdate.Spec{}, m.stageErr
 }
-func (m *fakeUpgradeManager) StartApply(context.Context, string) error { m.startCalls++; return nil }
+func (m *fakeUpgradeManager) StartApply(context.Context, string) error {
+	m.startCalls++
+	return m.startErr
+}
 func (m *fakeUpgradeManager) Rollback(context.Context, agentprotocol.UpgradeCommand) error {
 	m.rollbackCalls++
 	return m.rollbackErr

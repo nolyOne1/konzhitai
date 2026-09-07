@@ -150,13 +150,44 @@ func TestApplyRetriesFailedRestoreAfterInterruptedReplacement(t *testing.T) {
 	}
 }
 
-type fakeSystem struct {
-	waitErr           error
-	reloads, restarts int
+func TestApplyRetriesSystemRecoveryAfterFilesWereRestored(t *testing.T) {
+	root, _ := writeApplyFixture(t)
+	spec, err := loadSpec(root, "upgrade-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backupManaged(spec); err != nil {
+		t.Fatal(err)
+	}
+	spec.Phase = "replacing"
+	if err := saveSpec(root, spec); err != nil {
+		t.Fatal(err)
+	}
+	system := &fakeSystem{reloadErr: errors.New("daemon reload failed")}
+	if err := Apply(root, "upgrade-1", system); err == nil {
+		t.Fatal("系统服务恢复失败必须返回错误")
+	}
+	failed, err := loadSpec(root, "upgrade-1")
+	if err != nil || failed.Phase != "rollback_failed" {
+		t.Fatalf("服务恢复失败必须保留可重试状态：%+v %v", failed, err)
+	}
+	system.reloadErr = nil
+	if err := Apply(root, "upgrade-1", system); err == nil {
+		t.Fatal("恢复成功后仍应报告原升级已失败")
+	}
+	recovered, err := loadSpec(root, "upgrade-1")
+	if err != nil || recovered.Phase != "rolled_back" {
+		t.Fatalf("系统恢复重试状态错误：%+v %v", recovered, err)
+	}
 }
 
-func (s *fakeSystem) DaemonReload(context.Context) error                { s.reloads++; return nil }
-func (s *fakeSystem) RestartAgent(context.Context) error                { s.restarts++; return nil }
+type fakeSystem struct {
+	waitErr, reloadErr, restartErr error
+	reloads, restarts              int
+}
+
+func (s *fakeSystem) DaemonReload(context.Context) error                { s.reloads++; return s.reloadErr }
+func (s *fakeSystem) RestartAgent(context.Context) error                { s.restarts++; return s.restartErr }
 func (s *fakeSystem) WaitForConfirmation(context.Context, string) error { return s.waitErr }
 func writeApplyFixture(t *testing.T) (string, string) {
 	t.Helper()

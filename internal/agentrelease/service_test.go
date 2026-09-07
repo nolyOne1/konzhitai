@@ -37,6 +37,17 @@ func TestServiceImportsTwoArchitecturesWithoutOverwrite(t *testing.T) {
 	}
 }
 
+func TestServiceAuditsCLIRecommendationWithImportActor(t *testing.T) {
+	repository := newMemoryRepository()
+	input := validImportInput("0.2.0")
+	input.Recommend = true
+	input.CreatedBy = "actor-1"
+	release, err := NewService(repository, newMemoryObjectStore(), time.Now).Import(context.Background(), input)
+	if err != nil || !release.Recommended || repository.recommendationActor != "actor-1" {
+		t.Fatalf("CLI 推荐版本必须携带导入操作者：release=%+v actor=%s err=%v", release, repository.recommendationActor, err)
+	}
+}
+
 func TestServiceValidatesReleaseArtifacts(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -153,7 +164,8 @@ func (s *memoryObjectStore) Open(_ context.Context, key string) (io.ReadCloser, 
 }
 
 type memoryRepository struct {
-	releases []Release
+	releases            []Release
+	recommendationActor string
 }
 
 func newMemoryRepository() *memoryRepository { return &memoryRepository{} }
@@ -201,6 +213,10 @@ func (r *memoryRepository) SetRecommended(_ context.Context, id string) (Release
 		r.releases[i].Recommended = i == index
 	}
 	return cloneRelease(r.releases[index]), nil
+}
+func (r *memoryRepository) SetRecommendedBy(ctx context.Context, id, actorID string) (Release, error) {
+	r.recommendationActor = actorID
+	return r.SetRecommended(ctx, id)
 }
 func (r *memoryRepository) Withdraw(_ context.Context, id string) (Release, error) {
 	for i := range r.releases {

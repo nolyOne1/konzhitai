@@ -116,11 +116,17 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if !healthyRuntime(runtime, target.TargetVersion, target.UpdatedAt, now) {
+			if !runtimeAvailable(runtime, target.TargetVersion, now) {
 				commands = withoutBatchCommands(commands, *plan, target.BatchNumber)
 				commands = append(commands, c.rollbackBatch(plan, target.BatchNumber, target.ID, "health_check_failed", now)...)
 				changed = true
 			} else if now.Sub(target.UpdatedAt) >= time.Duration(plan.VerificationSeconds)*time.Second {
+				if runtime.LastSeenAt == nil || !runtime.LastSeenAt.UTC().After(target.UpdatedAt) {
+					commands = withoutBatchCommands(commands, *plan, target.BatchNumber)
+					commands = append(commands, c.rollbackBatch(plan, target.BatchNumber, target.ID, "health_check_failed", now)...)
+					changed = true
+					continue
+				}
 				if !target.SourceDraining {
 					if err := c.store.SetServerDraining(ctx, target.ServerID, false); err != nil {
 						return err
@@ -290,8 +296,8 @@ func (c *Coordinator) rollbackBatch(plan *Plan, batch int, failedTargetID, error
 	return commands
 }
 
-func healthyRuntime(runtime ServerRuntime, targetVersion string, windowStartedAt, now time.Time) bool {
-	return runtime.Enabled && (runtime.Status == "online" || runtime.Status == "draining") && runtime.AgentVersion == targetVersion && runtime.HasSnapshot && runtime.LastSeenAt != nil && runtime.LastSeenAt.UTC().After(windowStartedAt) && now.Sub(runtime.LastSeenAt.UTC()) <= 15*time.Second
+func runtimeAvailable(runtime ServerRuntime, targetVersion string, now time.Time) bool {
+	return runtime.Enabled && (runtime.Status == "online" || runtime.Status == "draining") && runtime.AgentVersion == targetVersion && runtime.HasSnapshot && runtime.LastSeenAt != nil && now.Sub(runtime.LastSeenAt.UTC()) <= 15*time.Second
 }
 
 func withoutBatchCommands(commands []sentCommand, plan Plan, batch int) []sentCommand {

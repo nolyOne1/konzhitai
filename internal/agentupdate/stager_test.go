@@ -76,6 +76,17 @@ func TestRollbackBeforeReplacementCompletesWithoutUsingOlderBackup(t *testing.T)
 	}
 }
 
+func TestStartApplyClassifiesPersistedRollbackFailure(t *testing.T) {
+	root := t.TempDir()
+	if err := saveSpec(root, Spec{CommandID: "upgrade-1", Action: agentprotocol.UpgradeInstall, Phase: "rollback_failed"}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(root, nil, &countingStarter{err: errors.New("systemd failed")}, nil)
+	if err := manager.StartApply(context.Background(), "upgrade-1"); !errors.Is(err, ErrRollbackFailed) {
+		t.Fatalf("必须把本地恢复失败贯通到代理协议：%v", err)
+	}
+}
+
 func TestStageRejectsUnexpectedArchiveEntry(t *testing.T) {
 	archive := validArchive(t)
 	archive = makeArchive(t, map[string][]byte{"yunling-agent": []byte("binary"), "unexpected": []byte("bad")})
@@ -143,12 +154,13 @@ func (noStarter) StartUpgrade(context.Context, string) error { return nil }
 type countingStarter struct {
 	calls     int
 	commandID string
+	err       error
 }
 
 func (s *countingStarter) StartUpgrade(_ context.Context, commandID string) error {
 	s.calls++
 	s.commandID = commandID
-	return nil
+	return s.err
 }
 func managerWithArchive(t *testing.T, body []byte) *Manager {
 	t.Helper()

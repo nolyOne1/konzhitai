@@ -123,6 +123,9 @@ func (c *UpgradeClient) resumeInstall(ctx context.Context, command agentprotocol
 		return nil
 	}
 	if err := c.manager.StartApply(ctx, command.CommandID); err != nil {
+		if errors.Is(err, agentupdate.ErrRollbackFailed) {
+			return c.fail(ctx, command, "rollback_failed", "代理升级失败且本地恢复未完成："+err.Error())
+		}
 		return c.fail(ctx, command, "apply_start_failed", "代理升级安装启动失败："+err.Error())
 	}
 	return nil
