@@ -11,6 +11,9 @@ export interface ServerView {
   labels: Record<string, string>
   runtimes: string[]
   agentVersion: string
+  agentOS: string
+  agentArch: string
+  agentCapabilities: string[]
   schedulingWeight: number
   cpuUsagePercent: number
   memoryTotalBytes: number

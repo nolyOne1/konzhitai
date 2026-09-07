@@ -17,4 +17,7 @@ type Heartbeat struct {
 	LogSpoolLimitBytes int64     `json:"log_spool_limit_bytes"`
 	Runtimes           []string  `json:"runtimes"`
 	AgentVersion       string    `json:"agent_version"`
+	AgentOS            string    `json:"agent_os,omitempty"`
+	AgentArch          string    `json:"agent_arch,omitempty"`
+	Capabilities       []string  `json:"capabilities,omitempty"`
 }

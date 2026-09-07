@@ -132,6 +132,7 @@ func main() {
 		agentVersion,
 		collector,
 		sender,
+		agent.WithPlatform(runtime.GOOS, runtime.GOARCH, detectedCapabilities(runtime.GOOS, os.Stat)),
 		agent.WithInitialHeartbeatSequence(uint64(heartbeatSequenceFloor)),
 	)
 	cache := executor.NewCache(cacheRoot, agent.NewCredentialDownloader(credentials.Credential, nil))
@@ -156,6 +157,17 @@ func main() {
 			log.Fatalf("云令代理停止：%v", err)
 		}
 	}
+}
+
+func detectedCapabilities(goos string, stat func(string) (os.FileInfo, error)) []string {
+	if goos != "linux" {
+		return nil
+	}
+	info, err := stat("/etc/systemd/system/yunling-agent-upgrade@.service")
+	if err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	return []string{"self_upgrade_v1"}
 }
 
 func writeVersionCommand(args []string, output io.Writer) bool {

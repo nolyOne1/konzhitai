@@ -40,6 +40,9 @@ type ServerView struct {
 	Labels               map[string]string `json:"labels"`
 	Runtimes             []string          `json:"runtimes"`
 	AgentVersion         string            `json:"agentVersion"`
+	AgentOS              string            `json:"agentOS"`
+	AgentArch            string            `json:"agentArch"`
+	AgentCapabilities    []string          `json:"agentCapabilities"`
 	SchedulingWeight     int               `json:"schedulingWeight"`
 	CPUUsagePercent      float64           `json:"cpuUsagePercent"`
 	MemoryTotalBytes     int64             `json:"memoryTotalBytes"`

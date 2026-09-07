@@ -261,7 +261,7 @@ git commit -m "feat: add agent upgrade persistence schema"
 - Produces `server.ServerView.AgentOS string`, `AgentArch string`, `AgentCapabilities []string` and matching camelCase Web fields.
 - Capability name is exactly `self_upgrade_v1`.
 
-- [ ] **Step 1: Write failing heartbeat and repository tests**
+- [x] **Step 1: Write failing heartbeat and repository tests**
 
 ```go
 func TestClientReportsPlatformAndCapabilities(t *testing.T) {
@@ -277,13 +277,13 @@ func TestClientReportsPlatformAndCapabilities(t *testing.T) {
 
 Add a PostgreSQL assertion that `SaveHeartbeat` writes the three new fields and `ListServers` returns them.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 Run: `go test ./internal/agent ./internal/server -run 'TestClientReportsPlatformAndCapabilities|TestPostgresRepositoryPersistsAgentCapabilities' -count=1`
 
 Expected: FAIL because the fields are undefined.
 
-- [ ] **Step 3: Extend the protocol and heartbeat client**
+- [x] **Step 3: Extend the protocol and heartbeat client**
 
 ```go
 type Heartbeat struct {
@@ -308,11 +308,11 @@ func detectedCapabilities(goos string, stat func(string) (os.FileInfo, error)) [
 }
 ```
 
-- [ ] **Step 4: Persist and expose the fields**
+- [x] **Step 4: Persist and expose the fields**
 
 Encode capabilities as JSON in `SaveHeartbeat`, update `serverViewSelect`, `scanServerView`, `ServerView`, and the Web API mapper. Empty values remain valid for old agents.
 
-- [ ] **Step 5: Run focused and regression tests**
+- [x] **Step 5: Run focused and regression tests**
 
 Run: `go test ./internal/agent ./internal/server -count=1`
 

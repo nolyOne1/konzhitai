@@ -47,13 +47,24 @@ func WithInitialHeartbeatSequence(sequence uint64) ClientOption {
 	}
 }
 
+func WithPlatform(agentOS, agentArch string, capabilities []string) ClientOption {
+	return func(client *Client) {
+		client.agentOS = agentOS
+		client.agentArch = agentArch
+		client.capabilities = append([]string(nil), capabilities...)
+	}
+}
+
 type Client struct {
-	serverID  string
-	version   string
-	collector Snapshotter
-	sender    HeartbeatSender
-	newTicker TickerFactory
-	sequence  uint64
+	serverID     string
+	version      string
+	agentOS      string
+	agentArch    string
+	capabilities []string
+	collector    Snapshotter
+	sender       HeartbeatSender
+	newTicker    TickerFactory
+	sequence     uint64
 }
 
 func NewClient(
@@ -93,6 +104,9 @@ func (c *Client) Run(ctx context.Context) error {
 			heartbeat.Sequence = c.sequence
 			heartbeat.SentAt = sentAt.UTC()
 			heartbeat.AgentVersion = c.version
+			heartbeat.AgentOS = c.agentOS
+			heartbeat.AgentArch = c.agentArch
+			heartbeat.Capabilities = append([]string(nil), c.capabilities...)
 			if err := c.sender.SendHeartbeat(ctx, heartbeat); err != nil {
 				return fmt.Errorf("发送代理心跳：%w", err)
 			}

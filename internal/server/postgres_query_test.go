@@ -21,6 +21,8 @@ func TestPostgresManagementUsesLatestSnapshotAndPersistsDrain(t *testing.T) {
 	testpostgres.ApplyMigration(t, db, "000005_task_scheduling.up.sql")
 	testpostgres.ApplyMigration(t, db, "000006_scheduler_resources.up.sql")
 	testpostgres.ApplyMigration(t, db, "000008_security_audit_alerts.up.sql")
+	testpostgres.ApplyMigration(t, db, "000010_password_change_security.up.sql")
+	testpostgres.ApplyMigration(t, db, "000014_agent_upgrade_management.up.sql")
 	ctx := context.Background()
 	serverID := "123e4567-e89b-42d3-a456-426614174200"
 	credentialHash := sha256.Sum256([]byte("agent-test-secret"))
@@ -79,6 +81,10 @@ func TestPostgresManagementUsesLatestSnapshotAndPersistsDrain(t *testing.T) {
 		MemoryUsedBytes:  4 << 30,
 		DiskTotalBytes:   100 << 30,
 		DiskFreeBytes:    70 << 30,
+		AgentVersion:     "0.2.0",
+		AgentOS:          "linux",
+		AgentArch:        "amd64",
+		Capabilities:     []string{"self_upgrade_v1"},
 	}, time.Now())
 	if err != nil || !accepted {
 		t.Fatalf("排空后仍应接收心跳：accepted=%v err=%v", accepted, err)
@@ -88,6 +94,16 @@ func TestPostgresManagementUsesLatestSnapshotAndPersistsDrain(t *testing.T) {
 	}
 	if updated.Status != server.StatusDraining {
 		t.Fatalf("心跳不得解除排空，实际状态为 %s", updated.Status)
+	}
+	servers, err = repository.ListServers(ctx)
+	if err != nil {
+		t.Fatalf("读取心跳后的服务器列表：%v", err)
+	}
+	if len(servers) != 1 || servers[0].AgentVersion != "0.2.0" || servers[0].AgentOS != "linux" || servers[0].AgentArch != "amd64" {
+		t.Fatalf("服务器列表必须返回代理平台信息：%+v", servers)
+	}
+	if len(servers[0].AgentCapabilities) != 1 || servers[0].AgentCapabilities[0] != "self_upgrade_v1" {
+		t.Fatalf("服务器列表必须返回代理升级能力：%+v", servers[0].AgentCapabilities)
 	}
 
 	enabled := false
