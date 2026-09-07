@@ -12,6 +12,7 @@ import (
 
 	"yunling.local/platform/internal/agentprotocol"
 	"yunling.local/platform/internal/agentrelease"
+	"yunling.local/platform/internal/agentupgrade"
 	"yunling.local/platform/internal/alert"
 	"yunling.local/platform/internal/artifact"
 	"yunling.local/platform/internal/audit"
@@ -42,7 +43,7 @@ func main() {
 	if releaseRoot == "" {
 		releaseRoot = "/opt/yunling/releases/agent"
 	}
-	router.Handle("/api/releases/agent/", loadAgentReleaseHandler(releaseRoot))
+	publicAgentReleaseHandler := loadAgentReleaseHandler(releaseRoot)
 
 	unavailableHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -59,6 +60,8 @@ func main() {
 	var securityHandler http.Handler = unavailableHandler
 	var passwordHandler http.Handler = unavailableHandler
 	var operationsHandler http.Handler = unavailableHandler
+	var agentReleaseHandler http.Handler = unavailableHandler
+	var agentUpgradeHandler http.Handler = unavailableHandler
 	if dsn := os.Getenv("YUNLING_DATABASE_URL"); dsn != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pool, err := postgres.Open(ctx, dsn)
@@ -160,6 +163,21 @@ func main() {
 		if err != nil {
 			log.Printf("脚本对象存储尚未配置，脚本接口将返回暂不可用：%v", err)
 		} else {
+			releaseService := agentrelease.NewService(agentrelease.NewPostgresRepository(pool), objectStore, time.Now)
+			if err := releaseService.BootstrapFromDirectory(context.Background(), releaseRoot); err != nil {
+				log.Printf("代理版本引导失败，版本与升级接口将返回暂不可用：%v", err)
+			} else {
+				publicAgentReleaseHandler = agentrelease.Handler(releaseService)
+				upgradeRepository := agentupgrade.NewPostgresRepository(pool)
+				upgradeService := agentupgrade.NewService(upgradeRepository)
+				upgradeCoordinator := agentupgrade.NewCoordinator(upgradeRepository, connections, time.Now)
+				agentReleaseHandler = protect(agentrelease.ManagementHandler(releaseService))
+				agentUpgradeHandler = protect(agentupgrade.ManagementHandler(upgradeService))
+				agentOptions = append(agentOptions, server.WithUpgradeReceiver(upgradeCoordinator))
+				go agentupgrade.RunLoop(context.Background(), upgradeCoordinator, 2*time.Second, func(err error) {
+					log.Printf("代理升级编排扫描失败：%v", err)
+				})
+			}
 			scriptService := script.NewService(pool, objectStore, time.Now)
 			syncService := script.NewSyncService(pool, publicBaseURL(address), time.Now, script.WithAlertSink(alertService))
 			configuredAgentOptions := append([]server.HandlerOption{}, agentOptions...)
@@ -227,6 +245,11 @@ func main() {
 	router.Handle("/api/alerts", securityHandler)
 	router.Handle("/api/alerts/", securityHandler)
 	router.Handle("/api/operations/", operationsHandler)
+	router.Handle("/api/agent-releases", agentReleaseHandler)
+	router.Handle("/api/agent-releases/", agentReleaseHandler)
+	router.Handle("/api/agent-upgrades", agentUpgradeHandler)
+	router.Handle("/api/agent-upgrades/", agentUpgradeHandler)
+	router.Handle("/api/releases/agent/", publicAgentReleaseHandler)
 	router.Handle("/api/servers/{id}/credentials/rotate", securityHandler)
 	router.Handle("/api/servers/{id}/credentials/revoke", securityHandler)
 	router.Handle("/api/agent/", serverHandler)

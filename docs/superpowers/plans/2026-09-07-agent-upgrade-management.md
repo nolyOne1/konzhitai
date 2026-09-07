@@ -1150,7 +1150,7 @@ git commit -m "feat: orchestrate staged agent upgrades"
 - Produces the REST routes defined in design section 11.
 - Runs coordinator scan every 2 seconds with a process-lifetime context.
 
-- [ ] **Step 1: Write failing HTTP behavior tests**
+- [x] **Step 1: Write failing HTTP behavior tests**
 
 ```go
 func TestCreateUpgradePlanReturnsChinesePlan(t *testing.T) {
@@ -1185,27 +1185,27 @@ for _, test := range []struct { method, path, body string; status int }{
 
 Run the same mutation requests as a non-admin and assert 403; run both GET requests as a member and assert 200. Assert audit actions `agent_release.recommend`, `agent_release.withdraw`, `agent_upgrade.create`, `pause`, `resume`, `cancel`, `retry`, and `rollback` are persisted.
 
-- [ ] **Step 2: Run HTTP tests and verify failure**
+- [x] **Step 2: Run HTTP tests and verify failure**
 
 Run: `go test ./internal/agentupgrade ./cmd/api ./internal/audit -run Upgrade -count=1`
 
 Expected: FAIL because routes and assembly are absent.
 
-- [ ] **Step 3: Implement handlers and error mapping**
+- [x] **Step 3: Implement handlers and error mapping**
 
 Map invalid input to 400, absent records to 404, an existing active plan or illegal transition to 409, withdrawal of the recommended version to 409, non-admin mutation to 403, and unexpected failures to a bounded Chinese 500 response. Return empty arrays as `[]`, not `null`.
 
-- [ ] **Step 4: Assemble services in `cmd/api/main.go`**
+- [x] **Step 4: Assemble services in `cmd/api/main.go`**
 
 Create the shared MinIO store once, initialize release and upgrade repositories, call `BootstrapFromDirectory(ctx, YUNLING_AGENT_RELEASE_DIR)` before registering the new public release handler, register protected management routes, pass the coordinator into `server.Handler`, and start `agentupgrade.RunLoop` with the same connection hub used for task dispatch. If bootstrap fails, install the release-unavailable handler and log a bounded Chinese error while leaving other APIs active.
 
-- [ ] **Step 5: Run API and audit tests**
+- [x] **Step 5: Run API and audit tests**
 
 Run: `go test ./internal/agentupgrade ./internal/agentrelease ./internal/audit ./cmd/api -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/agentupgrade internal/audit cmd/api/main.go cmd/api/main_test.go
