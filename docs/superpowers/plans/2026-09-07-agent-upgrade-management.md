@@ -474,7 +474,7 @@ git commit -m "feat: add immutable multi-version agent repository"
 - Consumes `agentrelease.Service.Import(context.Context, agentrelease.ImportInput)` from Task 3.
 - Produces CLI `yunling-agent-release import --manifest PATH --directory PATH --notes TEXT [--recommend]`.
 
-- [ ] **Step 1: Write failing command parsing and import tests**
+- [x] **Step 1: Write failing command parsing and import tests**
 
 ```go
 func TestParseImportCommand(t *testing.T) {
@@ -490,17 +490,17 @@ func TestParseImportCommand(t *testing.T) {
 
 Add a test that two architecture files are opened from the manifest directory and passed to the service with their declared sizes and digests.
 
-- [ ] **Step 2: Run command tests and verify failure**
+- [x] **Step 2: Run command tests and verify failure**
 
 Run: `go test ./cmd/agent-release -count=1`
 
 Expected: FAIL because the command does not exist.
 
-- [ ] **Step 3: Implement the command**
+- [x] **Step 3: Implement the command**
 
 Read `YUNLING_DATABASE_URL` and existing `YUNLING_S3_*` variables, parse the manifest with unknown-field rejection, verify each archive contains an `agent-version` file exactly equal to the manifest version, then call `Service.Import`. Print only version, architectures, digest prefixes, and result; do not attempt to execute an arm64 binary on an amd64 import host.
 
-- [ ] **Step 4: Package the command in the service image**
+- [x] **Step 4: Package the command in the service image**
 
 Build `/out/yunling-agent-release` in `deploy/Dockerfile.services`, copy it into the API image, and document this exact import form:
 
@@ -510,13 +510,13 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml exec -T api \
   --notes "增加代理升级能力" --recommend
 ```
 
-- [ ] **Step 5: Run command and deployment tests**
+- [x] **Step 5: Run command and deployment tests**
 
 Run: `go test ./cmd/agent-release ./tests/integration -run 'AgentRelease|Dockerfile' -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add cmd/agent-release deploy

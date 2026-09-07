@@ -108,6 +108,18 @@ Caddy 现有 `/api/*` 反向代理已经覆盖以下公开只读路由，不需�
 
 这两个 GET 路由允许未登录访问，方便新服务器下载安装包。创建一次性注册令牌的 POST 路由仍要求管理员会话。公开请求按客户端地址隔离固定窗口额度，同时保留更高的全局保险上限和归档下载并发上限，不能当作通用文件服务；只有来自私有网络或回环地址的可信反向代理才会采用其首个 `X-Forwarded-For` 地址。
 
+### 导入新的代理版本
+
+把已经校验来源的 `manifest.json` 和两个架构安装包放入主机的 `deploy/agent-release-import`（也可通过 `YUNLING_AGENT_IMPORT_DIR` 指定只读目录），然后执行：
+
+```bash
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml exec -T api \
+  yunling-agent-release import --manifest /release/manifest.json --directory /release \
+  --notes "增加代理升级能力" --recommend
+```
+
+命令会再次核对双架构、文件大小、SHA-256、固定文件集合和包内 `agent-version`，再写入不可变对象存储与版本数据库。重复版本或相同对象键的不同内容会被拒绝；`--recommend` 只切换新服务器默认安装版本，不会自动升级已有服务器。
+
 ### 从控制台一键接入
 
 执行服务器支持 Linux x86_64 和 ARM64，需要 systemd 240 或更高版本、polkit、Bash、`tar`、`sha256sum`、`mktemp`，以及 `curl` 或 `wget`。安装时还需要 root 或可用的 sudo 和可读写的 `/dev/tty`。推荐 Debian 12/13、Ubuntu 22.04/24.04 或同等级新版本发行版；安装器只做预检，不会自行调用包管理器。

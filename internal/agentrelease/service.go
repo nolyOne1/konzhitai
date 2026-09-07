@@ -287,3 +287,8 @@ func validateAgentArchive(body []byte, version string) error {
 	}
 	return nil
 }
+
+// ValidateArchive 校验新代理包的固定文件集合及包内版本声明。
+func ValidateArchive(body []byte, version string) error {
+	return validateAgentArchive(body, version)
+}

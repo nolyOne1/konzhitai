@@ -187,6 +187,7 @@ func TestAPIDeploymentUsesDedicatedReadOnlyAgentReleaseVolume(t *testing.T) {
 	want := []string{
 		"yunling_api_secrets:/run/secrets:ro",
 		"yunling_agent_releases:/opt/yunling/releases/agent:ro",
+		"${YUNLING_AGENT_IMPORT_DIR:-./agent-release-import}:/release:ro",
 	}
 	if len(api.Volumes) != len(want) {
 		t.Fatalf("API 卷数量：got=%v want=%v", api.Volumes, want)
@@ -198,6 +199,19 @@ func TestAPIDeploymentUsesDedicatedReadOnlyAgentReleaseVolume(t *testing.T) {
 	}
 	if _, ok := compose.Volumes["yunling_agent_releases"]; !ok {
 		t.Fatal("Compose 必须声明代理发布命名卷")
+	}
+}
+
+func TestAgentReleaseImportCommandIsBuiltIntoServiceImage(t *testing.T) {
+	root := testpostgres.RepositoryRoot(t)
+	dockerfile := mustReadDeploymentFile(t, root, "deploy", "Dockerfile.services")
+	guide := mustReadDeploymentFile(t, root, "deploy", "README.md")
+	if !strings.Contains(dockerfile, "-o /out/yunling-agent-release ./cmd/agent-release") ||
+		!strings.Contains(dockerfile, "COPY --from=builder /out/yunling-agent-release /usr/local/bin/yunling-agent-release") {
+		t.Fatal("服务镜像必须构建并安装代理版本导入命令")
+	}
+	if !strings.Contains(guide, "yunling-agent-release import --manifest /release/manifest.json --directory /release") {
+		t.Fatal("部署手册必须给出容器内代理版本导入命令")
 	}
 }
 
