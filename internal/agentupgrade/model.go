@@ -97,7 +97,19 @@ type ReleaseInfo struct {
 	Artifacts    []ArtifactInfo
 }
 
-type ArtifactInfo struct{ OS, Arch string }
+type ArtifactInfo struct {
+	OS, Arch, FileName, SHA256, DownloadURL string
+	ByteSize                                int64
+}
+
+type ServerRuntime struct {
+	Status       string
+	Enabled      bool
+	Draining     bool
+	RunningTasks int
+	AgentOS      string
+	AgentArch    string
+}
 
 type ServerInfo struct {
 	ID, Status, AgentVersion, AgentOS, AgentArch string

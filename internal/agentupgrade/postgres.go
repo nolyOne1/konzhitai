@@ -48,19 +48,44 @@ func (r *PostgresRepository) releaseBy(ctx context.Context, predicate string, va
 	if err := json.Unmarshal(capabilities, &release.Capabilities); err != nil {
 		return ReleaseInfo{}, err
 	}
-	rows, err := r.db.Query(ctx, `SELECT os, arch FROM agent_release_artifacts WHERE release_id = $1 ORDER BY arch`, release.ID)
+	rows, err := r.db.Query(ctx, `SELECT os, arch, file_name, byte_size, sha256 FROM agent_release_artifacts WHERE release_id = $1 ORDER BY arch`, release.ID)
 	if err != nil {
 		return ReleaseInfo{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var item ArtifactInfo
-		if err := rows.Scan(&item.OS, &item.Arch); err != nil {
+		if err := rows.Scan(&item.OS, &item.Arch, &item.FileName, &item.ByteSize, &item.SHA256); err != nil {
 			return ReleaseInfo{}, err
 		}
+		item.DownloadURL = "/api/releases/agent/" + release.Version + "/" + item.SHA256 + "/" + item.FileName
 		release.Artifacts = append(release.Artifacts, item)
 	}
 	return release, rows.Err()
+}
+
+func (r *PostgresRepository) ServerRuntime(ctx context.Context, serverID string) (ServerRuntime, error) {
+	var runtime ServerRuntime
+	err := r.db.QueryRow(ctx, `
+		SELECT server.status, server.enabled, server.drain_requested, server.agent_os, server.agent_arch,
+		       COALESCE((SELECT running_tasks FROM server_snapshots WHERE server_id=server.id ORDER BY collected_at DESC,id DESC LIMIT 1),0)
+		FROM servers AS server WHERE server.id=$1
+	`, serverID).Scan(&runtime.Status, &runtime.Enabled, &runtime.Draining, &runtime.AgentOS, &runtime.AgentArch, &runtime.RunningTasks)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ServerRuntime{}, ErrServerIneligible
+	}
+	return runtime, err
+}
+
+func (r *PostgresRepository) SetServerDraining(ctx context.Context, serverID string, draining bool) error {
+	result, err := r.db.Exec(ctx, `UPDATE servers SET drain_requested=$2,status=CASE WHEN $2 AND status='online' THEN 'draining' WHEN NOT $2 AND status='draining' THEN 'online' ELSE status END,updated_at=now() WHERE id=$1`, serverID, draining)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ErrServerIneligible
+	}
+	return nil
 }
 
 func (r *PostgresRepository) Servers(ctx context.Context, ids []string) ([]ServerInfo, error) {

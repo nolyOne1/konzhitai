@@ -1041,7 +1041,7 @@ git commit -m "feat: add agent upgrade plan service"
 - Consumes `AgentConnectionHub.SendUpgradeCommand` and version repository artifact lookup.
 - Test helpers: `failedEvent(targetID string) agentprotocol.UpgradeEvent` and `assertTargetStatus(t, store, targetID, want)`.
 
-- [ ] **Step 1: Write failing orchestration tests**
+- [x] **Step 1: Write failing orchestration tests**
 
 ```go
 func TestCoordinatorWaitsForTasksThenDispatchesCanary(t *testing.T) {
@@ -1085,25 +1085,25 @@ func TestCoordinatorMarksManualInterventionWhenRollbackFails(t *testing.T) {
 
 Separate tests set the drain deadline in the past and expect `PlanPaused`, keep an offline target in `draining` before its deadline, advance a fake clock across `verification_seconds` and expect success plus the next batch, and reconstruct a coordinator against persisted `reconnecting` state to prove restart reconciliation.
 
-- [ ] **Step 2: Run coordinator tests and verify failure**
+- [x] **Step 2: Run coordinator tests and verify failure**
 
 Run: `go test ./internal/agentupgrade -run 'Coordinator|RunLoop' -count=1`
 
 Expected: FAIL because coordinator and loop are missing.
 
-- [ ] **Step 3: Implement deterministic scan transitions**
+- [x] **Step 3: Implement deterministic scan transitions**
 
 For the current plan and batch: request drain, inspect latest running task count and online state, dispatch install commands only when idle, update deadlines, and never start a later batch until every current target has passed its verification window. Every transition uses a compare-and-set update on the expected current status.
 
-- [ ] **Step 4: Implement event and heartbeat reconciliation**
+- [x] **Step 4: Implement event and heartbeat reconciliation**
 
 Map agent stages to target stages only when `serverID`, `targetID`, and `commandID` match. A heartbeat with matching target version advances `reconnecting` to `health_checking`; continuous valid heartbeats through `verification_seconds` mark success. A mismatched version after install dispatches rollback.
 
-- [ ] **Step 5: Implement failure pause and failed-batch rollback**
+- [x] **Step 5: Implement failure pause and failed-batch rollback**
 
 On the first failure, atomically pause the plan and mark every started non-success target in the current batch for rollback. Do not modify targets in earlier successful batches. Preserve the pre-upgrade drain state when restoring scheduling after success.
 
-- [ ] **Step 6: Add the cancellable loop**
+- [x] **Step 6: Add the cancellable loop**
 
 ```go
 func RunLoop(ctx context.Context, coordinator interface{ Scan(context.Context) error }, interval time.Duration, onError func(error)) {
@@ -1119,13 +1119,13 @@ func RunLoop(ctx context.Context, coordinator interface{ Scan(context.Context) e
 }
 ```
 
-- [ ] **Step 7: Run upgrade and server tests**
+- [x] **Step 7: Run upgrade and server tests**
 
 Run: `go test ./internal/agentupgrade ./internal/server -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add internal/agentupgrade internal/server

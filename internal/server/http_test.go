@@ -178,6 +178,34 @@ func TestAgentConnectRoutesUpgradeEventWithAuthenticatedServer(t *testing.T) {
 	}
 }
 
+func TestAgentConnectReconcilesUpgradeHeartbeatWithAuthenticatedServer(t *testing.T) {
+	repository := newMemoryServerRepository()
+	repository.saved = make(chan struct{}, 1)
+	receiver := &fakeUpgradeReceiver{heartbeats: make(chan agentprotocol.Heartbeat, 1)}
+	server := httptest.NewServer(Handler(NewRegistry(repository, time.Now), &fakeEnrollmentManager{serverID: "server-upgrade"}, WithUpgradeReceiver(receiver)))
+	defer server.Close()
+	header := http.Header{}
+	header.Set("Authorization", "Bearer valid-agent-credential")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	connection, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/agent/connect", &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+	if err := wsjson.Write(ctx, connection, agentprotocol.Heartbeat{Sequence: 1, Upgrade: &agentprotocol.UpgradeRuntimeState{CommandID: "command-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case heartbeat := <-receiver.heartbeats:
+		if heartbeat.ServerID != "server-upgrade" || heartbeat.Upgrade.CommandID != "command-1" {
+			t.Fatalf("升级心跳对账错误：%+v", heartbeat)
+		}
+	case <-ctx.Done():
+		t.Fatal("未收到升级心跳")
+	}
+}
+
 func TestConnectionHubSendsUpgradeCommandToRegisteredServer(t *testing.T) {
 	hub := NewAgentConnectionHub()
 	server := httptest.NewServer(Handler(NewRegistry(newMemoryServerRepository(), time.Now), &fakeEnrollmentManager{serverID: "server-upgrade"}, WithConnectionHub(hub)))
@@ -381,13 +409,19 @@ type fakeAgentArtifactProvider struct {
 type fakeRunEventReceiver struct{ received chan agentprotocol.RunEvent }
 
 type fakeUpgradeReceiver struct {
-	serverID string
-	received chan agentprotocol.UpgradeEvent
+	serverID   string
+	received   chan agentprotocol.UpgradeEvent
+	heartbeats chan agentprotocol.Heartbeat
 }
 
 func (r *fakeUpgradeReceiver) ApplyUpgradeEvent(_ context.Context, serverID string, event agentprotocol.UpgradeEvent) error {
 	r.serverID = serverID
 	r.received <- event
+	return nil
+}
+
+func (r *fakeUpgradeReceiver) ObserveHeartbeat(_ context.Context, heartbeat agentprotocol.Heartbeat) error {
+	r.heartbeats <- heartbeat
 	return nil
 }
 

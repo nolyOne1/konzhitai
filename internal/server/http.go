@@ -57,6 +57,10 @@ type UpgradeReceiver interface {
 	ApplyUpgradeEvent(context.Context, string, agentprotocol.UpgradeEvent) error
 }
 
+type UpgradeHeartbeatObserver interface {
+	ObserveHeartbeat(context.Context, agentprotocol.Heartbeat) error
+}
+
 func WithConnectionHub(connections *AgentConnectionHub) HandlerOption {
 	return func(options *handlerOptions) {
 		options.connections = connections
@@ -373,6 +377,12 @@ func agentConnectHandler(
 				if err := registry.AcceptHeartbeat(ctx, heartbeat); err != nil {
 					_ = connection.Close(websocket.StatusPolicyViolation, "心跳内容无效")
 					return
+				}
+				if observer, ok := configuration.upgrades.(UpgradeHeartbeatObserver); ok {
+					if err := observer.ObserveHeartbeat(ctx, heartbeat); err != nil {
+						_ = connection.Close(websocket.StatusPolicyViolation, "升级状态对账失败")
+						return
+					}
 				}
 			}
 			if configuration.sync != nil {
