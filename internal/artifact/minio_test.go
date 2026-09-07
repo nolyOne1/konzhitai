@@ -41,8 +41,8 @@ func TestMinIOStoreRejectsContentAddressCollision(t *testing.T) {
 	store := newMinIOStoreWithClient(client, "yunling-artifacts")
 
 	err := store.Put(context.Background(), client.stat.Key, bytes.NewReader([]byte("data")), 4, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	if err == nil {
-		t.Fatal("同一对象键指向不同内容时必须拒绝覆盖")
+	if !errors.Is(err, ErrObjectConflict) {
+		t.Fatalf("同一对象键指向不同内容时必须返回冲突错误：%v", err)
 	}
 	if client.putCalls != 0 {
 		t.Fatal("发生内容地址冲突时不得上传")
@@ -66,7 +66,7 @@ func (c *fakeObjectClient) StatObject(context.Context, string, string, minio.Sta
 }
 
 func (c *fakeObjectClient) GetObject(context.Context, string, string, minio.GetObjectOptions) (io.ReadCloser, error) {
-	if c.statErr != nil && !errors.Is(c.statErr, errObjectMissing) {
+	if c.statErr != nil && !errors.Is(c.statErr, ErrObjectMissing) {
 		return nil, c.statErr
 	}
 	return io.NopCloser(bytes.NewReader(nil)), nil

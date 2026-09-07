@@ -2,6 +2,7 @@ package agentrelease
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,33 @@ import (
 	"testing"
 	"time"
 )
+
+func TestHTTPUsesRecommendedRepositoryReleaseAndMapsMissingObject(t *testing.T) {
+	repository := newMemoryRepository()
+	objects := newMemoryObjectStore()
+	service := NewService(repository, objects, time.Now)
+	release, err := service.Import(context.Background(), validImportInput("0.2.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SetRecommended(context.Background(), release.ID); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler(service, WithLimits(100, 2, time.Minute, time.Now))
+
+	manifestResponse := httptest.NewRecorder()
+	handler.ServeHTTP(manifestResponse, httptest.NewRequest(http.MethodGet, "/api/releases/agent/latest", nil))
+	if manifestResponse.Code != http.StatusOK || !strings.Contains(manifestResponse.Body.String(), "0.2.0") {
+		t.Fatalf("推荐版本清单：status=%d body=%s", manifestResponse.Code, manifestResponse.Body.String())
+	}
+	item := release.Artifacts[0]
+	delete(objects.values, item.ObjectKey)
+	downloadResponse := httptest.NewRecorder()
+	handler.ServeHTTP(downloadResponse, httptest.NewRequest(http.MethodGet, item.DownloadURL, nil))
+	if downloadResponse.Code != http.StatusNotFound {
+		t.Fatalf("对象丢失必须返回 404：status=%d body=%s", downloadResponse.Code, downloadResponse.Body.String())
+	}
+}
 
 func TestHTTPManifestAndArtifactResponses(t *testing.T) {
 	root, stored, contents := writeValidCatalog(t)

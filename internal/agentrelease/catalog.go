@@ -1,6 +1,7 @@
 package agentrelease
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -22,18 +23,28 @@ var (
 
 const maxManifestBytes = 1 << 20
 
-type Artifact struct {
-	OS          string `json:"os"`
-	Arch        string `json:"arch"`
-	FileName    string `json:"file_name"`
-	ByteSize    int64  `json:"byte_size"`
-	SHA256      string `json:"sha256"`
-	DownloadURL string `json:"download_url"`
-}
-
 type Manifest struct {
 	Version   string     `json:"version"`
 	Artifacts []Artifact `json:"artifacts"`
+}
+
+func (c *Catalog) releaseManifest(context.Context) (Manifest, error) {
+	if c == nil {
+		return Manifest{}, ErrReleaseNotFound
+	}
+	return c.Manifest(), nil
+}
+
+func (c *Catalog) releaseArtifact(_ context.Context, version, digest, fileName string) (Artifact, error) {
+	item, ok := c.lookup(version, digest, fileName)
+	if !ok {
+		return Artifact{}, ErrArtifactNotFound
+	}
+	return item, nil
+}
+
+func (c *Catalog) openArtifact(_ context.Context, version, digest, fileName string) (io.ReadCloser, Artifact, error) {
+	return c.Open(version, digest, fileName)
 }
 
 type Catalog struct {

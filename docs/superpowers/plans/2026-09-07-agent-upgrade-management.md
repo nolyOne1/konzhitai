@@ -320,7 +320,7 @@ Run: `npm run test:web -- --run apps/web/src/api/client.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/agentprotocol/messages.go internal/agent internal/server cmd/agent/main.go apps/web/src/api/client.ts apps/web/src/api/client.test.ts
@@ -350,7 +350,7 @@ git commit -m "feat: report agent upgrade capabilities"
 - Produces `artifact.ErrObjectMissing` for public 404 handling and `artifact.ErrObjectConflict` for immutable-key conflicts.
 - Test helpers in `service_test.go`: `validImportInput(version string) ImportInput`, `newMemoryObjectStore() *memoryObjectStore`, and `memoryRepository` implementing the complete repository interface.
 
-- [ ] **Step 1: Write failing service tests for immutability**
+- [x] **Step 1: Write failing service tests for immutability**
 
 ```go
 func TestServiceImportsTwoArchitecturesWithoutOverwrite(t *testing.T) {
@@ -392,13 +392,13 @@ The repository test sets release A recommended, then release B recommended, and 
 
 `TestBootstrapFromDirectoryOnlyWhenRepositoryEmpty` uses a valid legacy `manifest.json` whose packages do not contain `agent-version` or the upgrade unit, calls bootstrap twice, and asserts the first call imports and recommends one release with empty capabilities while the second performs no object writes. Normal `Import` requires both files in both architectures and records `self_upgrade_v1`.
 
-- [ ] **Step 2: Run service tests and verify failure**
+- [x] **Step 2: Run service tests and verify failure**
 
 Run: `go test ./internal/agentrelease -run 'TestService|TestPostgresRepository' -count=1`
 
 Expected: FAIL because the service and repository are missing.
 
-- [ ] **Step 3: Implement model validation and PostgreSQL repository**
+- [x] **Step 3: Implement model validation and PostgreSQL repository**
 
 ```go
 type Release struct {
@@ -425,7 +425,7 @@ type Repository interface {
 
 Use a transaction for release plus artifacts and a transaction that clears the previous recommendation before setting the new one.
 
-- [ ] **Step 4: Implement object-backed import and open**
+- [x] **Step 4: Implement object-backed import and open**
 
 ```go
 func ObjectKey(version string, artifact Artifact) string {
@@ -442,17 +442,17 @@ func (s *Service) Open(ctx context.Context, version, digest, fileName string) (i
 
 Make `artifact.ErrObjectMissing` exported and preserve `errors.Is` through MinIO errors.
 
-- [ ] **Step 5: Replace the public latest/download handler and add management endpoints**
+- [x] **Step 5: Replace the public latest/download handler and add management endpoints**
 
 `GET /api/releases/agent/latest` returns `Service.Recommended()`. The immutable download route uses `Service.Open()` and maps unknown or missing objects to 404. `GET /api/agent-releases` lists all versions; `POST /api/agent-releases/{id}/recommend` changes the recommendation; `POST /api/agent-releases/{id}/withdraw` rejects the current recommended version and withdraws any other available version.
 
-- [ ] **Step 6: Run package tests**
+- [x] **Step 6: Run package tests**
 
 Run: `go test ./internal/artifact ./internal/agentrelease -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/agentrelease internal/artifact

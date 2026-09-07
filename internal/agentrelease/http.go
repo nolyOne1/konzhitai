@@ -1,6 +1,7 @@
 package agentrelease
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	storeartifact "yunling.local/platform/internal/artifact"
 )
 
 const (
@@ -36,8 +39,14 @@ func WithLimits(maxRequestsPerWindow, maxConcurrent int, window time.Duration, n
 	}
 }
 
-func Handler(catalog *Catalog, options ...HandlerOption) http.Handler {
-	if catalog == nil {
+type publicReleaseSource interface {
+	releaseManifest(context.Context) (Manifest, error)
+	releaseArtifact(context.Context, string, string, string) (Artifact, error)
+	openArtifact(context.Context, string, string, string) (io.ReadCloser, Artifact, error)
+}
+
+func Handler(source publicReleaseSource, options ...HandlerOption) http.Handler {
+	if source == nil {
 		return UnavailableHandler()
 	}
 	configuration := handlerOptions{
@@ -66,8 +75,8 @@ func Handler(catalog *Catalog, options ...HandlerOption) http.Handler {
 	limits := newReleaseLimits(configuration)
 
 	router := http.NewServeMux()
-	router.HandleFunc("GET /api/releases/agent/latest", manifestHandler(catalog))
-	router.HandleFunc("GET /api/releases/agent/{version}/{sha256}/{fileName}", artifactHandler(catalog, limits))
+	router.HandleFunc("GET /api/releases/agent/latest", manifestHandler(source))
+	router.HandleFunc("GET /api/releases/agent/{version}/{sha256}/{fileName}", artifactHandler(source, limits))
 	return limits.limitRequests(router)
 }
 
@@ -77,25 +86,38 @@ func UnavailableHandler() http.Handler {
 	})
 }
 
-func manifestHandler(catalog *Catalog) http.HandlerFunc {
-	return func(response http.ResponseWriter, _ *http.Request) {
+func manifestHandler(source publicReleaseSource) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		manifest, err := source.releaseManifest(request.Context())
+		if errors.Is(err, ErrReleaseNotFound) {
+			writeFixedError(response, http.StatusServiceUnavailable, "代理发布暂不可用")
+			return
+		}
+		if err != nil {
+			writeFixedError(response, http.StatusInternalServerError, "读取代理发布失败")
+			return
+		}
 		response.Header().Set("Content-Type", "application/json; charset=utf-8")
 		response.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		response.Header().Set("X-Content-Type-Options", "nosniff")
-		if err := json.NewEncoder(response).Encode(catalog.Manifest()); err != nil {
+		if err := json.NewEncoder(response).Encode(manifest); err != nil {
 			return
 		}
 	}
 }
 
-func artifactHandler(catalog *Catalog, limits *releaseLimits) http.HandlerFunc {
+func artifactHandler(source publicReleaseSource, limits *releaseLimits) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		version := request.PathValue("version")
 		digest := request.PathValue("sha256")
 		fileName := request.PathValue("fileName")
-		artifact, ok := catalog.lookup(version, digest, fileName)
-		if !ok {
+		artifact, err := source.releaseArtifact(request.Context(), version, digest, fileName)
+		if errors.Is(err, ErrArtifactNotFound) {
 			http.NotFound(response, request)
+			return
+		}
+		if err != nil {
+			writeFixedError(response, http.StatusInternalServerError, "读取代理安装包失败")
 			return
 		}
 
@@ -111,8 +133,8 @@ func artifactHandler(catalog *Catalog, limits *releaseLimits) http.HandlerFunc {
 		}
 		defer limits.releaseDownload()
 
-		file, verified, err := catalog.Open(version, digest, fileName)
-		if errors.Is(err, ErrArtifactNotFound) {
+		file, verified, err := source.openArtifact(request.Context(), version, digest, fileName)
+		if errors.Is(err, ErrArtifactNotFound) || errors.Is(err, storeartifact.ErrObjectMissing) {
 			http.NotFound(response, request)
 			return
 		}
