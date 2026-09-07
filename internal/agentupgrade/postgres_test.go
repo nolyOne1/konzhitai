@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"yunling.local/platform/internal/testpostgres"
@@ -45,11 +46,32 @@ func TestPostgresRepositoryPersistsPlanAndTargetsAtomically(t *testing.T) {
 	if err != nil || len(loaded.Targets) != 1 || loaded.Targets[0].ServerID != serverID {
 		t.Fatalf("读取计划失败：%+v err=%v", loaded, err)
 	}
+	if _, err := db.Exec(ctx, `INSERT INTO agent_upgrade_events(id,plan_id,target_id,server_id,command_id,stage,message,occurred_at) VALUES($1,$2,$3,$4,$5,'downloading','正在下载安装包',$6)`, uuid.NewString(), plan.ID, plan.Targets[0].ID, serverID, plan.Targets[0].CommandID, time.Date(2026, 9, 7, 6, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = service.Plan(ctx, plan.ID)
+	if err != nil || loaded.Targets[0].ServerName != "server-"+serverID || len(loaded.Events) != 1 || loaded.Events[0].Message != "正在下载安装包" {
+		t.Fatalf("计划详情应包含服务器名称和事件：%+v err=%v", loaded, err)
+	}
+	stale := loaded
+	loaded.Targets[0].Status = TargetDraining
+	loaded.Targets[0].UpdatedAt = time.Date(2026, 9, 7, 6, 1, 0, 0, time.UTC)
+	transitioned, err := NewPostgresRepository(db).SavePlan(ctx, loaded)
+	if err != nil || len(transitioned.Events) != 2 || transitioned.Events[1].Stage != string(TargetDraining) {
+		t.Fatalf("目标状态变化必须追加事件：plan=%+v err=%v", transitioned, err)
+	}
 	if _, err := service.CreatePlan(ctx, CreatePlanInput{TargetReleaseID: releaseID, ServerIDs: []string{serverID}, CreatedBy: userID}); !errors.Is(err, ErrActivePlanExists) {
 		t.Fatalf("活动计划唯一约束未映射：%v", err)
 	}
 	paused, err := service.Pause(ctx, plan.ID, "检查")
 	if err != nil || paused.Status != PlanPaused {
 		t.Fatalf("持久化暂停失败：%+v err=%v", paused, err)
+	}
+	if paused.Revision != transitioned.Revision+1 {
+		t.Fatalf("保存计划必须推进并发版本：before=%d after=%d", transitioned.Revision, paused.Revision)
+	}
+	stale.Status = PlanCancelled
+	if _, err := NewPostgresRepository(db).SavePlan(ctx, stale); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("旧计划副本不得覆盖较新状态：%v", err)
 	}
 }

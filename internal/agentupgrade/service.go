@@ -122,6 +122,9 @@ func (s *Service) Resume(ctx context.Context, id string) (Plan, error) {
 	if plan.Status != PlanPaused {
 		return Plan{}, ErrInvalidTransition
 	}
+	if plan.CancelRequested {
+		return Plan{}, ErrInvalidTransition
+	}
 	release, err := s.repository.Release(ctx, plan.TargetReleaseID)
 	if err != nil {
 		return Plan{}, err
@@ -163,12 +166,19 @@ func (s *Service) Cancel(ctx context.Context, id string) (Plan, error) {
 		return Plan{}, ErrInvalidTransition
 	}
 	now := s.now().UTC()
-	plan.Status, plan.FinishedAt = PlanCancelled, &now
+	started := false
 	for index := range plan.Targets {
 		if plan.Targets[index].Status == TargetWaiting {
 			plan.Targets[index].Status = TargetCancelled
 			plan.Targets[index].UpdatedAt, plan.Targets[index].FinishedAt = now, &now
+		} else if !terminalTargetStatus(plan.Targets[index].Status) {
+			started = true
 		}
+	}
+	if started {
+		plan.Status, plan.CancelRequested, plan.PauseReason = PlanPaused, true, "计划已取消，正在完成已开始节点"
+	} else {
+		plan.Status, plan.CancelRequested, plan.FinishedAt = PlanCancelled, true, &now
 	}
 	return s.repository.SavePlan(ctx, plan)
 }
@@ -177,6 +187,9 @@ func (s *Service) RetryTarget(ctx context.Context, planID, targetID string) (Pla
 	plan, err := s.repository.Plan(ctx, planID)
 	if err != nil {
 		return Plan{}, err
+	}
+	if plan.CancelRequested {
+		return Plan{}, ErrInvalidTransition
 	}
 	for index := range plan.Targets {
 		target := &plan.Targets[index]
@@ -260,4 +273,8 @@ func hasArtifact(release ReleaseInfo, osName, arch string) bool {
 		}
 	}
 	return false
+}
+
+func terminalTargetStatus(status TargetStatus) bool {
+	return status == TargetSucceeded || status == TargetRolledBack || status == TargetManualIntervention || status == TargetCancelled
 }

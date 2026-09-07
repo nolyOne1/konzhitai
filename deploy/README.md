@@ -97,9 +97,9 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml --profile too
 
 ### 代理安装包的只读发布
 
-当前生产代理版本锁定为 `0.1.0`。清单和 Linux amd64/arm64 归档保存在独立命名卷 `yunling_agent_releases`，API 只读挂载 `/opt/yunling/releases/agent`。API 启动时会校验清单、文件类型、大小和 SHA-256；任一项不一致时发布接口关闭并返回 503。
+代理清单和 Linux amd64/arm64 归档由中央版本仓库保存。API 启动时会校验清单、文件类型、大小和 SHA-256；任一项不一致时该版本不会进入可升级列表。
 
-普通控制面镜像不再内置代理二进制或发布包，日常发布无权写入该卷。代理升级必须另行设计、审批和验证专用流程，不得通过手工构建 API 镜像、替换卷文件或普通“云令生产发布”完成。
+普通控制面镜像不内置代理二进制或发布包。新版本必须通过专用导入命令写入不可变对象存储，已有版本和对象路径都不能覆盖。
 
 Caddy 现有 `/api/*` 反向代理已经覆盖以下公开只读路由，不需要开放新端口：
 
@@ -119,6 +119,31 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml exec -T api \
 ```
 
 命令会再次核对双架构、文件大小、SHA-256、固定文件集合和包内 `agent-version`，再写入不可变对象存储与版本数据库。重复版本或相同对象键的不同内容会被拒绝；`--recommend` 只切换新服务器默认安装版本，不会自动升级已有服务器。
+
+运维侧准备目录的标准示例为 `/srv/yunling-agent-releases/0.2.0`：
+
+```bash
+sudo install -d -m 0755 /srv/yunling-agent-releases/0.2.0
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml run --rm --no-deps \
+  --entrypoint /usr/local/bin/yunling-agent-release \
+  -v /srv/yunling-agent-releases/0.2.0:/release:ro api import \
+  --manifest /release/manifest.json --directory /release \
+  --notes "0.2.0 稳定版" --recommend
+```
+
+### 旧代理的一次性基线升级
+
+没有 `self_upgrade_v1` 能力的旧节点只能盘点，不能加入控制台升级计划。先在该节点按受控变更窗口运行新版本归档内的 `install.sh`，完成后检查 `yunling-agent.service` 已重新连接、控制台显示正确的 Linux 架构和“支持控制台升级”。这一步只需执行一次；之后的版本升级不再需要 SSH。
+
+### 控制台分批升级
+
+1. 进入“服务器—代理升级”，确认目标版本处于“可用”并含当前节点架构的安装包；
+2. 创建计划，选择目标版本和服务器，首批固定一台，设置后续批次、排空、重连及健康验证时间；
+3. 观察“等待任务结束—下载安装包—校验安装包—安装新版本—等待代理重连—健康验证”阶段；
+4. 计划失败会自动暂停并回滚当前失败批次。排除原因后，对“已回滚”或“需要人工处理”节点点“重试此节点”；
+5. 对已成功节点点“回滚此节点”会创建一个回到来源版本的单节点计划。推荐版本不能撤回，非推荐版本可在没有新计划依赖时撤回。
+
+若节点进入“需要人工处理”，保持该节点排空，检查代理服务、`/var/lib/yunling-agent/upgrades` 中对应命令目录和 systemd 日志；确认二进制版本与服务恢复后再从控制台重试。不要删除仍在运行计划引用的版本或安装包。
 
 ### 从控制台一键接入
 

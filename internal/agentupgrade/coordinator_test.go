@@ -47,6 +47,9 @@ func TestCoordinatorPausesAndRollsBackOnlyFailedBatch(t *testing.T) {
 	if store.plan.Status != PlanPaused {
 		t.Fatalf("计划未暂停：%s", store.plan.Status)
 	}
+	if len(store.events) != 1 || store.events[0].Stage != string(agentprotocol.StageFailed) {
+		t.Fatalf("代理事件未持久化：%+v", store.events)
+	}
 	assertCoordinatorStatus(t, store, "canary", TargetSucceeded)
 	assertCoordinatorStatus(t, store, "batch-2-a", TargetRollingBack)
 	assertCoordinatorStatus(t, store, "batch-2-b", TargetRollingBack)
@@ -115,10 +118,80 @@ func TestCoordinatorReconcilesHeartbeatAndVerificationAfterRestart(t *testing.T)
 	}
 }
 
+func TestCoordinatorDoesNotSkipReconnectHealthWindowOnAgentSuccessEvent(t *testing.T) {
+	store := coordinatorFixture()
+	store.plan.Targets[0].Status = TargetInstalling
+	coordinator := NewCoordinator(store, &fakeUpgradeSender{}, fixedCoordinatorNow)
+	if err := coordinator.ApplyUpgradeEvent(context.Background(), "s1", agentprotocol.UpgradeEvent{
+		TargetID: "target-canary", CommandID: "command-1", Stage: agentprotocol.StageSucceeded,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertCoordinatorStatus(t, store, "target-canary", TargetReconnecting)
+	if store.plan.Status != PlanRunning {
+		t.Fatalf("代理成功事件不得绕过重连与健康窗口：%s", store.plan.Status)
+	}
+}
+
+func TestCoordinatorCompletesRollbackWhenSourceVersionReconnects(t *testing.T) {
+	store := coordinatorFixture()
+	store.plan.Status = PlanPaused
+	store.plan.Targets[0].Status = TargetRollingBack
+	store.plan.Targets[0].CommandID = "rollback-command"
+	sender := &fakeUpgradeSender{}
+	coordinator := NewCoordinator(store, sender, fixedCoordinatorNow)
+	if err := coordinator.ApplyUpgradeEvent(context.Background(), "s1", agentprotocol.UpgradeEvent{
+		TargetID: "target-canary", CommandID: "rollback-command", Stage: agentprotocol.StageReconnecting,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertCoordinatorStatus(t, store, "target-canary", TargetRollingBack)
+	if err := coordinator.ObserveHeartbeat(context.Background(), agentprotocol.Heartbeat{
+		ServerID: "s1", AgentVersion: "0.1.0", Upgrade: &agentprotocol.UpgradeRuntimeState{TargetID: "target-canary", CommandID: "rollback-command"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertCoordinatorStatus(t, store, "target-canary", TargetRolledBack)
+	if len(sender.commands) != 0 {
+		t.Fatalf("源版本重连后不得重复发送回滚命令：%+v", sender.commands)
+	}
+}
+
+func TestCoordinatorFinalizesCancelledPlanAfterStartedTargetsFinish(t *testing.T) {
+	store := coordinatorFixture()
+	store.plan.Status = PlanPaused
+	store.plan.CancelRequested = true
+	store.plan.Targets = []Target{
+		{ID: "finished", PlanID: "plan-1", ServerID: "s1", BatchNumber: 1, Status: TargetSucceeded},
+		{ID: "cancelled", PlanID: "plan-1", ServerID: "s2", BatchNumber: 2, Status: TargetCancelled},
+	}
+	if err := NewCoordinator(store, &fakeUpgradeSender{}, fixedCoordinatorNow).Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.plan.Status != PlanCancelled || store.plan.FinishedAt == nil {
+		t.Fatalf("取消收尾结束后计划必须完成取消：%+v", store.plan)
+	}
+}
+
+func TestCoordinatorFinishesDrainingTargetDuringCancelClosure(t *testing.T) {
+	store := coordinatorFixture()
+	store.plan.Status = PlanPaused
+	store.plan.CancelRequested = true
+	store.plan.Targets[0].Status = TargetDraining
+	sender := &fakeUpgradeSender{}
+	if err := NewCoordinator(store, sender, fixedCoordinatorNow).Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.commands) != 1 || sender.commands[0].Action != agentprotocol.UpgradeInstall {
+		t.Fatalf("取消收尾必须完成已经排空的目标：%+v", sender.commands)
+	}
+}
+
 type coordinatorMemory struct {
 	plan    Plan
 	release ReleaseInfo
 	runtime map[string]ServerRuntime
+	events  []Event
 }
 
 func coordinatorFixture() *coordinatorMemory {
@@ -147,6 +220,10 @@ func (s *coordinatorMemory) SetServerDraining(_ context.Context, id string, valu
 		r.Status = "draining"
 	}
 	s.runtime[id] = r
+	return nil
+}
+func (s *coordinatorMemory) AppendEvent(_ context.Context, event Event) error {
+	s.events = append(s.events, event)
 	return nil
 }
 

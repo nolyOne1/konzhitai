@@ -16,6 +16,7 @@ type CoordinatorStore interface {
 	Release(context.Context, string) (ReleaseInfo, error)
 	ServerRuntime(context.Context, string) (ServerRuntime, error)
 	SetServerDraining(context.Context, string, bool) error
+	AppendEvent(context.Context, Event) error
 }
 
 type UpgradeCommandSender interface {
@@ -41,11 +42,12 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 	if err != nil || plan == nil {
 		return err
 	}
-	if plan.Status != PlanRunning && plan.Status != PlanPending {
+	if plan.Status != PlanRunning && plan.Status != PlanPending && plan.Status != PlanPaused {
 		return nil
 	}
 	now := c.now().UTC()
 	changed := false
+	mayStartTarget := (plan.Status == PlanRunning || plan.Status == PlanPending) && !plan.CancelRequested
 	for index := range plan.Targets {
 		target := &plan.Targets[index]
 		if target.BatchNumber != plan.CurrentBatch {
@@ -53,12 +55,18 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 		}
 		switch target.Status {
 		case TargetWaiting:
+			if !mayStartTarget {
+				continue
+			}
 			if err := c.store.SetServerDraining(ctx, target.ServerID, true); err != nil {
 				return err
 			}
 			target.Status, target.StartedAt, target.UpdatedAt = TargetDraining, &now, now
 			changed = true
 		case TargetDraining:
+			if !mayStartTarget && !plan.CancelRequested {
+				continue
+			}
 			if target.StartedAt != nil && now.Sub(*target.StartedAt) > time.Duration(plan.DrainTimeoutSeconds)*time.Second {
 				plan.Status, plan.PauseReason = PlanPaused, "服务器排空超时"
 				changed = true
@@ -97,7 +105,10 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 			}
 		}
 	}
-	if batchSucceeded(*plan, plan.CurrentBatch) {
+	if plan.CancelRequested && allTargetsTerminal(*plan) {
+		plan.Status, plan.FinishedAt = PlanCancelled, &now
+		changed = true
+	} else if mayStartTarget && batchSucceeded(*plan, plan.CurrentBatch) {
 		if hasBatch(*plan, plan.CurrentBatch+1) {
 			plan.CurrentBatch++
 			changed = true
@@ -118,6 +129,13 @@ func (c *Coordinator) ApplyUpgradeEvent(ctx context.Context, serverID string, ev
 		return err
 	}
 	now := c.now().UTC()
+	occurredAt := event.OccurredAt.UTC()
+	if event.OccurredAt.IsZero() {
+		occurredAt = now
+	}
+	if err := c.store.AppendEvent(ctx, Event{ID: c.newID(), PlanID: plan.ID, TargetID: target.ID, ServerID: serverID, CommandID: event.CommandID, Stage: string(event.Stage), ErrorCode: event.ErrorCode, Message: event.Message, OccurredAt: occurredAt}); err != nil {
+		return err
+	}
 	if event.Stage == agentprotocol.StageFailed {
 		if event.ErrorCode == "rollback_failed" || target.Status == TargetRollingBack {
 			plan.Targets[index].Status, plan.Targets[index].ErrorCode, plan.Targets[index].ErrorMessage = TargetManualIntervention, event.ErrorCode, event.Message
@@ -153,11 +171,19 @@ func (c *Coordinator) ApplyUpgradeEvent(ctx context.Context, serverID string, ev
 		}
 		return nil
 	}
+	if target.Status == TargetRollingBack && (event.Stage == agentprotocol.StageReconnecting || event.Stage == agentprotocol.StageSucceeded) {
+		plan.Targets[index].UpdatedAt = now
+		_, err = c.store.SavePlan(ctx, plan)
+		return err
+	}
 	status, ok := targetStatusForStage(event.Stage)
 	if !ok {
 		return ErrInvalidTransition
 	}
 	plan.Targets[index].Status, plan.Targets[index].UpdatedAt = status, now
+	if status == TargetRolledBack {
+		plan.Targets[index].FinishedAt = &now
+	}
 	plan.Targets[index].ErrorCode, plan.Targets[index].ErrorMessage = event.ErrorCode, event.Message
 	_, err = c.store.SavePlan(ctx, plan)
 	return err
@@ -174,10 +200,18 @@ func (c *Coordinator) ObserveHeartbeat(ctx context.Context, heartbeat agentproto
 		}
 		return err
 	}
+	now := c.now().UTC()
+	if target.Status == TargetRollingBack {
+		if heartbeat.AgentVersion != target.SourceVersion {
+			return nil
+		}
+		plan.Targets[index].Status, plan.Targets[index].UpdatedAt, plan.Targets[index].FinishedAt = TargetRolledBack, now, &now
+		_, err = c.store.SavePlan(ctx, plan)
+		return err
+	}
 	if target.Status != TargetReconnecting {
 		return nil
 	}
-	now := c.now().UTC()
 	if heartbeat.AgentVersion != target.TargetVersion {
 		plan.Targets[index].Status, plan.Targets[index].CommandID, plan.Targets[index].UpdatedAt = TargetRollingBack, c.newID(), now
 		if _, err := c.store.SavePlan(ctx, plan); err != nil {
@@ -218,7 +252,7 @@ func rollbackCommand(plan Plan, target Target) agentprotocol.UpgradeCommand {
 	return agentprotocol.UpgradeCommand{CommandID: target.CommandID, PlanID: plan.ID, TargetID: target.ID, Action: agentprotocol.UpgradeRollback, SourceVersion: target.TargetVersion, TargetVersion: target.SourceVersion, ReconnectTimeout: time.Duration(plan.ReconnectTimeoutSeconds) * time.Second}
 }
 func targetStatusForStage(stage agentprotocol.UpgradeStage) (TargetStatus, bool) {
-	m := map[agentprotocol.UpgradeStage]TargetStatus{agentprotocol.StageAccepted: TargetDownloading, agentprotocol.StageDownloading: TargetDownloading, agentprotocol.StageVerifying: TargetVerifying, agentprotocol.StageInstalling: TargetInstalling, agentprotocol.StageReconnecting: TargetReconnecting, agentprotocol.StageSucceeded: TargetSucceeded, agentprotocol.StageRollingBack: TargetRollingBack, agentprotocol.StageRolledBack: TargetRolledBack}
+	m := map[agentprotocol.UpgradeStage]TargetStatus{agentprotocol.StageAccepted: TargetDownloading, agentprotocol.StageDownloading: TargetDownloading, agentprotocol.StageVerifying: TargetVerifying, agentprotocol.StageInstalling: TargetInstalling, agentprotocol.StageReconnecting: TargetReconnecting, agentprotocol.StageSucceeded: TargetReconnecting, agentprotocol.StageRollingBack: TargetRollingBack, agentprotocol.StageRolledBack: TargetRolledBack}
 	v, ok := m[stage]
 	return v, ok
 }
@@ -241,4 +275,13 @@ func hasBatch(plan Plan, batch int) bool {
 		}
 	}
 	return false
+}
+
+func allTargetsTerminal(plan Plan) bool {
+	for _, target := range plan.Targets {
+		if !terminalTargetStatus(target.Status) {
+			return false
+		}
+	}
+	return true
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -351,6 +352,17 @@ func candidateMigrationTree(t *testing.T) string {
 	for _, entry := range entries {
 		if entry.IsDir() {
 			t.Fatalf("迁移目录不得包含子目录：%s", entry.Name())
+		}
+		matches := migrationFilePattern.FindStringSubmatch(entry.Name())
+		if len(matches) != 3 {
+			t.Fatalf("迁移文件名无效：%s", entry.Name())
+		}
+		version, err := strconv.Atoi(matches[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if version > memberLifecycleMigration {
+			continue
 		}
 		body, err := os.ReadFile(filepath.Join(source, entry.Name()))
 		if err != nil {

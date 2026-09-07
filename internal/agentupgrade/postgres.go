@@ -88,6 +88,11 @@ func (r *PostgresRepository) SetServerDraining(ctx context.Context, serverID str
 	return nil
 }
 
+func (r *PostgresRepository) AppendEvent(ctx context.Context, event Event) error {
+	_, err := r.db.Exec(ctx, `INSERT INTO agent_upgrade_events(id,plan_id,target_id,server_id,command_id,stage,error_code,message,occurred_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, event.ID, event.PlanID, event.TargetID, event.ServerID, event.CommandID, event.Stage, event.ErrorCode, event.Message, event.OccurredAt)
+	return err
+}
+
 func (r *PostgresRepository) Servers(ctx context.Context, ids []string) ([]ServerInfo, error) {
 	servers := make([]ServerInfo, 0, len(ids))
 	for _, id := range ids {
@@ -163,6 +168,10 @@ func (r *PostgresRepository) ListPlans(ctx context.Context) ([]Plan, error) {
 		if err != nil {
 			return nil, err
 		}
+		plan.Events, err = r.events(ctx, plan.ID)
+		if err != nil {
+			return nil, err
+		}
 		plans = append(plans, plan)
 	}
 	return plans, rows.Err()
@@ -178,23 +187,38 @@ func (r *PostgresRepository) SavePlan(ctx context.Context, plan Plan) (Plan, err
 		return Plan{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var exists string
-	if err := tx.QueryRow(ctx, `SELECT id FROM agent_upgrade_plans WHERE id = $1 FOR UPDATE`, plan.ID).Scan(&exists); errors.Is(err, pgx.ErrNoRows) {
-		return Plan{}, ErrPlanNotFound
-	} else if err != nil {
-		return Plan{}, err
-	}
-	_, err = tx.Exec(ctx, `UPDATE agent_upgrade_plans SET status=$2,current_batch=$3,pause_reason=$4,started_at=$5,finished_at=$6 WHERE id=$1`, plan.ID, plan.Status, plan.CurrentBatch, plan.PauseReason, plan.StartedAt, plan.FinishedAt)
+	result, err := tx.Exec(ctx, `UPDATE agent_upgrade_plans SET status=$2,current_batch=$3,pause_reason=$4,started_at=$5,finished_at=$6,cancel_requested=$7,revision=revision+1 WHERE id=$1 AND revision=$8`, plan.ID, plan.Status, plan.CurrentBatch, plan.PauseReason, plan.StartedAt, plan.FinishedAt, plan.CancelRequested, plan.Revision)
 	if err != nil {
 		return Plan{}, mapPostgresError(err)
 	}
+	if result.RowsAffected() != 1 {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_upgrade_plans WHERE id=$1)`, plan.ID).Scan(&exists); err != nil {
+			return Plan{}, err
+		}
+		if !exists {
+			return Plan{}, ErrPlanNotFound
+		}
+		return Plan{}, ErrInvalidTransition
+	}
 	for _, target := range plan.Targets {
+		var previousStatus TargetStatus
+		if err := tx.QueryRow(ctx, `SELECT status FROM agent_upgrade_targets WHERE id=$1 AND plan_id=$2 FOR UPDATE`, target.ID, plan.ID).Scan(&previousStatus); errors.Is(err, pgx.ErrNoRows) {
+			return Plan{}, ErrTargetNotFound
+		} else if err != nil {
+			return Plan{}, err
+		}
 		result, err := tx.Exec(ctx, `UPDATE agent_upgrade_targets SET status=$3,attempts=$4,command_id=$5,error_code=$6,error_message=$7,started_at=$8,updated_at=$9,finished_at=$10 WHERE id=$1 AND plan_id=$2`, target.ID, plan.ID, target.Status, target.Attempts, target.CommandID, target.ErrorCode, target.ErrorMessage, target.StartedAt, target.UpdatedAt, target.FinishedAt)
 		if err != nil {
 			return Plan{}, err
 		}
 		if result.RowsAffected() != 1 {
 			return Plan{}, ErrTargetNotFound
+		}
+		if previousStatus != target.Status {
+			if _, err := tx.Exec(ctx, `INSERT INTO agent_upgrade_events(plan_id,target_id,server_id,command_id,stage,error_code,message,occurred_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, plan.ID, target.ID, target.ServerID, target.CommandID, target.Status, target.ErrorCode, target.ErrorMessage, target.UpdatedAt); err != nil {
+				return Plan{}, err
+			}
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -203,14 +227,14 @@ func (r *PostgresRepository) SavePlan(ctx context.Context, plan Plan) (Plan, err
 	return r.Plan(ctx, plan.ID)
 }
 
-const planSelect = `SELECT plan.id, plan.target_release_id, release.version, plan.status, plan.first_batch_size, plan.batch_size, plan.drain_timeout_seconds, plan.reconnect_timeout_seconds, plan.verification_seconds, plan.current_batch, plan.created_by::text, plan.pause_reason, plan.created_at, plan.started_at, plan.finished_at FROM agent_upgrade_plans AS plan JOIN agent_releases AS release ON release.id = plan.target_release_id`
+const planSelect = `SELECT plan.id, plan.target_release_id, release.version, plan.status, plan.first_batch_size, plan.batch_size, plan.drain_timeout_seconds, plan.reconnect_timeout_seconds, plan.verification_seconds, plan.current_batch, plan.revision, plan.cancel_requested, plan.created_by::text, plan.pause_reason, plan.created_at, plan.started_at, plan.finished_at FROM agent_upgrade_plans AS plan JOIN agent_releases AS release ON release.id = plan.target_release_id`
 
 type scanner interface{ Scan(...any) error }
 
 func scanPlan(row scanner) (Plan, error) {
 	var plan Plan
 	var started, finished sql.NullTime
-	err := row.Scan(&plan.ID, &plan.TargetReleaseID, &plan.TargetVersion, &plan.Status, &plan.FirstBatchSize, &plan.BatchSize, &plan.DrainTimeoutSeconds, &plan.ReconnectTimeoutSeconds, &plan.VerificationSeconds, &plan.CurrentBatch, &plan.CreatedBy, &plan.PauseReason, &plan.CreatedAt, &started, &finished)
+	err := row.Scan(&plan.ID, &plan.TargetReleaseID, &plan.TargetVersion, &plan.Status, &plan.FirstBatchSize, &plan.BatchSize, &plan.DrainTimeoutSeconds, &plan.ReconnectTimeoutSeconds, &plan.VerificationSeconds, &plan.CurrentBatch, &plan.Revision, &plan.CancelRequested, &plan.CreatedBy, &plan.PauseReason, &plan.CreatedAt, &started, &finished)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -231,10 +255,14 @@ func (r *PostgresRepository) planByQuery(ctx context.Context, query string, args
 		return Plan{}, err
 	}
 	plan.Targets, err = r.targets(ctx, plan.ID)
+	if err != nil {
+		return Plan{}, err
+	}
+	plan.Events, err = r.events(ctx, plan.ID)
 	return plan, err
 }
 func (r *PostgresRepository) targets(ctx context.Context, planID string) ([]Target, error) {
-	rows, err := r.db.Query(ctx, `SELECT id,plan_id,server_id,batch_number,source_version,target_version,source_draining,status,attempts,command_id,error_code,error_message,started_at,updated_at,finished_at FROM agent_upgrade_targets WHERE plan_id=$1 ORDER BY batch_number,updated_at,id`, planID)
+	rows, err := r.db.Query(ctx, `SELECT target.id,target.plan_id,target.server_id,server.name,target.batch_number,target.source_version,target.target_version,target.source_draining,target.status,target.attempts,target.command_id,target.error_code,target.error_message,target.started_at,target.updated_at,target.finished_at FROM agent_upgrade_targets AS target JOIN servers AS server ON server.id=target.server_id WHERE target.plan_id=$1 ORDER BY target.batch_number,target.updated_at,target.id`, planID)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +271,7 @@ func (r *PostgresRepository) targets(ctx context.Context, planID string) ([]Targ
 	for rows.Next() {
 		var target Target
 		var started, finished sql.NullTime
-		if err := rows.Scan(&target.ID, &target.PlanID, &target.ServerID, &target.BatchNumber, &target.SourceVersion, &target.TargetVersion, &target.SourceDraining, &target.Status, &target.Attempts, &target.CommandID, &target.ErrorCode, &target.ErrorMessage, &started, &target.UpdatedAt, &finished); err != nil {
+		if err := rows.Scan(&target.ID, &target.PlanID, &target.ServerID, &target.ServerName, &target.BatchNumber, &target.SourceVersion, &target.TargetVersion, &target.SourceDraining, &target.Status, &target.Attempts, &target.CommandID, &target.ErrorCode, &target.ErrorMessage, &started, &target.UpdatedAt, &finished); err != nil {
 			return nil, err
 		}
 		if started.Valid {
@@ -255,6 +283,23 @@ func (r *PostgresRepository) targets(ctx context.Context, planID string) ([]Targ
 		targets = append(targets, target)
 	}
 	return targets, rows.Err()
+}
+
+func (r *PostgresRepository) events(ctx context.Context, planID string) ([]Event, error) {
+	rows, err := r.db.Query(ctx, `SELECT id,plan_id,target_id,server_id,command_id,stage,error_code,message,occurred_at FROM agent_upgrade_events WHERE plan_id=$1 ORDER BY occurred_at,id`, planID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	events := []Event{}
+	for rows.Next() {
+		var event Event
+		if err := rows.Scan(&event.ID, &event.PlanID, &event.TargetID, &event.ServerID, &event.CommandID, &event.Stage, &event.ErrorCode, &event.Message, &event.OccurredAt); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
 }
 func mapPostgresError(err error) error {
 	var postgresError *pgconn.PgError

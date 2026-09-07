@@ -19,7 +19,7 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: externalBaseURL ? undefined : {
-    command: 'npm run dev -- --host 127.0.0.1 --port 4173',
+    command: 'node ../../node_modules/vite/bin/vite.js --host 127.0.0.1 --port 4173',
     url: localBaseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

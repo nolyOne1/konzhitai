@@ -7,6 +7,7 @@ import { LoginPage } from '../features/auth/LoginPage'
 import { RequiredPasswordPage } from '../features/auth/RequiredPasswordPage'
 import { DashboardPage } from '../features/dashboard/DashboardPage'
 import { ServersPage } from '../features/servers/ServersPage'
+import { AgentUpgradesPage } from '../features/servers/AgentUpgradesPage'
 import { ScriptEditorPage } from '../features/scripts/ScriptEditorPage'
 import { ScriptsPage } from '../features/scripts/ScriptsPage'
 import { SyncPage } from '../features/scripts/SyncPage'
@@ -49,6 +50,7 @@ export function App() {
             <Route path="/runs" element={<RunsPage />} />
             <Route path="/runs/:id" element={<RunDetailPage />} />
             <Route path="/servers" element={<ServersPage />} />
+            <Route path="/servers/upgrades" element={<AgentUpgradesPage />} />
             <Route path="/operations" element={<OperationsPage />} />
             <Route path="/sync" element={<SyncPage />} />
             <Route path="/secrets" element={<SecretsPage />} />

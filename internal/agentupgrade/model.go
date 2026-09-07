@@ -63,18 +63,22 @@ type Plan struct {
 	ReconnectTimeoutSeconds int        `json:"reconnect_timeout_seconds"`
 	VerificationSeconds     int        `json:"verification_seconds"`
 	CurrentBatch            int        `json:"current_batch"`
+	Revision                int64      `json:"revision"`
+	CancelRequested         bool       `json:"cancel_requested"`
 	CreatedBy               string     `json:"created_by"`
 	PauseReason             string     `json:"pause_reason"`
 	CreatedAt               time.Time  `json:"created_at"`
 	StartedAt               *time.Time `json:"started_at,omitempty"`
 	FinishedAt              *time.Time `json:"finished_at,omitempty"`
 	Targets                 []Target   `json:"targets"`
+	Events                  []Event    `json:"events"`
 }
 
 type Target struct {
 	ID             string       `json:"id"`
 	PlanID         string       `json:"plan_id"`
 	ServerID       string       `json:"server_id"`
+	ServerName     string       `json:"server_name"`
 	BatchNumber    int          `json:"batch_number"`
 	SourceVersion  string       `json:"source_version"`
 	TargetVersion  string       `json:"target_version"`
@@ -87,6 +91,18 @@ type Target struct {
 	StartedAt      *time.Time   `json:"started_at,omitempty"`
 	UpdatedAt      time.Time    `json:"updated_at"`
 	FinishedAt     *time.Time   `json:"finished_at,omitempty"`
+}
+
+type Event struct {
+	ID         string    `json:"id"`
+	PlanID     string    `json:"plan_id"`
+	TargetID   string    `json:"target_id"`
+	ServerID   string    `json:"server_id"`
+	CommandID  string    `json:"command_id"`
+	Stage      string    `json:"stage"`
+	ErrorCode  string    `json:"error_code"`
+	Message    string    `json:"message"`
+	OccurredAt time.Time `json:"occurred_at"`
 }
 
 type ReleaseInfo struct {

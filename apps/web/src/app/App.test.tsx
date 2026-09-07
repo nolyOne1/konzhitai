@@ -68,6 +68,21 @@ describe('云令应用壳', () => {
     window.history.pushState({}, '', '/')
   })
 
+  it('访问服务器升级地址时显示代理升级工作台', async () => {
+    window.history.pushState({}, '', '/servers/upgrades')
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/api/agent-releases') return { ok: true, status: 200, json: async () => ({ releases: [] }) } as Response
+      if (path === '/api/servers') return { ok: true, status: 200, json: async () => ({ servers: [] }) } as Response
+      if (path === '/api/agent-upgrades') return { ok: true, status: 200, json: async () => ({ plans: [] }) } as Response
+      return { ok: false, status: 404, json: async () => ({ message: '未找到资源' }) } as Response
+    }))
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { level: 1, name: '代理升级' })).toBeVisible()
+  })
+
   it('访问登录地址时显示中文登录页', () => {
     window.history.pushState({}, '', '/login')
 

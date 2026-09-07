@@ -105,6 +105,25 @@ func TestPostgresManagementUsesLatestSnapshotAndPersistsDrain(t *testing.T) {
 	if len(servers[0].AgentCapabilities) != 1 || servers[0].AgentCapabilities[0] != "self_upgrade_v1" {
 		t.Fatalf("服务器列表必须返回代理升级能力：%+v", servers[0].AgentCapabilities)
 	}
+	userID := "123e4567-e89b-42d3-a456-426614174202"
+	releaseID := "123e4567-e89b-42d3-a456-426614174203"
+	planID := "123e4567-e89b-42d3-a456-426614174204"
+	if _, err := db.Exec(ctx, `INSERT INTO users(id,email,display_name,password_hash) VALUES($1,'upgrade@example.test','升级管理员','x')`, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO agent_releases(id,version,manifest_sha256) VALUES($1,'0.3.0',$2)`, releaseID, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO agent_upgrade_plans(id,target_release_id,status,batch_size,drain_timeout_seconds,reconnect_timeout_seconds,verification_seconds,created_by) VALUES($1,$2,'running',1,3600,120,30,$3)`, planID, releaseID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO agent_upgrade_targets(plan_id,server_id,batch_number,source_version,target_version,source_draining,status) VALUES($1,$2,1,'0.2.0','0.3.0',true,'installing')`, planID, serverID); err != nil {
+		t.Fatal(err)
+	}
+	servers, err = repository.ListServers(ctx)
+	if err != nil || len(servers) != 1 || servers[0].UpgradeStatus != "installing" {
+		t.Fatalf("服务器列表必须返回最近升级状态：servers=%+v err=%v", servers, err)
+	}
 
 	enabled := false
 	if _, err := repository.UpdateServer(ctx, serverID, server.UpdateServerInput{Enabled: &enabled}); err != nil {

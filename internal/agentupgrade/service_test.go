@@ -80,6 +80,7 @@ func TestPauseResumeCancelRetryAndRollback(t *testing.T) {
 	stored := repository.plans[plan.ID]
 	stored.Targets[0].Status = TargetRolledBack
 	stored.Status = PlanPaused
+	stored.CancelRequested = false
 	repository.plans[plan.ID] = stored
 	oldCommand := repository.plans[plan.ID].Targets[0].CommandID
 	if plan, err = service.RetryTarget(ctx, plan.ID, plan.Targets[0].ID); err != nil || plan.Targets[0].Status != TargetDraining || plan.Targets[0].CommandID == oldCommand {
@@ -116,6 +117,29 @@ func TestResumeRevalidatesWaitingServers(t *testing.T) {
 	repository.servers["s1"] = server
 	if _, err := service.Resume(ctx, plan.ID); !errors.Is(err, ErrServerIneligible) {
 		t.Fatalf("服务器条件变化后不得继续计划：%v", err)
+	}
+}
+
+func TestCancelKeepsStartedTargetsManagedUntilTheyFinish(t *testing.T) {
+	ctx := context.Background()
+	repository := validMemoryRepository()
+	service := NewService(repository)
+	plan, err := service.CreatePlan(ctx, CreatePlanInput{TargetReleaseID: "release-2", ServerIDs: []string{"s1", "s2"}, CreatedBy: "user-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := repository.plans[plan.ID]
+	stored.Targets[0].Status = TargetInstalling
+	repository.plans[plan.ID] = stored
+	cancelled, err := service.Cancel(ctx, plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Status != PlanPaused || !cancelled.CancelRequested || cancelled.Targets[0].Status != TargetInstalling || cancelled.Targets[1].Status != TargetCancelled {
+		t.Fatalf("取消后必须继续管理已开始目标：%+v", cancelled)
+	}
+	if _, err := service.Resume(ctx, plan.ID); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("取消收尾中的计划不得继续：%v", err)
 	}
 }
 

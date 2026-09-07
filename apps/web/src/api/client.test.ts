@@ -2,25 +2,35 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   changePassword,
+  cancelAgentUpgradePlan,
+  createAgentUpgradePlan,
   createMember,
   getBackups,
   getBackupSummary,
   getDashboard,
   getFeishuNotificationConfig,
   getAgentReleases,
+  getAgentUpgradePlan,
+  getAgentUpgradePlans,
   getLatestAgentRelease,
   getMembers,
   getSession,
   getNotificationDelivery,
   getRestoreVerifications,
+  pauseAgentUpgradePlan,
+  recommendAgentRelease,
   requestBackup,
   requestVerification,
+  resumeAgentUpgradePlan,
+  retryAgentUpgradeTarget,
+  rollbackAgentUpgradeTarget,
   removeMember,
   resetMemberPassword,
   restoreMember,
   setMemberEnabled,
   testFeishuNotification,
   updateFeishuNotificationConfig,
+  withdrawAgentRelease,
 } from './client'
 
 describe('API 客户端', () => {
@@ -76,6 +86,50 @@ describe('API 客户端', () => {
       artifacts: [{ os: 'linux', arch: 'amd64', fileName: 'agent.tar.gz', byteSize: 42, sha256: 'a'.repeat(64), downloadUrl: '/download' }],
     }])
     expect(fetchMock).toHaveBeenCalledWith('/api/agent-releases', { credentials: 'same-origin' })
+  })
+
+  it('使用固定路径管理代理升级计划和版本', async () => {
+    const rawPlan = {
+      id: 'plan-1', target_version: '0.2.0', status: 'running', current_batch: 1,
+      created_at: '2026-09-07T00:00:00Z', targets: [], events: [],
+    }
+    const fetchMock = vi.fn().mockResolvedValue(response({ plans: [rawPlan] }))
+      .mockResolvedValueOnce(response({ plans: [rawPlan] }))
+      .mockResolvedValueOnce(response(rawPlan))
+      .mockResolvedValueOnce(response(rawPlan, 201))
+      .mockResolvedValueOnce(response(rawPlan))
+      .mockResolvedValueOnce(response(rawPlan))
+      .mockResolvedValueOnce(response(rawPlan))
+      .mockResolvedValueOnce(response(rawPlan))
+      .mockResolvedValueOnce(response(rawPlan, 201))
+      .mockResolvedValueOnce(response({ id: 'release-2' }))
+      .mockResolvedValueOnce(response({ id: 'release-1' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getAgentUpgradePlans()
+    await getAgentUpgradePlan('plan/1')
+    await createAgentUpgradePlan({ targetReleaseId: 'release-2', serverIds: ['server-1'], batchSize: 2, drainTimeoutSeconds: 3600, reconnectTimeoutSeconds: 120, verificationSeconds: 30 })
+    await pauseAgentUpgradePlan('plan/1', '人工暂停')
+    await resumeAgentUpgradePlan('plan/1')
+    await cancelAgentUpgradePlan('plan/1')
+    await retryAgentUpgradeTarget('plan/1', 'target/1')
+    await rollbackAgentUpgradeTarget('plan/1', 'target/1')
+    await recommendAgentRelease('release/2')
+    await withdrawAgentRelease('release/1')
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/agent-upgrades', { credentials: 'same-origin' })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/agent-upgrades/plan%2F1', { credentials: 'same-origin' })
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/agent-upgrades', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target_release_id: 'release-2', server_ids: ['server-1'], batch_size: 2, drain_timeout_seconds: 3600, reconnect_timeout_seconds: 120, verification_seconds: 30 }),
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/agent-upgrades/plan%2F1/pause', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: '人工暂停' }) })
+    expect(fetchMock).toHaveBeenNthCalledWith(5, '/api/agent-upgrades/plan%2F1/resume', { method: 'POST', credentials: 'same-origin' })
+    expect(fetchMock).toHaveBeenNthCalledWith(6, '/api/agent-upgrades/plan%2F1/cancel', { method: 'POST', credentials: 'same-origin' })
+    expect(fetchMock).toHaveBeenNthCalledWith(7, '/api/agent-upgrades/plan%2F1/targets/target%2F1/retry', { method: 'POST', credentials: 'same-origin' })
+    expect(fetchMock).toHaveBeenNthCalledWith(8, '/api/agent-upgrades/plan%2F1/targets/target%2F1/rollback', { method: 'POST', credentials: 'same-origin' })
+    expect(fetchMock).toHaveBeenNthCalledWith(9, '/api/agent-releases/release%2F2/recommend', { method: 'POST', credentials: 'same-origin' })
+    expect(fetchMock).toHaveBeenNthCalledWith(10, '/api/agent-releases/release%2F1/withdraw', { method: 'POST', credentials: 'same-origin' })
   })
 
   it('使用同源 JSON 请求修改当前用户密码', async () => {

@@ -44,6 +44,8 @@ CREATE TABLE agent_upgrade_plans (
     reconnect_timeout_seconds integer NOT NULL CHECK (reconnect_timeout_seconds BETWEEN 30 AND 3600),
     verification_seconds integer NOT NULL CHECK (verification_seconds BETWEEN 10 AND 600),
     current_batch integer NOT NULL DEFAULT 1 CHECK (current_batch > 0),
+    revision bigint NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    cancel_requested boolean NOT NULL DEFAULT false,
     created_by uuid NOT NULL REFERENCES users(id),
     pause_reason text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),

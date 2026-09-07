@@ -1290,7 +1290,7 @@ Run: `npm run test:web -- --run apps/web/src/features/servers apps/web/src/api/c
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/web/src/api apps/web/src/features/servers apps/web/src/app/styles.css
@@ -1324,7 +1324,7 @@ git commit -m "feat: show agent version inventory"
 - Web test helpers: `renderUpgradePage`, `renderDialog`, `recommendedRelease`, `availableRelease`, and `planWithTargetStatus` use only deterministic mocked API data.
 - Go integration helper `newUpgradeIntegrationFixture(t)` owns a real temporary PostgreSQL database and fake per-server WebSocket senders; its methods have the exact names used in Step 7.
 
-- [ ] **Step 1: Add failing API and route tests**
+- [x] **Step 1: Add failing API and route tests**
 
 Define these client-facing shapes and operations, then test each method, URL, JSON body, and Chinese error propagation:
 
@@ -1372,7 +1372,7 @@ export interface CreateAgentUpgradePlanInput {
 
 The client exports `getAgentUpgradePlans`, `getAgentUpgradePlan`, `createAgentUpgradePlan`, `pauseAgentUpgradePlan`, `resumeAgentUpgradePlan`, `cancelAgentUpgradePlan`, `retryAgentUpgradeTarget`, `rollbackAgentUpgradeTarget`, `recommendAgentRelease`, and `withdrawAgentRelease`. `App.test.tsx` navigates to `/servers/upgrades` and asserts the `代理升级` heading.
 
-- [ ] **Step 2: Add failing page summary and empty-state tests**
+- [x] **Step 2: Add failing page summary and empty-state tests**
 
 ```tsx
 it('显示代理升级概况和空状态', async () => {
@@ -1396,7 +1396,7 @@ it('允许管理非推荐版本但保护推荐版本', async () => {
 })
 ```
 
-- [ ] **Step 3: Add failing three-step wizard tests**
+- [x] **Step 3: Add failing three-step wizard tests**
 
 ```tsx
 it('创建首批单节点的分批升级计划', async () => {
@@ -1417,11 +1417,11 @@ it('创建首批单节点的分批升级计划', async () => {
 
 Additional assertions filter by `京东云`, `华东 1`, `用途=批处理`, and `0.1.0`; validate each timeout boundary; keep the submit button disabled while the request is pending; and restore focus to `创建升级计划` after close.
 
-- [ ] **Step 4: Implement the page and wizard**
+- [x] **Step 4: Implement the page and wizard**
 
 The page loads releases, servers, and plans together. The wizard submits only server IDs that remain eligible at confirmation time. Use native form labels and buttons, keep every validation error adjacent to its field, and preserve existing console colors and spacing.
 
-- [ ] **Step 5: Add failing plan panel action tests**
+- [x] **Step 5: Add failing plan panel action tests**
 
 ```tsx
 it.each([
@@ -1437,11 +1437,11 @@ it.each([
 
 For each action button, click once while its mocked promise is unresolved and assert the button is disabled, resolve it, then assert `getAgentUpgradePlan(plan.id)` refreshes the detail. A successful target exposes `回滚此节点`; a rolled-back target exposes `重试此节点`.
 
-- [ ] **Step 6: Implement plan detail and history**
+- [x] **Step 6: Implement plan detail and history**
 
 Poll the active plan every 5 seconds while its status is `running` or `paused`; stop polling terminal plans. Render target progress and event timestamps without exposing raw stack traces. Keep history read-only and newest first.
 
-- [ ] **Step 7: Add the backend integration scenario**
+- [x] **Step 7: Add the backend integration scenario**
 
 ```go
 func TestAgentUpgradeCanaryThenFailedBatchRollback(t *testing.T) {
@@ -1465,11 +1465,11 @@ func TestAgentUpgradeCanaryThenFailedBatchRollback(t *testing.T) {
 }
 ```
 
-- [ ] **Step 8: Document baseline upgrade and normal operation**
+- [x] **Step 8: Document baseline upgrade and normal operation**
 
 Document the one-time manual baseline update for legacy nodes, importing a new release, creating a plan, reading stages, retrying, rollback behavior, and recovering `manual_intervention`. Documentation commands use the literal sample path `/srv/yunling-agent-releases/0.2.0` and contain no credentials.
 
-- [ ] **Step 9: Run the complete verification suite**
+- [x] **Step 9: Run the complete verification suite**
 
 Run: `go test -p 1 ./... -count=1`
 
@@ -1487,7 +1487,7 @@ Run: `npm run test:e2e`
 
 Expected: every command exits 0; Web tests contain no unhandled `act` warnings; all visible product copy is Chinese.
 
-- [ ] **Step 10: Review the branch diff and commit**
+- [x] **Step 10: Review the branch diff and commit**
 
 Run: `git diff --check main...HEAD`
 

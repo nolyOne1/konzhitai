@@ -498,6 +498,7 @@ const serverViewSelect = `
 		server.agent_os,
 		server.agent_arch,
 		server.agent_capabilities,
+		COALESCE(upgrade.status, ''),
 		server.scheduling_weight,
 		COALESCE(snapshot.cpu_usage_percent, 0),
 		COALESCE(snapshot.memory_total_bytes, 0),
@@ -520,6 +521,13 @@ const serverViewSelect = `
 		ORDER BY collected_at DESC
 		LIMIT 1
 	) AS snapshot ON true
+	LEFT JOIN LATERAL (
+		SELECT status
+		FROM agent_upgrade_targets
+		WHERE server_id = server.id
+		ORDER BY updated_at DESC, id DESC
+		LIMIT 1
+	) AS upgrade ON true
 `
 
 type rowScanner interface {
@@ -545,6 +553,7 @@ func scanServerView(row rowScanner) (ServerView, error) {
 		&view.AgentOS,
 		&view.AgentArch,
 		&capabilities,
+		&view.UpgradeStatus,
 		&view.SchedulingWeight,
 		&view.CPUUsagePercent,
 		&view.MemoryTotalBytes,

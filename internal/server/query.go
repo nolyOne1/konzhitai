@@ -43,6 +43,7 @@ type ServerView struct {
 	AgentOS              string            `json:"agentOS"`
 	AgentArch            string            `json:"agentArch"`
 	AgentCapabilities    []string          `json:"agentCapabilities"`
+	UpgradeStatus        string            `json:"upgradeStatus,omitempty"`
 	SchedulingWeight     int               `json:"schedulingWeight"`
 	CPUUsagePercent      float64           `json:"cpuUsagePercent"`
 	MemoryTotalBytes     int64             `json:"memoryTotalBytes"`

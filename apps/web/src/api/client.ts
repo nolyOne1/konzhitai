@@ -88,6 +88,48 @@ export interface AgentRelease {
   artifacts: AgentReleaseArtifact[]
 }
 
+export interface AgentUpgradeEvent {
+  id: string
+  targetId: string
+  stage: string
+  message: string
+  occurredAt: string
+}
+
+export interface AgentUpgradeTarget {
+  id: string
+  serverId: string
+  serverName: string
+  batchNumber: number
+  sourceVersion: string
+  targetVersion: string
+  status: string
+  attempts: number
+  errorMessage: string
+  updatedAt: string
+}
+
+export interface AgentUpgradePlan {
+  id: string
+  targetVersion: string
+  status: 'pending' | 'running' | 'paused' | 'succeeded' | 'cancelled'
+  currentBatch: number
+  targets: AgentUpgradeTarget[]
+  events: AgentUpgradeEvent[]
+  createdAt: string
+  pauseReason: string
+  cancelRequested?: boolean
+}
+
+export interface CreateAgentUpgradePlanInput {
+  targetReleaseId: string
+  serverIds: string[]
+  batchSize: number
+  drainTimeoutSeconds: number
+  reconnectTimeoutSeconds: number
+  verificationSeconds: number
+}
+
 export type DistributionMode = 'all_compatible' | 'server_group' | 'labels' | 'on_demand'
 
 export interface DistributionRule {
@@ -439,6 +481,85 @@ export async function getAgentReleases(): Promise<AgentRelease[]> {
       byteSize: artifact.byte_size, sha256: artifact.sha256, downloadUrl: artifact.download_url,
     })),
   }))
+}
+
+export async function getAgentUpgradePlans(): Promise<AgentUpgradePlan[]> {
+  const response = await request<{ plans?: RawAgentUpgradePlan[] }>('/api/agent-upgrades')
+  return (response.plans ?? []).map(mapAgentUpgradePlan)
+}
+
+export async function getAgentUpgradePlan(id: string): Promise<AgentUpgradePlan> {
+  return mapAgentUpgradePlan(await request<RawAgentUpgradePlan>(`/api/agent-upgrades/${encodeURIComponent(id)}`))
+}
+
+export async function createAgentUpgradePlan(input: CreateAgentUpgradePlanInput): Promise<AgentUpgradePlan> {
+  return mapAgentUpgradePlan(await request<RawAgentUpgradePlan>('/api/agent-upgrades', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      target_release_id: input.targetReleaseId, server_ids: input.serverIds, batch_size: input.batchSize,
+      drain_timeout_seconds: input.drainTimeoutSeconds, reconnect_timeout_seconds: input.reconnectTimeoutSeconds,
+      verification_seconds: input.verificationSeconds,
+    }),
+  }))
+}
+
+export async function pauseAgentUpgradePlan(id: string, reason = ''): Promise<AgentUpgradePlan> {
+  return upgradePlanMutation(id, 'pause', { reason })
+}
+
+export async function resumeAgentUpgradePlan(id: string): Promise<AgentUpgradePlan> {
+  return upgradePlanMutation(id, 'resume')
+}
+
+export async function cancelAgentUpgradePlan(id: string): Promise<AgentUpgradePlan> {
+  return upgradePlanMutation(id, 'cancel')
+}
+
+export async function retryAgentUpgradeTarget(planID: string, targetID: string): Promise<AgentUpgradePlan> {
+  return mapAgentUpgradePlan(await request<RawAgentUpgradePlan>(`/api/agent-upgrades/${encodeURIComponent(planID)}/targets/${encodeURIComponent(targetID)}/retry`, { method: 'POST' }))
+}
+
+export async function rollbackAgentUpgradeTarget(planID: string, targetID: string): Promise<AgentUpgradePlan> {
+  return mapAgentUpgradePlan(await request<RawAgentUpgradePlan>(`/api/agent-upgrades/${encodeURIComponent(planID)}/targets/${encodeURIComponent(targetID)}/rollback`, { method: 'POST' }))
+}
+
+export async function recommendAgentRelease(id: string): Promise<void> {
+  await request(`/api/agent-releases/${encodeURIComponent(id)}/recommend`, { method: 'POST' })
+}
+
+export async function withdrawAgentRelease(id: string): Promise<void> {
+  await request(`/api/agent-releases/${encodeURIComponent(id)}/withdraw`, { method: 'POST' })
+}
+
+async function upgradePlanMutation(id: string, action: string, body?: Record<string, string>) {
+  return mapAgentUpgradePlan(await request<RawAgentUpgradePlan>(`/api/agent-upgrades/${encodeURIComponent(id)}/${action}`, {
+    method: 'POST', ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+  }))
+}
+
+interface RawAgentUpgradePlan {
+  id: string
+  target_version: string
+  status: AgentUpgradePlan['status']
+  current_batch: number
+  created_at: string
+  pause_reason?: string
+  cancel_requested?: boolean
+  targets?: Array<{ id: string; server_id: string; server_name?: string; batch_number: number; source_version: string; target_version: string; status: string; attempts: number; error_message?: string; updated_at: string }>
+  events?: Array<{ id: string; target_id: string; stage: string; message: string; occurred_at: string }>
+}
+
+function mapAgentUpgradePlan(plan: RawAgentUpgradePlan): AgentUpgradePlan {
+  return {
+    id: plan.id, targetVersion: plan.target_version, status: plan.status, currentBatch: plan.current_batch,
+    createdAt: plan.created_at, pauseReason: plan.pause_reason ?? '', cancelRequested: plan.cancel_requested ?? false,
+    targets: (plan.targets ?? []).map((target) => ({
+      id: target.id, serverId: target.server_id, serverName: target.server_name ?? '', batchNumber: target.batch_number,
+      sourceVersion: target.source_version, targetVersion: target.target_version, status: target.status,
+      attempts: target.attempts, errorMessage: target.error_message ?? '', updatedAt: target.updated_at,
+    })),
+    events: (plan.events ?? []).map((event) => ({ id: event.id, targetId: event.target_id, stage: event.stage, message: event.message, occurredAt: event.occurred_at })),
+  }
 }
 
 export async function createServerEnrollmentToken(input: EnrollmentTokenInput): Promise<EnrollmentTokenView> {
