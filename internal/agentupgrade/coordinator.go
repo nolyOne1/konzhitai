@@ -285,7 +285,7 @@ func (c *Coordinator) rollbackBatch(plan *Plan, batch int, failedTargetID, error
 		if target.BatchNumber != batch || target.Status == TargetCancelled || target.Status == TargetRolledBack || target.Status == TargetManualIntervention {
 			continue
 		}
-		uninstalled := target.Status == TargetWaiting || target.Status == TargetDraining || (target.ID == failedTargetID && (target.Status == TargetDownloading || target.Status == TargetVerifying || errorCode == "apply_start_failed" || errorCode == "stage_failed"))
+		uninstalled := target.Status == TargetWaiting || target.Status == TargetDraining || (target.ID == failedTargetID && (target.Status == TargetDownloading || target.Status == TargetVerifying || errorCode == "apply_start_failed" || errorCode == "apply_rolled_back" || errorCode == "stage_failed"))
 		if uninstalled {
 			target.Status, target.UpdatedAt, target.FinishedAt = TargetRolledBack, now, &now
 			continue

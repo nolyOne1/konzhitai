@@ -23,6 +23,7 @@ var (
 
 type Spec struct {
 	CommandID        string                      `json:"command_id"`
+	TargetID         string                      `json:"target_id"`
 	Action           agentprotocol.UpgradeAction `json:"action"`
 	SourceVersion    string                      `json:"source_version"`
 	TargetVersion    string                      `json:"target_version"`

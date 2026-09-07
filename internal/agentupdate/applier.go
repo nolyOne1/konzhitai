@@ -9,6 +9,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
+
+	"yunling.local/platform/internal/agentprotocol"
 )
 
 type SystemController interface {
@@ -124,15 +127,38 @@ func rollbackAfterFailure(root string, spec *Spec, system SystemController, caus
 		}
 		return errors.Join(cause, err)
 	}
+	spec.Phase = "rolled_back"
+	if err := saveSpec(root, *spec); err != nil {
+		return errors.Join(cause, err)
+	}
+	state, err := LoadRuntimeState(root)
+	if err != nil {
+		spec.Phase = "rollback_failed"
+		_ = saveSpec(root, *spec)
+		return errors.Join(cause, err)
+	}
+	if state == nil || state.CommandID != spec.CommandID {
+		if spec.TargetID == "" {
+			spec.Phase = "rollback_failed"
+			_ = saveSpec(root, *spec)
+			return errors.Join(cause, errors.New("升级恢复状态缺少目标编号"))
+		}
+		state = &agentprotocol.UpgradeRuntimeState{CommandID: spec.CommandID, TargetID: spec.TargetID, TargetVersion: spec.TargetVersion}
+	}
+	state.Stage = agentprotocol.StageFailed
+	state.ErrorCode = "apply_rolled_back"
+	state.Message = "代理升级失败，已恢复升级前版本"
+	state.UpdatedAt = time.Now().UTC()
+	if err := SaveRuntimeState(root, *state); err != nil {
+		spec.Phase = "rollback_failed"
+		_ = saveSpec(root, *spec)
+		return errors.Join(cause, err)
+	}
 	if err := system.RestartAgent(context.Background()); err != nil {
 		spec.Phase = "rollback_failed"
 		if saveErr := saveSpec(root, *spec); saveErr != nil {
 			return errors.Join(cause, err, saveErr)
 		}
-		return errors.Join(cause, err)
-	}
-	spec.Phase = "rolled_back"
-	if err := saveSpec(root, *spec); err != nil {
 		return errors.Join(cause, err)
 	}
 	return fmt.Errorf("代理升级失败并已回滚：%w", cause)

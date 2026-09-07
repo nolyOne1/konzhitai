@@ -95,7 +95,7 @@ func (m *Manager) Stage(ctx context.Context, command agentprotocol.UpgradeComman
 	if err != nil || strings.TrimSpace(version) != command.TargetVersion {
 		return Spec{}, ErrVersionMismatch
 	}
-	spec := Spec{CommandID: command.CommandID, Action: command.Action, SourceVersion: command.SourceVersion, TargetVersion: command.TargetVersion, SHA256: command.SHA256, ByteSize: command.ByteSize, ReconnectTimeout: command.ReconnectTimeout, Phase: "staged", StageDir: stageDir, ArchivePath: archivePath, BackupDir: filepath.Join(commandDir, "backup"), InstallRoot: m.installRoot}
+	spec := Spec{CommandID: command.CommandID, TargetID: command.TargetID, Action: command.Action, SourceVersion: command.SourceVersion, TargetVersion: command.TargetVersion, SHA256: command.SHA256, ByteSize: command.ByteSize, ReconnectTimeout: command.ReconnectTimeout, Phase: "staged", StageDir: stageDir, ArchivePath: archivePath, BackupDir: filepath.Join(commandDir, "backup"), InstallRoot: m.installRoot}
 	if spec.ReconnectTimeout <= 0 {
 		spec.ReconnectTimeout = 2 * 60 * 1e9
 	}
@@ -158,7 +158,7 @@ func (m *Manager) Rollback(ctx context.Context, command agentprotocol.UpgradeCom
 		return ErrArtifactMismatch
 	}
 	spec := Spec{
-		CommandID: command.CommandID, Action: command.Action,
+		CommandID: command.CommandID, TargetID: command.TargetID, Action: command.Action,
 		SourceVersion: command.SourceVersion, TargetVersion: command.TargetVersion,
 		Phase: "staged", BackupDir: backup, InstallRoot: m.installRoot,
 	}

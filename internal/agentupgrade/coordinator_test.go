@@ -75,6 +75,22 @@ func TestCoordinatorMarksManualInterventionWhenRollbackFails(t *testing.T) {
 	}
 }
 
+func TestCoordinatorAcceptsPersistedAutomaticRollbackResult(t *testing.T) {
+	store := coordinatorFixture()
+	store.plan.Targets[0].Status = TargetInstalling
+	err := NewCoordinator(store, &fakeUpgradeSender{}, fixedCoordinatorNow).ApplyUpgradeEvent(context.Background(), "s1", agentprotocol.UpgradeEvent{
+		TargetID: "target-canary", CommandID: "command-1", Stage: agentprotocol.StageFailed,
+		ErrorCode: "apply_rolled_back", Message: "代理升级失败，已恢复升级前版本",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCoordinatorStatus(t, store, "target-canary", TargetRolledBack)
+	if store.plan.Status != PlanPaused {
+		t.Fatalf("自动回滚后批次必须暂停：%s", store.plan.Status)
+	}
+}
+
 func TestCoordinatorPausesOnDrainTimeoutAndWaitsForOfflineServer(t *testing.T) {
 	now := fixedCoordinatorNow()
 	store := coordinatorFixture()

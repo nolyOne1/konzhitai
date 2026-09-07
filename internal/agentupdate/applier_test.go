@@ -27,6 +27,19 @@ func TestApplySuccessAndTimeoutRollback(t *testing.T) {
 	t.Run("超时回滚", func(t *testing.T) {
 		root, install := writeApplyFixture(t)
 		system := &fakeSystem{waitErr: context.DeadlineExceeded}
+		system.restartHook = func(call int) {
+			if call != 2 {
+				return
+			}
+			spec, err := loadSpec(root, "upgrade-1")
+			if err != nil || spec.Phase != "rolled_back" {
+				t.Fatalf("重启旧代理前必须持久化回滚结果：spec=%+v err=%v", spec, err)
+			}
+			state, err := LoadRuntimeState(root)
+			if err != nil || state == nil || state.Stage != agentprotocol.StageFailed || state.ErrorCode != "apply_rolled_back" || state.TargetID != "target-1" {
+				t.Fatalf("重启旧代理前必须持久化可上报状态：state=%+v err=%v", state, err)
+			}
+		}
 		if err := Apply(root, "upgrade-1", system); err == nil {
 			t.Fatal("必须返回升级失败")
 		}
@@ -184,10 +197,17 @@ func TestApplyRetriesSystemRecoveryAfterFilesWereRestored(t *testing.T) {
 type fakeSystem struct {
 	waitErr, reloadErr, restartErr error
 	reloads, restarts              int
+	restartHook                    func(int)
 }
 
-func (s *fakeSystem) DaemonReload(context.Context) error                { s.reloads++; return s.reloadErr }
-func (s *fakeSystem) RestartAgent(context.Context) error                { s.restarts++; return s.restartErr }
+func (s *fakeSystem) DaemonReload(context.Context) error { s.reloads++; return s.reloadErr }
+func (s *fakeSystem) RestartAgent(context.Context) error {
+	s.restarts++
+	if s.restartHook != nil {
+		s.restartHook(s.restarts)
+	}
+	return s.restartErr
+}
 func (s *fakeSystem) WaitForConfirmation(context.Context, string) error { return s.waitErr }
 func writeApplyFixture(t *testing.T) (string, string) {
 	t.Helper()
@@ -203,7 +223,7 @@ func writeApplyFixture(t *testing.T) (string, string) {
 	archivePath := filepath.Join(root, "upgrade-1", "artifact.tar.gz")
 	_ = os.WriteFile(archivePath, archive, 0o600)
 	digest := sha256.Sum256(archive)
-	spec := Spec{CommandID: "upgrade-1", Action: agentprotocol.UpgradeInstall, TargetVersion: "0.2.0", Phase: "staged", StageDir: stage, ArchivePath: archivePath, SHA256: hex.EncodeToString(digest[:]), ByteSize: int64(len(archive)), BackupDir: filepath.Join(root, "upgrade-1", "backup"), InstallRoot: install, ReconnectTimeout: time.Second}
+	spec := Spec{CommandID: "upgrade-1", TargetID: "target-1", Action: agentprotocol.UpgradeInstall, TargetVersion: "0.2.0", Phase: "staged", StageDir: stage, ArchivePath: archivePath, SHA256: hex.EncodeToString(digest[:]), ByteSize: int64(len(archive)), BackupDir: filepath.Join(root, "upgrade-1", "backup"), InstallRoot: install, ReconnectTimeout: time.Second}
 	if err := saveSpec(root, spec); err != nil {
 		t.Fatal(err)
 	}

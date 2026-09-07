@@ -115,6 +115,23 @@ func TestUpgradeClientReportsLocalRollbackFailure(t *testing.T) {
 	}
 }
 
+func TestUpgradeClientReportsPersistedAutoRollbackAfterRestart(t *testing.T) {
+	command := validUpgradeCommand("upgrade-1")
+	manager := &fakeUpgradeManager{state: &agentprotocol.UpgradeRuntimeState{
+		CommandID: command.CommandID, TargetID: command.TargetID, TargetVersion: command.TargetVersion,
+		Stage: agentprotocol.StageFailed, ErrorCode: "apply_rolled_back", Message: "代理升级失败，已恢复升级前版本",
+	}}
+	transport, cancel := upgradeTransportWithCommands(command)
+	transport.cancelAt = 1
+	transport.cancel = cancel
+	if err := NewUpgradeClient(manager, transport, fixedUpgradeNow).Run(transport.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.events) != 1 || transport.events[0].ErrorCode != "apply_rolled_back" || manager.startCalls != 0 {
+		t.Fatalf("旧代理重启后必须直接上报已持久化的自动回滚结果：events=%+v starts=%d", transport.events, manager.startCalls)
+	}
+}
+
 type fakeUpgradeManager struct {
 	stageCalls, startCalls, rollbackCalls int
 	stageErr                              error
