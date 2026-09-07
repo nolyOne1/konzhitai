@@ -645,7 +645,7 @@ git commit -m "feat: add agent upgrade websocket protocol"
 - Local root defaults to `/var/lib/yunling-agent/upgrades`.
 - Test helpers: `makeArchive(t, files) []byte`, `validArchive(t) []byte`, `validUpgradeCommand() agentprotocol.UpgradeCommand`, `managerWithArchive([]byte) *Manager`, `managerWithBinaryVersion([]byte, string) *Manager`, `readFile(t, path) string`, and `writeRollbackSpec(t, root, commandID)`.
 
-- [ ] **Step 1: Write failing state and archive tests**
+- [x] **Step 1: Write failing state and archive tests**
 
 ```go
 func TestStageRejectsUnexpectedArchiveEntry(t *testing.T) {
@@ -686,17 +686,17 @@ t.Run("版本不符", func(t *testing.T) {
 
 `state_test.go` writes the same command twice and asserts the second call returns the persisted `Spec` without another download; it also asserts `spec.json` is valid after atomic replacement and no `spec.json.tmp` remains.
 
-- [ ] **Step 2: Run staging tests and verify failure**
+- [x] **Step 2: Run staging tests and verify failure**
 
 Run: `go test ./internal/agentupdate -run 'Stage|State' -count=1`
 
 Expected: FAIL because the package is missing.
 
-- [ ] **Step 3: Implement staging**
+- [x] **Step 3: Implement staging**
 
 Accept exactly these package files: `agent-version`, `yunling-agent`, `install.sh`, `yunling-agent.service`, `yunling-run@.service`, `yunling-agent-upgrade@.service`, and `50-yunling-agent.rules`. Require `agent-version` to equal the command target version. Download into `<root>/<commandID>/download.tmp`, validate before extracting, write extracted files under `stage`, and atomically rename `spec.json.tmp` to `spec.json`.
 
-- [ ] **Step 4: Write failing apply and rollback tests**
+- [x] **Step 4: Write failing apply and rollback tests**
 
 ```go
 func TestApplyRestoresPreviousVersionWhenReconnectTimesOut(t *testing.T) {
@@ -732,17 +732,17 @@ func TestExplicitRollbackRestoresBackup(t *testing.T) {
 
 The crash-recovery test persists phase `files_replaced`, invokes `Apply` again, and asserts it resumes at daemon-reload without taking a second backup.
 
-- [ ] **Step 5: Implement apply and rollback**
+- [x] **Step 5: Implement apply and rollback**
 
 The root applier revalidates the staged digest, copies the current managed files to `backup`, installs new files to same-directory temporary names, atomically renames them, calls daemon-reload, restarts the agent, and waits for `<root>/<commandID>/connected`. On timeout it restores `backup`, reloads systemd, and restarts the old agent.
 
-- [ ] **Step 6: Run local updater tests**
+- [x] **Step 6: Run local updater tests**
 
 Run: `go test ./internal/agentupdate -count=1`
 
 Expected: PASS on Windows using fake system controllers; Linux-specific command construction is covered without mutating the host.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/agentupdate
