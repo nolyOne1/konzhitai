@@ -90,7 +90,7 @@
 - Produces server columns `agent_os text`, `agent_arch text`, `agent_capabilities jsonb`.
 - Produces a partial unique index allowing only one plan in `pending`, `running`, or `paused`.
 
-- [ ] **Step 1: Write the failing migration test**
+- [x] **Step 1: Write the failing migration test**
 
 ```go
 func TestAgentUpgradeMigrationCreatesVersionAndPlanState(t *testing.T) {
@@ -112,13 +112,13 @@ func TestAgentUpgradeMigrationCreatesVersionAndPlanState(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the migration test and verify failure**
+- [x] **Step 2: Run the migration test and verify failure**
 
 Run: `go test ./internal/store/postgres -run TestAgentUpgradeMigrationCreatesVersionAndPlanState -count=1`
 
 Expected: FAIL because migration 14 and its tables do not exist.
 
-- [ ] **Step 3: Create migration 14 with exact state constraints**
+- [x] **Step 3: Create migration 14 with exact state constraints**
 
 ```sql
 ALTER TABLE servers
@@ -216,7 +216,7 @@ CREATE INDEX agent_upgrade_events_target_time_idx ON agent_upgrade_events (targe
 INSERT INTO schema_migrations (version) VALUES (14) ON CONFLICT (version) DO NOTHING;
 ```
 
-- [ ] **Step 4: Create the reverse migration**
+- [x] **Step 4: Create the reverse migration**
 
 ```sql
 DROP TABLE agent_upgrade_events;
@@ -228,13 +228,13 @@ ALTER TABLE servers DROP COLUMN agent_capabilities, DROP COLUMN agent_arch, DROP
 DELETE FROM schema_migrations WHERE version = 14;
 ```
 
-- [ ] **Step 5: Run migration tests**
+- [x] **Step 5: Run migration tests**
 
 Run: `go test ./internal/store/postgres -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add migrations/000014_agent_upgrade_management.* internal/store/postgres/migrations_test.go

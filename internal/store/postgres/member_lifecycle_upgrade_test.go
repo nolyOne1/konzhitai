@@ -3,7 +3,6 @@ package postgres_test
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +19,7 @@ func TestMemberLifecycleMigrationUpgradesExistingV12LoginAndSession(t *testing.T
 	}
 	for _, migration := range migrations {
 		name := filepath.Base(migration)
-		if strings.HasPrefix(name, "000013_") {
+		if name >= "000013_" {
 			continue
 		}
 		testpostgres.ApplyMigration(t, db, name)

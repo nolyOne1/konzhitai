@@ -7,6 +7,44 @@ import (
 	"time"
 )
 
+func TestAgentUpgradeMigrationCreatesVersionAndPlanState(t *testing.T) {
+	db := startPostgres(t)
+	applyMigrations(t, db)
+
+	for _, table := range []string{
+		"agent_releases",
+		"agent_release_artifacts",
+		"agent_upgrade_plans",
+		"agent_upgrade_targets",
+		"agent_upgrade_events",
+	} {
+		if !tableExists(t, db, table) {
+			t.Fatalf("代理升级迁移后应存在数据表 %q", table)
+		}
+	}
+	for _, index := range []string{
+		"agent_releases_one_recommended_idx",
+		"agent_upgrade_plans_one_active_idx",
+	} {
+		if !tableIndexExists(t, db, index) {
+			t.Fatalf("代理升级迁移后应存在索引 %q", index)
+		}
+	}
+
+	var agentOS, agentArch string
+	var capabilities []byte
+	if err := db.QueryRow(context.Background(), `
+		INSERT INTO servers (name)
+		VALUES ('迁移验证节点')
+		RETURNING agent_os, agent_arch, agent_capabilities
+	`).Scan(&agentOS, &agentArch, &capabilities); err != nil {
+		t.Fatal(err)
+	}
+	if agentOS != "" || agentArch != "" || string(capabilities) != "[]" {
+		t.Fatalf("旧代理能力默认值错误：os=%q arch=%q capabilities=%s", agentOS, agentArch, capabilities)
+	}
+}
+
 func TestMemberLifecycleMigrationAddsCompatibleUserState(t *testing.T) {
 	db := startPostgres(t)
 	applyMigrations(t, db)
