@@ -101,7 +101,7 @@ func TestPauseResumeCancelRetryAndRollback(t *testing.T) {
 	}
 }
 
-func TestRollbackSucceededTargetInsideActivePlanStartsImmediately(t *testing.T) {
+func TestRollbackSucceededTargetInsideActivePlanIsRejected(t *testing.T) {
 	ctx := context.Background()
 	repository := validMemoryRepository()
 	service := NewService(repository)
@@ -114,9 +114,9 @@ func TestRollbackSucceededTargetInsideActivePlanStartsImmediately(t *testing.T) 
 	stored.Status = PlanPaused
 	repository.plans[plan.ID] = stored
 	repository.active = &stored
-	rolled, err := service.CreateRollbackPlan(ctx, plan.ID, stored.Targets[0].ID, "user-1")
-	if err != nil || rolled.Targets[0].Status != TargetRollingBack || rolled.Status != PlanPaused {
-		t.Fatalf("活动计划内回滚失败：%+v %v", rolled, err)
+	_, err = service.CreateRollbackPlan(ctx, plan.ID, stored.Targets[0].ID, "user-1")
+	if !errors.Is(err, ErrActivePlanExists) {
+		t.Fatalf("活动计划内不得绕过排空和健康检查直接回滚：%v", err)
 	}
 }
 

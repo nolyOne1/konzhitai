@@ -252,27 +252,17 @@ func (s *Service) CreateRollbackPlan(ctx context.Context, planID, targetID, acto
 	if err != nil {
 		return Plan{}, err
 	}
-	if active != nil && active.ID != original.ID {
+	if active != nil {
 		return Plan{}, ErrActivePlanExists
 	}
 	if original.Status == PlanSucceeded || original.Status == PlanCancelled {
-		if active != nil {
-			return Plan{}, ErrActivePlanExists
-		}
 		return s.CreatePlan(ctx, CreatePlanInput{
 			TargetReleaseID: release.ID, ServerIDs: []string{source.ServerID}, BatchSize: 1,
 			DrainTimeoutSeconds: original.DrainTimeoutSeconds, ReconnectTimeoutSeconds: original.ReconnectTimeoutSeconds,
 			VerificationSeconds: original.VerificationSeconds, CreatedBy: actorID,
 		})
 	}
-	now := s.now().UTC()
-	if source.InstallCommandID == "" {
-		source.InstallCommandID = source.CommandID
-	}
-	source.Status, source.CommandID, source.ErrorCode, source.ErrorMessage = TargetRollingBack, s.newID(), "", ""
-	source.UpdatedAt, source.FinishedAt = now, nil
-	original.Status, original.PauseReason, original.CancelRequested, original.FinishedAt = PlanPaused, "管理员正在回滚成功节点", false, nil
-	return s.repository.SavePlan(ctx, original)
+	return Plan{}, ErrInvalidTransition
 }
 
 func applyPlanDefaults(input *CreatePlanInput) {

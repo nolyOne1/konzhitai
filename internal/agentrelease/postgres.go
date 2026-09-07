@@ -53,6 +53,14 @@ func (r *PostgresRepository) Create(ctx context.Context, release Release) (Relea
 			return Release{}, err
 		}
 	}
+	if release.CreatedBy != "" {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO audit_logs(actor_id, action, target_type, target_id, details)
+			VALUES ($1::uuid, 'agent_release.import', 'agent_release', $2, jsonb_build_object('version', $3::text))
+		`, release.CreatedBy, release.ID, release.Version); err != nil {
+			return Release{}, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Release{}, err
 	}

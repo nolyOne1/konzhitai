@@ -48,7 +48,6 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 	now := c.now().UTC()
 	changed := false
 	commands := []sentCommand{}
-	restoreScheduling := []string{}
 	mayStartTarget := (plan.Status == PlanRunning || plan.Status == PlanPending) && !plan.CancelRequested
 	for index := range plan.Targets {
 		target := &plan.Targets[index]
@@ -92,7 +91,7 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 			target.Status, target.Attempts, target.UpdatedAt = TargetDownloading, target.Attempts+1, now
 			commands = append(commands, sentCommand{target.ServerID, installCommand(*plan, *target, artifact)})
 			changed = true
-		case TargetDownloading:
+		case TargetDownloading, TargetVerifying, TargetInstalling:
 			runtime, err := c.store.ServerRuntime(ctx, target.ServerID)
 			if err != nil {
 				return err
@@ -117,15 +116,17 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if !healthyRuntime(runtime, target.TargetVersion, now) {
+			if !healthyRuntime(runtime, target.TargetVersion, target.UpdatedAt, now) {
 				commands = withoutBatchCommands(commands, *plan, target.BatchNumber)
 				commands = append(commands, c.rollbackBatch(plan, target.BatchNumber, target.ID, "health_check_failed", now)...)
 				changed = true
 			} else if now.Sub(target.UpdatedAt) >= time.Duration(plan.VerificationSeconds)*time.Second {
-				target.Status, target.UpdatedAt, target.FinishedAt = TargetSucceeded, now, &now
 				if !target.SourceDraining {
-					restoreScheduling = append(restoreScheduling, target.ServerID)
+					if err := c.store.SetServerDraining(ctx, target.ServerID, false); err != nil {
+						return err
+					}
 				}
+				target.Status, target.UpdatedAt, target.FinishedAt = TargetSucceeded, now, &now
 				changed = true
 			}
 		case TargetRollingBack:
@@ -161,17 +162,15 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 			return err
 		}
 	}
-	for _, serverID := range restoreScheduling {
-		if err := c.store.SetServerDraining(ctx, serverID, false); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
 func (c *Coordinator) ApplyUpgradeEvent(ctx context.Context, serverID string, event agentprotocol.UpgradeEvent) error {
 	plan, target, index, err := c.matchTarget(ctx, serverID, event.TargetID, event.CommandID)
 	if err != nil {
+		if errors.Is(err, ErrTargetNotFound) {
+			return nil
+		}
 		return err
 	}
 	now := c.now().UTC()
@@ -291,8 +290,8 @@ func (c *Coordinator) rollbackBatch(plan *Plan, batch int, failedTargetID, error
 	return commands
 }
 
-func healthyRuntime(runtime ServerRuntime, targetVersion string, now time.Time) bool {
-	return runtime.Enabled && (runtime.Status == "online" || runtime.Status == "draining") && runtime.AgentVersion == targetVersion && runtime.HasSnapshot && runtime.LastSeenAt != nil && now.Sub(runtime.LastSeenAt.UTC()) <= 15*time.Second
+func healthyRuntime(runtime ServerRuntime, targetVersion string, windowStartedAt, now time.Time) bool {
+	return runtime.Enabled && (runtime.Status == "online" || runtime.Status == "draining") && runtime.AgentVersion == targetVersion && runtime.HasSnapshot && runtime.LastSeenAt != nil && runtime.LastSeenAt.UTC().After(windowStartedAt) && now.Sub(runtime.LastSeenAt.UTC()) <= 15*time.Second
 }
 
 func withoutBatchCommands(commands []sentCommand, plan Plan, batch int) []sentCommand {

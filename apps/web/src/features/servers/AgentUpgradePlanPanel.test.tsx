@@ -57,4 +57,20 @@ describe('升级计划详情', () => {
     expect(screen.getByText('将取消 1 台尚未开始的服务器；已开始节点会继续完成当前闭环。')).toBeVisible()
     expect(screen.getByRole('button', { name: '确认取消计划' })).toBeEnabled()
   })
+
+  it('活动计划不允许绕过调度直接回滚成功节点', () => {
+    render(<AgentUpgradePlanPanel plan={plan('succeeded', 'paused')} onUpdated={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: '回滚此节点' })).not.toBeInTheDocument()
+  })
+
+  it('确认框支持键盘关闭并把焦点还给触发按钮', async () => {
+    render(<AgentUpgradePlanPanel plan={plan('waiting')} onUpdated={vi.fn()} />)
+    const user = userEvent.setup()
+    const trigger = screen.getByRole('button', { name: '取消计划' })
+    await user.click(trigger)
+    expect(screen.getByRole('alertdialog')).toBeVisible()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(trigger).toHaveFocus()
+  })
 })

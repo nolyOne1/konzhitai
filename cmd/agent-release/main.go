@@ -20,7 +20,6 @@ import (
 	"github.com/google/uuid"
 	"yunling.local/platform/internal/agentrelease"
 	"yunling.local/platform/internal/artifact"
-	"yunling.local/platform/internal/audit"
 	storepostgres "yunling.local/platform/internal/store/postgres"
 )
 
@@ -73,9 +72,6 @@ func main() {
 	release, err := executeImport(ctx, configuration, service)
 	if err != nil {
 		log.Fatalf("导入代理版本失败：%v", err)
-	}
-	if err := audit.NewService(audit.NewPostgresRepository(db), time.Now).Record(ctx, audit.Event{ActorID: configuration.CreatedBy, Action: "agent_release.import", TargetType: "agent_release", TargetID: release.ID, Details: map[string]any{"version": release.Version}}); err != nil {
-		log.Fatalf("记录代理版本导入审计失败：%v", err)
 	}
 	fmt.Printf("代理版本 %s 导入成功", release.Version)
 	for _, item := range release.Artifacts {

@@ -36,7 +36,7 @@ func Apply(root, commandID string, system SystemController) error {
 	if spec.Action == "rollback" {
 		return applyRollback(root, &spec, system)
 	}
-	if spec.Phase == "replacing" {
+	if spec.Phase == "replacing" || spec.Phase == "rollback_failed" {
 		return rollbackAfterFailure(root, &spec, system, errors.New("检测到上次文件替换未完整结束"))
 	}
 	if spec.Phase == "staged" {
@@ -110,12 +110,18 @@ func applyRollback(root string, spec *Spec, system SystemController) error {
 }
 func rollbackAfterFailure(root string, spec *Spec, system SystemController, cause error) error {
 	restore := replaceManaged(*spec, spec.BackupDir)
+	if restore != nil {
+		spec.Phase = "rollback_failed"
+		if saveErr := saveSpec(root, *spec); saveErr != nil {
+			return errors.Join(cause, restore, saveErr)
+		}
+		return errors.Join(cause, restore)
+	}
 	_ = system.DaemonReload(context.Background())
 	_ = system.RestartAgent(context.Background())
 	spec.Phase = "rolled_back"
-	_ = saveSpec(root, *spec)
-	if restore != nil {
-		return errors.Join(cause, restore)
+	if err := saveSpec(root, *spec); err != nil {
+		return errors.Join(cause, err)
 	}
 	return fmt.Errorf("代理升级失败并已回滚：%w", cause)
 }
@@ -154,6 +160,9 @@ func replaceManaged(spec Spec, sourceRoot string) error {
 		source := filepath.Join(sourceRoot, name)
 		info, err := os.Stat(source)
 		if errors.Is(err, os.ErrNotExist) {
+			if filepath.Clean(sourceRoot) == filepath.Clean(spec.BackupDir) {
+				return fmt.Errorf("升级前备份缺少受管文件记录：%s", name)
+			}
 			continue
 		} else if err != nil {
 			return err

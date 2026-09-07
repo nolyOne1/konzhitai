@@ -170,13 +170,64 @@ func TestCoordinatorIgnoresOutOfOrderStageAndResendsPersistedCommands(t *testing
 	}
 	assertCoordinatorStatus(t, store, "target-canary", TargetInstalling)
 
-	store.plan.Targets[0].Status = TargetDownloading
-	sender := &fakeUpgradeSender{}
-	if err := NewCoordinator(store, sender, fixedCoordinatorNow).Scan(context.Background()); err != nil {
+	for _, status := range []TargetStatus{TargetDownloading, TargetVerifying, TargetInstalling} {
+		store.plan.Targets[0].Status = status
+		sender := &fakeUpgradeSender{}
+		if err := NewCoordinator(store, sender, fixedCoordinatorNow).Scan(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if len(sender.commands) != 1 || sender.commands[0].CommandID != "command-1" {
+			t.Fatalf("控制面重启后状态 %s 必须重发持久化命令：%+v", status, sender.commands)
+		}
+	}
+}
+
+func TestCoordinatorRequiresHeartbeatAfterHealthWindowStarts(t *testing.T) {
+	now := fixedCoordinatorNow()
+	store := coordinatorFixture()
+	store.plan.VerificationSeconds = 10
+	store.plan.Targets[0].Status = TargetHealthChecking
+	store.plan.Targets[0].UpdatedAt = now.Add(-10 * time.Second)
+	seen := now.Add(-11 * time.Second)
+	runtime := store.runtime["s1"]
+	runtime.LastSeenAt = &seen
+	store.runtime["s1"] = runtime
+	if err := NewCoordinator(store, &fakeUpgradeSender{}, func() time.Time { return now }).Scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(sender.commands) != 1 || sender.commands[0].CommandID != "command-1" {
-		t.Fatalf("控制面重启后必须重发持久化命令：%+v", sender.commands)
+	assertCoordinatorStatus(t, store, "target-canary", TargetRollingBack)
+}
+
+func TestCoordinatorRetriesSchedulingRestoreBeforeCompletingTarget(t *testing.T) {
+	now := fixedCoordinatorNow()
+	store := coordinatorFixture()
+	store.plan.Targets[0].Status = TargetHealthChecking
+	store.plan.Targets[0].UpdatedAt = now.Add(-31 * time.Second)
+	seen := now
+	runtime := store.runtime["s1"]
+	runtime.LastSeenAt = &seen
+	store.runtime["s1"] = runtime
+	store.drainErr = errors.New("restore failed")
+	if err := NewCoordinator(store, &fakeUpgradeSender{}, func() time.Time { return now }).Scan(context.Background()); !errors.Is(err, store.drainErr) {
+		t.Fatalf("应返回恢复调度错误：%v", err)
+	}
+	assertCoordinatorStatus(t, store, "target-canary", TargetHealthChecking)
+	store.drainErr = nil
+	if err := NewCoordinator(store, &fakeUpgradeSender{}, func() time.Time { return now }).Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertCoordinatorStatus(t, store, "target-canary", TargetSucceeded)
+}
+
+func TestCoordinatorIgnoresDelayedEventFromSupersededCommand(t *testing.T) {
+	store := coordinatorFixture()
+	store.plan.Targets[0].Status = TargetRollingBack
+	store.plan.Targets[0].CommandID = "rollback-command"
+	err := NewCoordinator(store, &fakeUpgradeSender{}, fixedCoordinatorNow).ApplyUpgradeEvent(context.Background(), "s1", agentprotocol.UpgradeEvent{
+		TargetID: "target-canary", CommandID: "command-1", Stage: agentprotocol.StageSucceeded,
+	})
+	if err != nil {
+		t.Fatalf("旧安装命令的延迟事件不应断开代理连接：%v", err)
 	}
 }
 
@@ -246,11 +297,12 @@ func TestCoordinatorFinishesDrainingTargetDuringCancelClosure(t *testing.T) {
 }
 
 type coordinatorMemory struct {
-	plan    Plan
-	release ReleaseInfo
-	runtime map[string]ServerRuntime
-	events  []Event
-	saveErr error
+	plan     Plan
+	release  ReleaseInfo
+	runtime  map[string]ServerRuntime
+	events   []Event
+	saveErr  error
+	drainErr error
 }
 
 func coordinatorFixture() *coordinatorMemory {
@@ -277,6 +329,9 @@ func (s *coordinatorMemory) ServerRuntime(_ context.Context, id string) (ServerR
 	return s.runtime[id], nil
 }
 func (s *coordinatorMemory) SetServerDraining(_ context.Context, id string, value bool) error {
+	if s.drainErr != nil {
+		return s.drainErr
+	}
 	r := s.runtime[id]
 	r.Draining = value
 	if value && r.Status == "online" {

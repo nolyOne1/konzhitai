@@ -45,6 +45,11 @@ func TestExplicitRollbackRestoresBackup(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(backup, "yunling-agent"), []byte("previous"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	for _, managed := range managedTargets[1:] {
+		if err := os.WriteFile(filepath.Join(backup, managed.name+".missing"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	spec := Spec{CommandID: "rollback-1", Action: agentprotocol.UpgradeRollback, Phase: "staged", BackupDir: backup, InstallRoot: install}
 	if err := saveSpec(root, spec); err != nil {
 		t.Fatal(err)
@@ -101,6 +106,47 @@ func TestApplyRestoresOriginalFilesAfterInterruptedReplacement(t *testing.T) {
 	recovered, err := loadSpec(root, "upgrade-1")
 	if err != nil || recovered.Phase != "rolled_back" {
 		t.Fatalf("恢复状态错误：%+v %v", recovered, err)
+	}
+}
+
+func TestApplyRetriesFailedRestoreAfterInterruptedReplacement(t *testing.T) {
+	root, install := writeApplyFixture(t)
+	spec, err := loadSpec(root, "upgrade-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backupManaged(spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(install, "usr/local/bin/yunling-agent"), []byte("partially-new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(spec.BackupDir, "yunling-agent")); err != nil {
+		t.Fatal(err)
+	}
+	spec.Phase = "replacing"
+	if err := saveSpec(root, spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(root, "upgrade-1", &fakeSystem{}); err == nil {
+		t.Fatal("备份缺失时恢复必须失败")
+	}
+	failed, err := loadSpec(root, "upgrade-1")
+	if err != nil || failed.Phase != "rollback_failed" {
+		t.Fatalf("恢复失败必须保留可重试状态：%+v %v", failed, err)
+	}
+	if err := os.WriteFile(filepath.Join(spec.BackupDir, "yunling-agent"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(root, "upgrade-1", &fakeSystem{}); err == nil {
+		t.Fatal("恢复成功后仍应报告原升级已失败")
+	}
+	recovered, err := loadSpec(root, "upgrade-1")
+	if err != nil || recovered.Phase != "rolled_back" {
+		t.Fatalf("重试恢复状态错误：%+v %v", recovered, err)
+	}
+	if got := readTestFile(t, filepath.Join(install, "usr/local/bin/yunling-agent")); got != "old" {
+		t.Fatalf("重试未恢复原文件：%s", got)
 	}
 }
 

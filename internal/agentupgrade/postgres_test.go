@@ -18,7 +18,7 @@ func TestPostgresRepositoryPersistsPlanAndTargetsAtomically(t *testing.T) {
 		"000004_script_sync_states.up.sql", "000005_task_scheduling.up.sql", "000006_scheduler_resources.up.sql",
 		"000007_run_observability.up.sql", "000008_security_audit_alerts.up.sql", "000009_run_dispatch.up.sql",
 		"000010_password_change_security.up.sql", "000011_notifications.up.sql", "000012_backup_recovery.up.sql",
-		"000013_member_lifecycle.up.sql", "000014_agent_upgrade_management.up.sql",
+		"000013_member_lifecycle.up.sql", "000014_agent_upgrade_management.up.sql", "000015_agent_upgrade_recovery.up.sql",
 	} {
 		testpostgres.ApplyMigration(t, db, migration)
 	}

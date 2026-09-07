@@ -23,6 +23,7 @@ func TestPostgresManagementUsesLatestSnapshotAndPersistsDrain(t *testing.T) {
 	testpostgres.ApplyMigration(t, db, "000008_security_audit_alerts.up.sql")
 	testpostgres.ApplyMigration(t, db, "000010_password_change_security.up.sql")
 	testpostgres.ApplyMigration(t, db, "000014_agent_upgrade_management.up.sql")
+	testpostgres.ApplyMigration(t, db, "000015_agent_upgrade_recovery.up.sql")
 	ctx := context.Background()
 	serverID := "123e4567-e89b-42d3-a456-426614174200"
 	credentialHash := sha256.Sum256([]byte("agent-test-secret"))

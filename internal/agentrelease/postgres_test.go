@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
 	"yunling.local/platform/internal/testpostgres"
 )
 
@@ -15,15 +16,25 @@ func TestPostgresRepositorySwitchesRecommendationAndPreservesImmutableLookup(t *
 		"000004_script_sync_states.up.sql", "000005_task_scheduling.up.sql", "000006_scheduler_resources.up.sql",
 		"000007_run_observability.up.sql", "000008_security_audit_alerts.up.sql", "000009_run_dispatch.up.sql",
 		"000010_password_change_security.up.sql", "000011_notifications.up.sql", "000012_backup_recovery.up.sql",
-		"000013_member_lifecycle.up.sql", "000014_agent_upgrade_management.up.sql",
+		"000013_member_lifecycle.up.sql", "000014_agent_upgrade_management.up.sql", "000015_agent_upgrade_recovery.up.sql",
 	} {
 		testpostgres.ApplyMigration(t, db, migration)
 	}
 	repository := NewPostgresRepository(db)
 	ctx := context.Background()
-	a, err := repository.Create(ctx, persistedRelease("0.2.0", "a"))
+	actorID := uuid.NewString()
+	if _, err := db.Exec(ctx, `INSERT INTO users(id,email,display_name,password_hash) VALUES($1,'release@example.test','发布管理员','x')`, actorID); err != nil {
+		t.Fatal(err)
+	}
+	first := persistedRelease("0.2.0", "a")
+	first.CreatedBy = actorID
+	a, err := repository.Create(ctx, first)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var auditCount int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE actor_id=$1 AND action='agent_release.import' AND target_type='agent_release' AND target_id=$2 AND details->>'version'='0.2.0'`, actorID, a.ID).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("版本导入与审计必须在同一事务写入：count=%d err=%v", auditCount, err)
 	}
 	b, err := repository.Create(ctx, persistedRelease("0.3.0", "b"))
 	if err != nil {
