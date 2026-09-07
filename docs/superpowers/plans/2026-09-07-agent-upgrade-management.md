@@ -1231,7 +1231,7 @@ git commit -m "feat: expose agent upgrade management api"
 - Consumes `GET /api/agent-releases` and enriched server records.
 - Produces `ServerVersionStatus` labels: `已是最新版`, `可升级`, `升级中`, `版本未知`, `升级失败`, `需人工升级基线`.
 
-- [ ] **Step 1: Write failing version status tests**
+- [x] **Step 1: Write failing version status tests**
 
 ```tsx
 it('旧代理显示需人工升级基线', () => {
@@ -1257,13 +1257,13 @@ it.each([
 
 `ServersPage.test.tsx` must assert both tabs, the new version column, and drawer values `Linux / amd64` and `支持控制台升级`.
 
-- [ ] **Step 2: Run Web tests and verify failure**
+- [x] **Step 2: Run Web tests and verify failure**
 
 Run: `npm run test:web -- --run apps/web/src/features/servers/ServerVersionStatus.test.tsx apps/web/src/features/servers/ServersPage.test.tsx`
 
 Expected: FAIL because components and fields are absent.
 
-- [ ] **Step 3: Add API types and mappers**
+- [x] **Step 3: Add API types and mappers**
 
 ```ts
 export interface AgentRelease {
@@ -1280,11 +1280,11 @@ export interface AgentRelease {
 
 Add `agentOS`, `agentArch`, `agentCapabilities`, and optional `upgradeStatus` to `ServerView`. Add `getAgentReleases()`.
 
-- [ ] **Step 4: Implement tabs and status display**
+- [x] **Step 4: Implement tabs and status display**
 
 Render `节点管理` linking to `/servers` and `代理升级` linking to `/servers/upgrades`. Add the agent version column without removing CPU, memory, running tasks, labels, drain, or enable actions.
 
-- [ ] **Step 5: Run server page and API tests**
+- [x] **Step 5: Run server page and API tests**
 
 Run: `npm run test:web -- --run apps/web/src/features/servers apps/web/src/api/client.test.ts`
 

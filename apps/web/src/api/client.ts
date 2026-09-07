@@ -14,6 +14,7 @@ export interface ServerView {
   agentOS: string
   agentArch: string
   agentCapabilities: string[]
+  upgradeStatus?: string
   schedulingWeight: number
   cpuUsagePercent: number
   memoryTotalBytes: number
@@ -73,6 +74,17 @@ export interface AgentReleaseArtifact {
 
 export interface AgentReleaseManifest {
   version: string
+  artifacts: AgentReleaseArtifact[]
+}
+
+export interface AgentRelease {
+  id: string
+  version: string
+  status: 'available' | 'withdrawn'
+  recommended: boolean
+  releaseNotes: string
+  capabilities: string[]
+  createdAt: string
   artifacts: AgentReleaseArtifact[]
 }
 
@@ -401,6 +413,32 @@ export async function getLatestAgentRelease(): Promise<AgentReleaseManifest> {
       downloadUrl: artifact.download_url,
     })),
   }
+}
+
+export async function getAgentReleases(): Promise<AgentRelease[]> {
+  const response = await request<{ releases?: Array<{
+    id: string
+    version: string
+    status: 'available' | 'withdrawn'
+    recommended: boolean
+    release_notes: string
+    capabilities: string[]
+    created_at: string
+    artifacts: Array<{ os: string; arch: string; file_name: string; byte_size: number; sha256: string; download_url: string }>
+  }> }>('/api/agent-releases')
+  return (response.releases ?? []).map((release) => ({
+    id: release.id,
+    version: release.version,
+    status: release.status,
+    recommended: release.recommended,
+    releaseNotes: release.release_notes,
+    capabilities: release.capabilities ?? [],
+    createdAt: release.created_at,
+    artifacts: (release.artifacts ?? []).map((artifact) => ({
+      os: artifact.os, arch: artifact.arch, fileName: artifact.file_name,
+      byteSize: artifact.byte_size, sha256: artifact.sha256, downloadUrl: artifact.download_url,
+    })),
+  }))
 }
 
 export async function createServerEnrollmentToken(input: EnrollmentTokenInput): Promise<EnrollmentTokenView> {

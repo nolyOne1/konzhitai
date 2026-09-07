@@ -7,6 +7,7 @@ import {
   getBackupSummary,
   getDashboard,
   getFeishuNotificationConfig,
+  getAgentReleases,
   getLatestAgentRelease,
   getMembers,
   getSession,
@@ -59,6 +60,22 @@ describe('API 客户端', () => {
       }],
     })
     expect(fetchMock).toHaveBeenCalledWith('/api/releases/agent/latest', { credentials: 'same-origin' })
+  })
+
+  it('读取管理端代理版本并映射发布字段', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(response({ releases: [{
+      id: 'release-2', version: '0.2.0', status: 'available', recommended: true,
+      release_notes: '稳定版', capabilities: ['self_upgrade_v1'], created_at: '2026-09-07T00:00:00Z',
+      artifacts: [{ os: 'linux', arch: 'amd64', file_name: 'agent.tar.gz', byte_size: 42, sha256: 'a'.repeat(64), download_url: '/download' }],
+    }] }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getAgentReleases()).resolves.toEqual([{
+      id: 'release-2', version: '0.2.0', status: 'available', recommended: true,
+      releaseNotes: '稳定版', capabilities: ['self_upgrade_v1'], createdAt: '2026-09-07T00:00:00Z',
+      artifacts: [{ os: 'linux', arch: 'amd64', fileName: 'agent.tar.gz', byteSize: 42, sha256: 'a'.repeat(64), downloadUrl: '/download' }],
+    }])
+    expect(fetchMock).toHaveBeenCalledWith('/api/agent-releases', { credentials: 'same-origin' })
   })
 
   it('使用同源 JSON 请求修改当前用户密码', async () => {

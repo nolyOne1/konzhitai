@@ -658,6 +658,40 @@ h1 {
   margin-top: 14px;
 }
 
+.server-section-tabs {
+  display: flex;
+  gap: 8px;
+  margin: -10px 0 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.server-section-tabs a {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 16px;
+  color: var(--muted);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.server-section-tabs a:hover,
+.server-section-tabs a:focus-visible,
+.server-section-tabs a.is-active { color: var(--success); }
+.server-section-tabs a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.server-section-tabs a.is-active::after { position: absolute; right: 12px; bottom: -1px; left: 12px; height: 3px; border-radius: 3px 3px 0 0; background: var(--success); content: ''; }
+
+.agent-version-cell { display: grid; gap: 5px; min-width: 126px; }
+.agent-version-cell > strong { font-variant-numeric: tabular-nums; }
+.version-status { display: inline-flex; align-items: center; gap: 6px; width: fit-content; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.version-status i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.version-status-success { color: var(--success); }
+.version-status-info { color: #286c9a; }
+.version-status-pending,
+.version-status-warning { color: #ad650f; }
+.version-status-danger { color: var(--danger); }
+
 .server-list-header {
   align-items: flex-start;
 }

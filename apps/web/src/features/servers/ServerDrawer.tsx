@@ -74,6 +74,8 @@ export function ServerDrawer({ server, saving, securityBusy, isAdmin, onClose, o
           <div><dt>当前状态</dt><dd>{statusLabel(server)}</dd></div>
           <div><dt>运行环境</dt><dd>{server.runtimes.length ? server.runtimes.join('、') : '未上报'}</dd></div>
           <div><dt>代理版本</dt><dd>{server.agentVersion || '未上报'}</dd></div>
+          <div><dt>系统平台</dt><dd>{formatPlatform(server)}</dd></div>
+          <div><dt>升级能力</dt><dd>{(server.agentCapabilities ?? []).includes('self_upgrade_v1') ? '支持控制台升级' : '需人工升级基线'}</dd></div>
           <div><dt>运行任务</dt><dd>{server.runningTasks} 个</dd></div>
         </dl>
 
@@ -99,6 +101,12 @@ export function ServerDrawer({ server, saving, securityBusy, isAdmin, onClose, o
       </aside>
     </div>
   )
+}
+
+function formatPlatform(server: ServerView) {
+  if (!server.agentOS && !server.agentArch) return '未上报'
+  const os = server.agentOS?.toLowerCase() === 'linux' ? 'Linux' : server.agentOS || '未知系统'
+  return `${os} / ${server.agentArch || '未知架构'}`
 }
 
 function formatLabels(labels: Record<string, string>) {
