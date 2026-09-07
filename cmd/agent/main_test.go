@@ -2,13 +2,55 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"yunling.local/platform/internal/agentupdate"
 	"yunling.local/platform/internal/executor"
 )
+
+type commandTestSystem struct{}
+
+func (commandTestSystem) DaemonReload(context.Context) error                { return nil }
+func (commandTestSystem) RestartAgent(context.Context) error                { return nil }
+func (commandTestSystem) WaitForConfirmation(context.Context, string) error { return nil }
+
+func TestRunApplyUpgradeCommandRoutesExactArguments(t *testing.T) {
+	called := false
+	handled, err := runApplyUpgradeCommand(
+		[]string{"yunling-agent", "apply-upgrade", "upgrade_2026-09-07"},
+		"/upgrade-root",
+		commandTestSystem{},
+		func(root, commandID string, system agentupdate.SystemController) error {
+			called = true
+			if root != "/upgrade-root" || commandID != "upgrade_2026-09-07" {
+				t.Fatalf("升级参数不正确：root=%q commandID=%q", root, commandID)
+			}
+			return nil
+		},
+	)
+	if err != nil || !handled || !called {
+		t.Fatalf("升级命令必须被执行：handled=%v called=%v err=%v", handled, called, err)
+	}
+}
+
+func TestRunApplyUpgradeCommandRejectsMissingID(t *testing.T) {
+	handled, err := runApplyUpgradeCommand(
+		[]string{"yunling-agent", "apply-upgrade"},
+		agentupdate.DefaultRoot,
+		commandTestSystem{},
+		func(string, string, agentupdate.SystemController) error {
+			t.Fatal("参数不完整时不得调用升级器")
+			return nil
+		},
+	)
+	if !handled || err == nil {
+		t.Fatalf("参数不完整的升级命令必须返回用法错误：handled=%v err=%v", handled, err)
+	}
+}
 
 func TestDetectedCapabilitiesRequiresLinuxUpgradeUnit(t *testing.T) {
 	unitPath := filepath.Join(t.TempDir(), "yunling-agent-upgrade@.service")

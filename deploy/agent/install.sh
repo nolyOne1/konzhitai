@@ -90,7 +90,7 @@ check_preflight() {
     echo '安装包中的 yunling-agent 缺失、不是普通文件或不可执行。' >&2
     failed=1
   fi
-  for command_name in yunling-agent.service yunling-run@.service 50-yunling-agent.rules; do
+  for command_name in yunling-agent.service yunling-run@.service yunling-agent-upgrade@.service 50-yunling-agent.rules; do
     if [[ ! -f "${script_dir}/${command_name}" || -L "${script_dir}/${command_name}" ]]; then
       echo "安装包缺少普通文件：${command_name}" >&2
       failed=1
@@ -170,6 +170,7 @@ install_files() {
   install -d -o yunling-agent -g yunling-runner -m 2750 /var/lib/yunling-agent
   install -d -o yunling-agent -g yunling-runner -m 2750 /var/lib/yunling-agent/script-cache
   install -d -o yunling-agent -g yunling-runner -m 2750 /var/lib/yunling-agent/runs
+  install -d -o yunling-agent -g yunling-runner -m 2750 /var/lib/yunling-agent/upgrades
   rm -f "${temporary_binary}"
   install -o root -g root -m 0755 "${source_binary}" "${temporary_binary}"
   if ! mv -f "${temporary_binary}" /usr/local/bin/yunling-agent; then
@@ -178,6 +179,7 @@ install_files() {
   fi
   install -o root -g root -m 0644 "${script_dir}/yunling-agent.service" /etc/systemd/system/yunling-agent.service
   install -o root -g root -m 0644 "${script_dir}/yunling-run@.service" /etc/systemd/system/yunling-run@.service
+  install -o root -g root -m 0644 "${script_dir}/yunling-agent-upgrade@.service" /etc/systemd/system/yunling-agent-upgrade@.service
   install -o root -g root -m 0644 "${script_dir}/50-yunling-agent.rules" /etc/polkit-1/rules.d/50-yunling-agent.rules
 }
 

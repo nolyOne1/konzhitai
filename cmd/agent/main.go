@@ -17,6 +17,7 @@ import (
 
 	"yunling.local/platform/internal/agent"
 	"yunling.local/platform/internal/agentprotocol"
+	"yunling.local/platform/internal/agentupdate"
 	"yunling.local/platform/internal/executor"
 	"yunling.local/platform/internal/logstream"
 )
@@ -25,6 +26,12 @@ var agentVersion = "0.1.0"
 
 func main() {
 	if writeVersionCommand(os.Args, os.Stdout) {
+		return
+	}
+	if handled, err := runApplyUpgradeCommand(os.Args, agentupdate.DefaultRoot, agentupdate.NewSystemController(), agentupdate.Apply); handled {
+		if err != nil {
+			log.Fatalf("应用代理升级失败：%v", err)
+		}
 		return
 	}
 	if len(os.Args) == 3 && os.Args[1] == "run-spec" {
@@ -157,6 +164,18 @@ func main() {
 			log.Fatalf("云令代理停止：%v", err)
 		}
 	}
+}
+
+type applyUpgradeFunc func(string, string, agentupdate.SystemController) error
+
+func runApplyUpgradeCommand(args []string, root string, system agentupdate.SystemController, apply applyUpgradeFunc) (bool, error) {
+	if len(args) < 2 || args[1] != "apply-upgrade" {
+		return false, nil
+	}
+	if len(args) != 3 {
+		return true, fmt.Errorf("用法：yunling-agent apply-upgrade COMMAND_ID")
+	}
+	return true, apply(root, args[2], system)
 }
 
 func detectedCapabilities(goos string, stat func(string) (os.FileInfo, error)) []string {

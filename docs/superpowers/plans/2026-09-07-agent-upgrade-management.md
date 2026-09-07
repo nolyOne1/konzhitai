@@ -770,11 +770,11 @@ git commit -m "feat: add atomic local agent updater"
 - Produces root command `yunling-agent apply-upgrade COMMAND_ID`.
 - Produces fixed unit name `yunling-agent-upgrade@<command-id>.service`.
 
-- [ ] **Step 1: Add failing package, installer, and policy assertions**
+- [x] **Step 1: Add failing package, installer, and policy assertions**
 
 Update expected archive contents to include `agent-version` and `yunling-agent-upgrade@.service`. Assert `agent-version` equals the package command version, the installer writes the unit root-owned with mode `0644`, and polkit allows only `start` for `/^yunling-agent-upgrade@[A-Za-z0-9_-]+\.service$/` while rejecting arbitrary services and `stop` for the upgrade unit.
 
-- [ ] **Step 2: Run deployment tests and verify failure**
+- [x] **Step 2: Run deployment tests and verify failure**
 
 Run: `bash deploy/agent/package_test.sh`
 
@@ -784,7 +784,7 @@ Run: `node --test apps/web/src/deploy-polkit.test.js`
 
 Expected: FAIL because the upgrade unit is not packaged or authorized.
 
-- [ ] **Step 3: Add the root one-shot unit**
+- [x] **Step 3: Add the root one-shot unit**
 
 ```ini
 [Unit]
@@ -801,11 +801,11 @@ ProtectSystem=strict
 ReadWritePaths=/usr/local/bin /etc/systemd/system /etc/polkit-1/rules.d /var/lib/yunling-agent/upgrades
 ```
 
-- [ ] **Step 4: Extend installer, packager, and polkit rule**
+- [x] **Step 4: Extend installer, packager, and polkit rule**
 
 Install the template unit with the existing systemd assets. Package it in both architectures. Restrict command IDs to 1–128 ASCII letters, digits, underscore, or hyphen before using them in paths or unit names.
 
-- [ ] **Step 5: Add the `apply-upgrade` command before normal agent startup**
+- [x] **Step 5: Add the `apply-upgrade` command before normal agent startup**
 
 ```go
 if len(os.Args) == 3 && os.Args[1] == "apply-upgrade" {
@@ -816,7 +816,7 @@ if len(os.Args) == 3 && os.Args[1] == "apply-upgrade" {
 }
 ```
 
-- [ ] **Step 6: Run deployment and command tests**
+- [x] **Step 6: Run deployment and command tests**
 
 Extend the CI real-build step with these assertions:
 
@@ -839,7 +839,7 @@ Run: `go test ./cmd/agent ./internal/agentupdate -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add deploy/agent apps/web/src/deploy-polkit.test.js .github/workflows/ci.yml cmd/agent

@@ -37,7 +37,7 @@ for binary in "$amd64_binary" "$arm64_binary"; do
   fi
 done
 
-for asset in install.sh yunling-agent.service yunling-run@.service 50-yunling-agent.rules; do
+for asset in install.sh yunling-agent.service yunling-run@.service yunling-agent-upgrade@.service 50-yunling-agent.rules; do
   if [ ! -f "$root_dir/deploy/agent/$asset" ]; then
     echo "代理安装资产缺失：$asset" >&2
     exit 1
@@ -54,16 +54,19 @@ package_arch() {
 
   install -m 0755 "$binary" "$stage/yunling-agent"
   install -m 0755 "$root_dir/deploy/agent/install.sh" "$stage/install.sh"
+  printf '%s\n' "$version" >"$stage/agent-version"
   install -m 0644 \
     "$root_dir/deploy/agent/yunling-agent.service" \
     "$root_dir/deploy/agent/yunling-run@.service" \
+    "$root_dir/deploy/agent/yunling-agent-upgrade@.service" \
     "$root_dir/deploy/agent/50-yunling-agent.rules" \
     "$stage/"
 
   file_name="yunling-agent-${version}-linux-${arch}.tar.gz"
   archive="$output_dir/$file_name"
   tar -czf "$archive" -C "$stage" \
-    50-yunling-agent.rules install.sh yunling-agent yunling-agent.service yunling-run@.service
+    50-yunling-agent.rules agent-version install.sh yunling-agent \
+    yunling-agent-upgrade@.service yunling-agent.service yunling-run@.service
   sha256=$(sha256sum "$archive" | cut -d ' ' -f 1)
   byte_size=$(wc -c <"$archive" | tr -d ' ')
 

@@ -12,12 +12,14 @@ chmod 0755 "$test_dir/amd64" "$test_dir/arm64"
 sh "$root_dir/deploy/agent/package.sh" \
   0.1.0 "$test_dir/amd64" "$test_dir/arm64" "$test_dir/out"
 
-test "$(find "$test_dir/out" -type f | wc -l | tr -d ' ')" = 3
+set -- "$test_dir/out"/*
+test "$#" = 3
 for arch in amd64 arm64; do
   archive="$test_dir/out/yunling-agent-0.1.0-linux-$arch.tar.gz"
   test -f "$archive"
-  contents=$(tar -tzf "$archive" | sort | tr '\n' ' ')
-  test "$contents" = "50-yunling-agent.rules install.sh yunling-agent yunling-agent.service yunling-run@.service "
+  contents=$(tar -tzf "$archive" | sort | tr -d '\r' | tr '\n' ' ')
+  test "$contents" = "50-yunling-agent.rules agent-version install.sh yunling-agent yunling-agent-upgrade@.service yunling-agent.service yunling-run@.service "
+  test "$(tar -xOf "$archive" agent-version)" = '0.1.0'
 
   sha256=$(sha256sum "$archive" | cut -d ' ' -f 1)
   byte_size=$(wc -c <"$archive" | tr -d ' ')

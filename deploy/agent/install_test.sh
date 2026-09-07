@@ -44,6 +44,7 @@ for required_text in \
   'trap cleanup_install EXIT' \
   '检测到现有云令代理身份，正在修复安装并保留原节点身份。' \
   '/usr/local/bin/.yunling-agent.new' \
+  'install -o root -g root -m 0644 "${script_dir}/yunling-agent-upgrade@.service" /etc/systemd/system/yunling-agent-upgrade@.service' \
   'getent' 'groupadd' 'useradd' 'usermod' 'install' 'systemctl' 'mktemp'; do
   grep -Fq "${required_text}" "${installer}"
 done

@@ -6,8 +6,12 @@ polkit.addRule(function(action, subject) {
     var unit = action.lookup("unit");
     var verb = action.lookup("verb");
     var allowedUnit = /^yunling-run@[A-Za-z0-9_-]+\.service$/;
+    var allowedUpgradeUnit = /^yunling-agent-upgrade@[A-Za-z0-9_-]{1,128}\.service$/;
     var allowedVerbs = ["start", "stop", "kill"];
     if (typeof unit == "string" && allowedUnit.test(unit) && allowedVerbs.indexOf(verb) >= 0) {
+        return polkit.Result.YES;
+    }
+    if (typeof unit == "string" && allowedUpgradeUnit.test(unit) && verb == "start") {
         return polkit.Result.YES;
     }
 
