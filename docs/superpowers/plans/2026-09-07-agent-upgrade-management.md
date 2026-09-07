@@ -946,7 +946,7 @@ git commit -m "feat: run agent self-upgrade client"
 - Consumes agent release metadata and server capability records.
 - Test helpers: `validPlanInput() CreatePlanInput`, `inputWithServers(...string)`, `inputWithDrainTimeout(int)`, `inputWithServer(string)`, `inputWithRelease(string)`, and `serviceForCase(string) *Service`.
 
-- [ ] **Step 1: Write failing plan creation tests**
+- [x] **Step 1: Write failing plan creation tests**
 
 ```go
 func TestCreatePlanMakesSingleNodeCanaryAndConfiguredBatches(t *testing.T) {
@@ -983,13 +983,13 @@ for _, test := range []struct { name string; input CreatePlanInput; want error }
 
 The successful creation test must also assert `SourceDraining` equals each server's pre-plan drain flag.
 
-- [ ] **Step 2: Run service tests and verify failure**
+- [x] **Step 2: Run service tests and verify failure**
 
 Run: `go test ./internal/agentupgrade -run 'CreatePlan|Pause|Resume|Cancel|Retry|Rollback' -count=1`
 
 Expected: FAIL because the package does not exist.
 
-- [ ] **Step 3: Implement models and plan creation**
+- [x] **Step 3: Implement models and plan creation**
 
 ```go
 type CreatePlanInput struct {
@@ -1004,17 +1004,17 @@ type CreatePlanInput struct {
 
 Defaults are 1 node, 3600 seconds drain, 120 seconds reconnect, and 30 seconds verification. The repository creates the plan and all targets in one transaction and relies on the partial unique index for the one-active-plan invariant.
 
-- [ ] **Step 4: Implement management transitions**
+- [x] **Step 4: Implement management transitions**
 
 Pause changes `pending` or `running` to `paused`. Resume changes `paused` to `running` after revalidation. Cancel marks only `waiting` targets cancelled. Retry creates a new command ID and returns a rolled-back target to `draining`. `CreateRollbackPlan(planID, targetID, actorID)` requires the referenced target to be successful and no active plan to exist, then creates a new one-node plan whose target release is the stored source version.
 
-- [ ] **Step 5: Run service and repository tests**
+- [x] **Step 5: Run service and repository tests**
 
 Run: `go test ./internal/agentupgrade -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/agentupgrade
