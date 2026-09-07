@@ -151,6 +151,58 @@ func TestAgentConnectRoutesRunEventsLogsAndReconciliation(t *testing.T) {
 	}
 }
 
+func TestAgentConnectRoutesUpgradeEventWithAuthenticatedServer(t *testing.T) {
+	registry := NewRegistry(newMemoryServerRepository(), time.Now)
+	receiver := &fakeUpgradeReceiver{received: make(chan agentprotocol.UpgradeEvent, 1)}
+	server := httptest.NewServer(Handler(registry, &fakeEnrollmentManager{serverID: "server-upgrade"}, WithUpgradeReceiver(receiver)))
+	defer server.Close()
+	header := http.Header{}
+	header.Set("Authorization", "Bearer valid-agent-credential")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	connection, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/agent/connect", &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+	if err := wsjson.Write(ctx, connection, agentprotocol.UpgradeEvent{MessageType: "agent_upgrade_event", CommandID: "upgrade-1", TargetID: "target-1", Stage: agentprotocol.StageAccepted, OccurredAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case received := <-receiver.received:
+		if receiver.serverID != "server-upgrade" || received.CommandID != "upgrade-1" {
+			t.Fatalf("升级事件路由错误：server=%s event=%+v", receiver.serverID, received)
+		}
+	case <-ctx.Done():
+		t.Fatal("中央服务未收到升级事件")
+	}
+}
+
+func TestConnectionHubSendsUpgradeCommandToRegisteredServer(t *testing.T) {
+	hub := NewAgentConnectionHub()
+	server := httptest.NewServer(Handler(NewRegistry(newMemoryServerRepository(), time.Now), &fakeEnrollmentManager{serverID: "server-upgrade"}, WithConnectionHub(hub)))
+	defer server.Close()
+	header := http.Header{}
+	header.Set("Authorization", "Bearer valid-agent-credential")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	connection, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/agent/connect", &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+	if err := wsjson.Write(ctx, connection, agentprotocol.Heartbeat{Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.SendUpgradeCommand(ctx, "server-upgrade", agentprotocol.UpgradeCommand{CommandID: "upgrade-1", Action: agentprotocol.UpgradeInstall}); err != nil {
+		t.Fatal(err)
+	}
+	var command agentprotocol.UpgradeCommand
+	if err := wsjson.Read(ctx, connection, &command); err != nil || command.CommandID != "upgrade-1" {
+		t.Fatalf("升级命令发送错误：command=%+v err=%v", command, err)
+	}
+}
+
 func TestAgentConnectAcceptsMaximumLogChunk(t *testing.T) {
 	registry := NewRegistry(newMemoryServerRepository(), time.Now)
 	logs := &fakeLogReceiver{received: make(chan agentprotocol.LogChunk, 1)}
@@ -327,6 +379,17 @@ type fakeAgentArtifactProvider struct {
 }
 
 type fakeRunEventReceiver struct{ received chan agentprotocol.RunEvent }
+
+type fakeUpgradeReceiver struct {
+	serverID string
+	received chan agentprotocol.UpgradeEvent
+}
+
+func (r *fakeUpgradeReceiver) ApplyUpgradeEvent(_ context.Context, serverID string, event agentprotocol.UpgradeEvent) error {
+	r.serverID = serverID
+	r.received <- event
+	return nil
+}
 
 func (r *fakeRunEventReceiver) Apply(_ context.Context, event agentprotocol.RunEvent) error {
 	r.received <- event

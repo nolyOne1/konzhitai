@@ -123,17 +123,18 @@ func (t realTicker) C() <-chan time.Time {
 }
 
 type WebSocketSender struct {
-	connection *websocket.Conn
-	writeMu    sync.Mutex
-	readOnce   sync.Once
-	readMu     sync.Mutex
-	readErr    error
-	readCtx    context.Context
-	cancelRead context.CancelFunc
-	readDone   chan struct{}
-	syncQueue  chan agentprotocol.SyncCommand
-	execQueue  chan agentprotocol.ExecutionCommand
-	logAcks    chan agentprotocol.LogAcknowledgement
+	connection   *websocket.Conn
+	writeMu      sync.Mutex
+	readOnce     sync.Once
+	readMu       sync.Mutex
+	readErr      error
+	readCtx      context.Context
+	cancelRead   context.CancelFunc
+	readDone     chan struct{}
+	syncQueue    chan agentprotocol.SyncCommand
+	execQueue    chan agentprotocol.ExecutionCommand
+	upgradeQueue chan agentprotocol.UpgradeCommand
+	logAcks      chan agentprotocol.LogAcknowledgement
 }
 
 func DialHeartbeatSender(ctx context.Context, controlURL, credential string) (*WebSocketSender, error) {
@@ -153,13 +154,14 @@ func DialHeartbeatSender(ctx context.Context, controlURL, credential string) (*W
 	}
 	readCtx, cancelRead := context.WithCancel(context.Background())
 	return &WebSocketSender{
-		connection: connection,
-		readCtx:    readCtx,
-		cancelRead: cancelRead,
-		readDone:   make(chan struct{}),
-		syncQueue:  make(chan agentprotocol.SyncCommand, 32),
-		execQueue:  make(chan agentprotocol.ExecutionCommand, 32),
-		logAcks:    make(chan agentprotocol.LogAcknowledgement, 32),
+		connection:   connection,
+		readCtx:      readCtx,
+		cancelRead:   cancelRead,
+		readDone:     make(chan struct{}),
+		syncQueue:    make(chan agentprotocol.SyncCommand, 32),
+		execQueue:    make(chan agentprotocol.ExecutionCommand, 32),
+		upgradeQueue: make(chan agentprotocol.UpgradeCommand, 8),
+		logAcks:      make(chan agentprotocol.LogAcknowledgement, 32),
 	}, nil
 }
 
@@ -175,6 +177,16 @@ func (s *WebSocketSender) ReceiveSyncCommand(ctx context.Context) (agentprotocol
 func (s *WebSocketSender) ReceiveExecutionCommand(ctx context.Context) (agentprotocol.ExecutionCommand, error) {
 	s.startReader()
 	return receiveCommand(ctx, s.execQueue, s.readDone, s.readerError)
+}
+
+func (s *WebSocketSender) ReceiveUpgradeCommand(ctx context.Context) (agentprotocol.UpgradeCommand, error) {
+	s.startReader()
+	return receiveCommand(ctx, s.upgradeQueue, s.readDone, s.readerError)
+}
+
+func (s *WebSocketSender) SendUpgradeEvent(ctx context.Context, event agentprotocol.UpgradeEvent) error {
+	event.MessageType = "agent_upgrade_event"
+	return s.write(ctx, event)
 }
 
 func (s *WebSocketSender) SendSyncResult(ctx context.Context, result agentprotocol.SyncResult) error {
@@ -245,6 +257,19 @@ func (s *WebSocketSender) readCommands() {
 			}
 			select {
 			case s.logAcks <- acknowledgement:
+			case <-s.readCtx.Done():
+				return
+			}
+			continue
+		}
+		if header.MessageType == "agent_upgrade_command" {
+			var command agentprotocol.UpgradeCommand
+			if err := json.Unmarshal(payload, &command); err != nil || (command.Action != agentprotocol.UpgradeInstall && command.Action != agentprotocol.UpgradeRollback) {
+				s.setReaderError(fmt.Errorf("中央升级命令格式无效"))
+				return
+			}
+			select {
+			case s.upgradeQueue <- command:
 			case <-s.readCtx.Done():
 				return
 			}

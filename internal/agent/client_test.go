@@ -161,6 +161,28 @@ func TestWebSocketSenderRoutesSyncAndExecutionCommandsFromOneReader(t *testing.T
 	}
 }
 
+func TestWebSocketSenderRoutesUpgradeCommand(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer connection.CloseNow()
+		_ = wsjson.Write(context.Background(), connection, agentprotocol.UpgradeCommand{MessageType: "agent_upgrade_command", CommandID: "upgrade-1", Action: agentprotocol.UpgradeInstall})
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	sender, err := DialHeartbeatSender(context.Background(), server.URL, "agent-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	command, err := sender.ReceiveUpgradeCommand(context.Background())
+	if err != nil || command.CommandID != "upgrade-1" || command.Action != agentprotocol.UpgradeInstall {
+		t.Fatalf("升级命令路由错误：command=%+v err=%v", command, err)
+	}
+}
+
 func TestWebSocketSenderUsesAgentCredentialAndWritesHeartbeat(t *testing.T) {
 	received := make(chan agentprotocol.Heartbeat, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

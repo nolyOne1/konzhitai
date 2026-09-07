@@ -39,6 +39,21 @@ func (h *AgentConnectionHub) SendExecutionCommand(ctx context.Context, serverID 
 	return h.Write(ctx, connection, command)
 }
 
+func (h *AgentConnectionHub) SendUpgradeCommand(ctx context.Context, serverID string, command agentprotocol.UpgradeCommand) error {
+	command.MessageType = "agent_upgrade_command"
+	h.mu.Lock()
+	var connection *websocket.Conn
+	for candidate := range h.connections[serverID] {
+		connection = candidate
+		break
+	}
+	h.mu.Unlock()
+	if connection == nil {
+		return ErrAgentConnectionUnavailable
+	}
+	return h.Write(ctx, connection, command)
+}
+
 func NewAgentConnectionHub() *AgentConnectionHub {
 	return &AgentConnectionHub{
 		connections: make(map[string]map[*websocket.Conn]struct{}),

@@ -541,7 +541,7 @@ git commit -m "feat: add agent release import command"
 - Produces `AgentConnectionHub.SendUpgradeCommand`.
 - Produces server handler option `WithUpgradeReceiver(UpgradeReceiver)`.
 
-- [ ] **Step 1: Write failing transport demultiplexing tests**
+- [x] **Step 1: Write failing transport demultiplexing tests**
 
 ```go
 func TestWebSocketSenderRoutesUpgradeCommand(t *testing.T) {
@@ -554,13 +554,13 @@ func TestWebSocketSenderRoutesUpgradeCommand(t *testing.T) {
 
 Add a server handler test that an `agent_upgrade_event` message is routed with the authenticated server ID, and a connection hub test that the command is written to the registered server connection.
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `go test ./internal/agent ./internal/server -run Upgrade -count=1`
 
 Expected: FAIL because upgrade protocol types and queues are absent.
 
-- [ ] **Step 3: Add exact protocol types**
+- [x] **Step 3: Add exact protocol types**
 
 ```go
 type UpgradeCommand struct {
@@ -607,17 +607,17 @@ const (
 )
 ```
 
-- [ ] **Step 4: Add transport queues and server routing**
+- [x] **Step 4: Add transport queues and server routing**
 
 Route `message_type == "agent_upgrade_command"` to a dedicated bounded queue and `message_type == "agent_upgrade_event"` to `UpgradeReceiver.ApplyUpgradeEvent`. Upgrade events must not fall through to run events or heartbeats.
 
-- [ ] **Step 5: Run transport regression tests**
+- [x] **Step 5: Run transport regression tests**
 
 Run: `go test ./internal/agent ./internal/server -count=1`
 
 Expected: PASS, including existing sync, log, assignment, cancellation, and heartbeat tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/agentprotocol internal/agent/client* internal/server/connections.go internal/server/http*

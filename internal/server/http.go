@@ -29,6 +29,7 @@ type handlerOptions struct {
 	runEvents   RunEventReceiver
 	logs        LogReceiver
 	reconciler  RunningReconciler
+	upgrades    UpgradeReceiver
 }
 
 type SyncCoordinator interface {
@@ -50,6 +51,10 @@ type LogReceiver interface {
 
 type RunningReconciler interface {
 	Reconcile(context.Context, agentprotocol.RunningReport) error
+}
+
+type UpgradeReceiver interface {
+	ApplyUpgradeEvent(context.Context, string, agentprotocol.UpgradeEvent) error
 }
 
 func WithConnectionHub(connections *AgentConnectionHub) HandlerOption {
@@ -76,6 +81,10 @@ func WithLogReceiver(receiver LogReceiver) HandlerOption {
 
 func WithRunningReconciler(reconciler RunningReconciler) HandlerOption {
 	return func(options *handlerOptions) { options.reconciler = reconciler }
+}
+
+func WithUpgradeReceiver(receiver UpgradeReceiver) HandlerOption {
+	return func(options *handlerOptions) { options.upgrades = receiver }
 }
 
 func Handler(registry *Registry, enrollment EnrollmentManager, options ...HandlerOption) http.Handler {
@@ -301,6 +310,16 @@ func agentConnectHandler(
 				report.ServerID = serverID
 				if err := configuration.reconciler.Reconcile(ctx, report); err != nil {
 					_ = connection.Close(websocket.StatusPolicyViolation, "运行状态对账失败")
+					return
+				}
+			case messageType.MessageType == "agent_upgrade_event":
+				if configuration.upgrades == nil {
+					_ = connection.Close(websocket.StatusPolicyViolation, "升级事件服务尚未启用")
+					return
+				}
+				var event agentprotocol.UpgradeEvent
+				if err := json.Unmarshal(payload, &event); err != nil || configuration.upgrades.ApplyUpgradeEvent(ctx, serverID, event) != nil {
+					_ = connection.Close(websocket.StatusPolicyViolation, "代理升级事件无效")
 					return
 				}
 			case messageType.MessageType == "log_chunk" || messageType.Stream != "":
