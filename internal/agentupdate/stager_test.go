@@ -9,11 +9,36 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"yunling.local/platform/internal/agentprotocol"
 )
+
+func TestRollbackPersistsPreviousVersionAndStartsApply(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "previous"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	starter := &countingStarter{}
+	manager := NewManager(root, nil, starter, nil)
+	command := agentprotocol.UpgradeCommand{
+		CommandID: "rollback-1", Action: agentprotocol.UpgradeRollback,
+		SourceVersion: "0.2.0", TargetVersion: "0.1.0",
+	}
+	if err := manager.Rollback(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := loadSpec(root, command.CommandID)
+	if err != nil || spec.Action != agentprotocol.UpgradeRollback || spec.BackupDir != filepath.Join(root, "previous") {
+		t.Fatalf("回滚规格不正确：%+v err=%v", spec, err)
+	}
+	if starter.calls != 1 || starter.commandID != command.CommandID {
+		t.Fatalf("未启动回滚单元：%+v", starter)
+	}
+}
 
 func TestStageRejectsUnexpectedArchiveEntry(t *testing.T) {
 	archive := validArchive(t)
@@ -78,6 +103,17 @@ func (d *memoryDownload) Download(context.Context, string) (io.ReadCloser, error
 type noStarter struct{}
 
 func (noStarter) StartUpgrade(context.Context, string) error { return nil }
+
+type countingStarter struct {
+	calls     int
+	commandID string
+}
+
+func (s *countingStarter) StartUpgrade(_ context.Context, commandID string) error {
+	s.calls++
+	s.commandID = commandID
+	return nil
+}
 func managerWithArchive(t *testing.T, body []byte) *Manager {
 	t.Helper()
 	return NewManager(t.TempDir(), &memoryDownload{body: body}, noStarter{}, func(context.Context, string) (string, error) { return "0.2.0", nil })

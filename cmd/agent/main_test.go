@@ -3,14 +3,68 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"yunling.local/platform/internal/agentprotocol"
 	"yunling.local/platform/internal/agentupdate"
 	"yunling.local/platform/internal/executor"
 )
+
+type reconnectEventSender struct{ events []agentprotocol.UpgradeEvent }
+
+func (s *reconnectEventSender) SendUpgradeEvent(_ context.Context, event agentprotocol.UpgradeEvent) error {
+	s.events = append(s.events, event)
+	return nil
+}
+
+func TestConfirmPendingUpgradeMarksMatchingReconnect(t *testing.T) {
+	root := t.TempDir()
+	commandDir := filepath.Join(root, "upgrade-1")
+	if err := os.MkdirAll(commandDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	spec, _ := json.Marshal(agentupdate.Spec{CommandID: "upgrade-1", TargetVersion: "0.2.0", Phase: "restarted"})
+	if err := os.WriteFile(filepath.Join(commandDir, "spec.json"), spec, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := agentupdate.SaveRuntimeState(root, agentprotocol.UpgradeRuntimeState{
+		CommandID: "upgrade-1", TargetID: "target-1", TargetVersion: "0.2.0", Stage: agentprotocol.StageInstalling,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sender := &reconnectEventSender{}
+	fixedNow := func() time.Time { return time.Date(2026, 9, 7, 4, 0, 0, 0, time.UTC) }
+	if err := confirmPendingUpgrade(context.Background(), root, "0.2.0", sender, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.events) != 1 || sender.events[0].Stage != agentprotocol.StageReconnecting {
+		t.Fatalf("未上报重连阶段：%+v", sender.events)
+	}
+	if _, err := os.Stat(filepath.Join(commandDir, "connected")); err != nil {
+		t.Fatalf("未写入重连标记：%v", err)
+	}
+}
+
+func TestConfirmPendingUpgradeSkipsWrongVersion(t *testing.T) {
+	root := t.TempDir()
+	if err := agentupdate.SaveRuntimeState(root, agentprotocol.UpgradeRuntimeState{
+		CommandID: "upgrade-1", TargetVersion: "0.2.0", Stage: agentprotocol.StageInstalling,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sender := &reconnectEventSender{}
+	if err := confirmPendingUpgrade(context.Background(), root, "0.1.0", sender, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.events) != 0 {
+		t.Fatalf("版本不符时不得确认：%+v", sender.events)
+	}
+}
 
 type commandTestSystem struct{}
 

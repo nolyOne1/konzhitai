@@ -21,9 +21,10 @@ type StatsSource interface {
 }
 
 type Collector struct {
-	source   StatsSource
-	runtimes []string
-	logSpool LogSpoolUsage
+	source       StatsSource
+	runtimes     []string
+	logSpool     LogSpoolUsage
+	upgradeState UpgradeStateSource
 }
 
 type LogSpoolUsage interface {
@@ -32,8 +33,14 @@ type LogSpoolUsage interface {
 
 type CollectorOption func(*Collector)
 
+type UpgradeStateSource func() (*agentprotocol.UpgradeRuntimeState, error)
+
 func WithLogSpool(spool LogSpoolUsage) CollectorOption {
 	return func(collector *Collector) { collector.logSpool = spool }
+}
+
+func WithUpgradeState(source UpgradeStateSource) CollectorOption {
+	return func(collector *Collector) { collector.upgradeState = source }
 }
 
 func NewCollector(source StatsSource, runtimes []string, options ...CollectorOption) *Collector {
@@ -64,6 +71,12 @@ func (c *Collector) Snapshot(ctx context.Context) (agentprotocol.Heartbeat, erro
 	}
 	if c.logSpool != nil {
 		heartbeat.LogSpoolUsedBytes, heartbeat.LogSpoolLimitBytes = c.logSpool.Usage()
+	}
+	if c.upgradeState != nil {
+		heartbeat.Upgrade, err = c.upgradeState()
+		if err != nil {
+			return agentprotocol.Heartbeat{}, err
+		}
 	}
 	return heartbeat, nil
 }

@@ -112,6 +112,47 @@ func (m *Manager) StartApply(ctx context.Context, commandID string) error {
 	return m.starter.StartUpgrade(ctx, commandID)
 }
 
+func (m *Manager) Rollback(ctx context.Context, command agentprotocol.UpgradeCommand) error {
+	if !validCommandID(command.CommandID) {
+		return ErrInvalidCommandID
+	}
+	if command.Action != agentprotocol.UpgradeRollback || strings.TrimSpace(command.TargetVersion) == "" {
+		return ErrArtifactMismatch
+	}
+	if existing, err := loadSpec(m.root, command.CommandID); err == nil {
+		if existing.Action != agentprotocol.UpgradeRollback || existing.TargetVersion != command.TargetVersion {
+			return ErrArtifactMismatch
+		}
+		return m.StartApply(ctx, command.CommandID)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	backup := filepath.Join(m.root, "previous")
+	if info, err := os.Stat(backup); err != nil || !info.IsDir() {
+		if err != nil {
+			return err
+		}
+		return ErrArtifactMismatch
+	}
+	spec := Spec{
+		CommandID: command.CommandID, Action: command.Action,
+		SourceVersion: command.SourceVersion, TargetVersion: command.TargetVersion,
+		Phase: "staged", BackupDir: backup, InstallRoot: m.installRoot,
+	}
+	if err := saveSpec(m.root, spec); err != nil {
+		return err
+	}
+	return m.StartApply(ctx, command.CommandID)
+}
+
+func (m *Manager) RuntimeState() (*agentprotocol.UpgradeRuntimeState, error) {
+	return LoadRuntimeState(m.root)
+}
+
+func (m *Manager) SaveRuntimeState(state agentprotocol.UpgradeRuntimeState) error {
+	return SaveRuntimeState(m.root, state)
+}
+
 func extractArchive(body []byte, destination, version string) error {
 	gz, err := gzip.NewReader(bytes.NewReader(body))
 	if err != nil {

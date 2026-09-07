@@ -93,6 +93,9 @@ func main() {
 		log.Fatalf("连接云令中央服务失败：%v", err)
 	}
 	defer sender.Close()
+	if err := confirmPendingUpgrade(ctx, agentupdate.DefaultRoot, agentVersion, sender, time.Now); err != nil {
+		log.Fatalf("确认代理升级重连失败：%v", err)
+	}
 	spoolMaxBytes := logstream.DefaultSpoolMaxBytes
 	if configured := strings.TrimSpace(os.Getenv("YUNLING_LOG_SPOOL_MAX_BYTES")); configured != "" {
 		spoolMaxBytes, err = strconv.ParseInt(configured, 10, 64)
@@ -120,7 +123,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("初始化系统资源采集失败：%v", err)
 	}
-	collector := agent.NewCollector(stats, runtimes, agent.WithLogSpool(spool))
+	collector := agent.NewCollector(
+		stats,
+		runtimes,
+		agent.WithLogSpool(spool),
+		agent.WithUpgradeState(func() (*agentprotocol.UpgradeRuntimeState, error) {
+			return agentupdate.LoadRuntimeState(agentupdate.DefaultRoot)
+		}),
+	)
 	allowedRoots := agent.ParseAllowedScriptRoots(os.Getenv("YUNLING_ALLOWED_SCRIPT_ROOTS"))
 	if len(allowedRoots) > 0 {
 		discovered, err := executor.NewDiscovery().List(context.Background(), allowedRoots)
@@ -145,17 +155,25 @@ func main() {
 	cache := executor.NewCache(cacheRoot, agent.NewCredentialDownloader(credentials.Credential, nil))
 	syncClient := agent.NewSyncClient(cache, executor.NewDriftScanner(cacheRoot), sender)
 	executionClient := agent.NewExecutionClient(runner, sender)
+	upgradeManager := agentupdate.NewManager(
+		agentupdate.DefaultRoot,
+		agentupdate.HTTPDownloader{},
+		agentupdate.NewSystemdStarter(),
+		nil,
+	)
+	upgradeClient := agent.NewUpgradeClient(upgradeManager, sender, time.Now)
 	if err := sender.SendRunningReport(ctx, agentprotocol.RunningReport{
 		ServerID: credentials.ServerID, ReportedAt: time.Now().UTC(), Authoritative: false, Processes: runner.RunningProcesses(),
 	}); err != nil {
 		log.Fatalf("上报代理重连状态失败：%v", err)
 	}
 	log.Printf("云令代理已连接，服务器编号：%s", credentials.ServerID)
-	errors := make(chan error, 4)
+	errors := make(chan error, 5)
 	go func() { errors <- heartbeatClient.Run(ctx) }()
 	go func() { errors <- syncClient.Run(ctx) }()
 	go func() { errors <- executionClient.Run(ctx) }()
 	go func() { errors <- logClient.Run(ctx) }()
+	go func() { errors <- upgradeClient.Run(ctx) }()
 	select {
 	case <-ctx.Done():
 		return
@@ -164,6 +182,34 @@ func main() {
 			log.Fatalf("云令代理停止：%v", err)
 		}
 	}
+}
+
+type upgradeEventSender interface {
+	SendUpgradeEvent(context.Context, agentprotocol.UpgradeEvent) error
+}
+
+func confirmPendingUpgrade(ctx context.Context, root, version string, sender upgradeEventSender, now func() time.Time) error {
+	state, err := agentupdate.LoadRuntimeState(root)
+	if err != nil || state == nil {
+		return err
+	}
+	if state.TargetVersion != version {
+		return nil
+	}
+	switch state.Stage {
+	case agentprotocol.StageInstalling, agentprotocol.StageRollingBack, agentprotocol.StageReconnecting:
+	default:
+		return nil
+	}
+	if err := agentupdate.ConfirmReconnect(root, state.CommandID, version); err != nil {
+		return err
+	}
+	state.Stage = agentprotocol.StageReconnecting
+	state.UpdatedAt = now().UTC()
+	return sender.SendUpgradeEvent(ctx, agentprotocol.UpgradeEvent{
+		CommandID: state.CommandID, TargetID: state.TargetID,
+		Stage: state.Stage, OccurredAt: state.UpdatedAt,
+	})
 }
 
 type applyUpgradeFunc func(string, string, agentupdate.SystemController) error

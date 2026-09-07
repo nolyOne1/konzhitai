@@ -3,6 +3,9 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
+
+	"yunling.local/platform/internal/agentprotocol"
 )
 
 func TestCollectorReportsConfiguredRuntimes(t *testing.T) {
@@ -34,6 +37,18 @@ func TestCollectorReportsConfiguredRuntimes(t *testing.T) {
 	}
 	if got.LogSpoolUsedBytes != 80 || got.LogSpoolLimitBytes != 100 {
 		t.Fatalf("日志缓冲容量未完整上报：%+v", got)
+	}
+}
+
+func TestCollectorIncludesUpgradeRuntimeState(t *testing.T) {
+	state := &agentprotocol.UpgradeRuntimeState{CommandID: "upgrade-1", TargetVersion: "0.2.0", Stage: agentprotocol.StageInstalling, UpdatedAt: time.Now().UTC()}
+	collector := NewCollector(fakeStats{}, nil, WithUpgradeState(func() (*agentprotocol.UpgradeRuntimeState, error) { return state, nil }))
+	heartbeat, err := collector.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if heartbeat.Upgrade == nil || heartbeat.Upgrade.CommandID != "upgrade-1" || heartbeat.Upgrade.Stage != agentprotocol.StageInstalling {
+		t.Fatalf("心跳未携带升级状态：%+v", heartbeat.Upgrade)
 	}
 }
 

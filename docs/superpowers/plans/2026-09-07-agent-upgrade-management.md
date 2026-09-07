@@ -865,7 +865,7 @@ git commit -m "feat: install restricted agent upgrade service"
 - Produces heartbeat `Upgrade *agentprotocol.UpgradeRuntimeState`.
 - Test helpers: `validUpgradeCommand(id string) agentprotocol.UpgradeCommand`, `runUntilEvents(t, client, count)`, and `writePendingState(t, root, commandID, targetVersion)`.
 
-- [ ] **Step 1: Write failing upgrade client tests**
+- [x] **Step 1: Write failing upgrade client tests**
 
 ```go
 func TestUpgradeClientStagesReportsAndStartsInstall(t *testing.T) {
@@ -898,31 +898,31 @@ func TestConfirmReconnectRequiresTargetVersion(t *testing.T) {
 
 The rollback test sends `Action: agentprotocol.UpgradeRollback` and asserts `manager.rollbackCalls == 1`. The failure test makes `Stage` return `errors.New("下载中断")` and asserts the final event has stage `failed`, error code `stage_failed`, and message `代理升级暂存失败：下载中断`.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 Run: `go test ./internal/agent -run UpgradeClient -count=1`
 
 Expected: FAIL because the upgrade client is missing.
 
-- [ ] **Step 3: Implement the upgrade client**
+- [x] **Step 3: Implement the upgrade client**
 
 Receive one upgrade command at a time, persist `accepted`, emit each stage transition, delegate staging and systemd start to `agentupdate.Manager`, and rely on persisted local state for duplicate commands. The install path ends after starting the root unit because the service is about to restart.
 
-- [ ] **Step 4: Confirm reconnect and expose runtime state**
+- [x] **Step 4: Confirm reconnect and expose runtime state**
 
 After `DialHeartbeatSender` succeeds, read pending local state. If the running version equals its target version, atomically create the connected marker and send a `reconnecting` event. The collector reads the local state snapshot and includes it in heartbeats until the control plane marks the command complete.
 
-- [ ] **Step 5: Start the fifth agent loop**
+- [x] **Step 5: Start the fifth agent loop**
 
 Increase the error channel capacity to 5 and run `upgradeClient.Run(ctx)` beside heartbeat, sync, execution, and log clients.
 
-- [ ] **Step 6: Run agent tests**
+- [x] **Step 6: Run agent tests**
 
 Run: `go test ./internal/agent ./cmd/agent -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/agent cmd/agent/main.go cmd/agent/main_test.go
