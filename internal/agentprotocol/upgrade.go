@@ -28,6 +28,7 @@ type UpgradeCommand struct {
 	Action           UpgradeAction `json:"action"`
 	SourceVersion    string        `json:"source_version"`
 	TargetVersion    string        `json:"target_version"`
+	InstallCommandID string        `json:"install_command_id,omitempty"`
 	DownloadURL      string        `json:"download_url,omitempty"`
 	FileName         string        `json:"file_name,omitempty"`
 	ByteSize         int64         `json:"byte_size,omitempty"`

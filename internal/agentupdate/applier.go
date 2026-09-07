@@ -17,12 +17,12 @@ type SystemController interface {
 	WaitForConfirmation(context.Context, string) error
 }
 
-var managedTargets = map[string]string{
-	"yunling-agent":                  "usr/local/bin/yunling-agent",
-	"yunling-agent.service":          "etc/systemd/system/yunling-agent.service",
-	"yunling-run@.service":           "etc/systemd/system/yunling-run@.service",
-	"yunling-agent-upgrade@.service": "etc/systemd/system/yunling-agent-upgrade@.service",
-	"50-yunling-agent.rules":         "etc/polkit-1/rules.d/50-yunling-agent.rules",
+var managedTargets = []struct{ name, target string }{
+	{"yunling-agent", "usr/local/bin/yunling-agent"},
+	{"yunling-agent.service", "etc/systemd/system/yunling-agent.service"},
+	{"yunling-run@.service", "etc/systemd/system/yunling-run@.service"},
+	{"yunling-agent-upgrade@.service", "etc/systemd/system/yunling-agent-upgrade@.service"},
+	{"50-yunling-agent.rules", "etc/polkit-1/rules.d/50-yunling-agent.rules"},
 }
 
 func Apply(root, commandID string, system SystemController) error {
@@ -36,6 +36,9 @@ func Apply(root, commandID string, system SystemController) error {
 	if spec.Action == "rollback" {
 		return applyRollback(root, &spec, system)
 	}
+	if spec.Phase == "replacing" {
+		return rollbackAfterFailure(root, &spec, system, errors.New("检测到上次文件替换未完整结束"))
+	}
 	if spec.Phase == "staged" {
 		if err := verifyStagedArchive(spec); err != nil {
 			return err
@@ -43,12 +46,22 @@ func Apply(root, commandID string, system SystemController) error {
 		if err := backupManaged(spec); err != nil {
 			return err
 		}
-		if err := replaceManaged(spec, spec.StageDir); err != nil {
+		spec.Phase = "backup_complete"
+		if err := saveSpec(root, spec); err != nil {
 			return err
+		}
+	}
+	if spec.Phase == "backup_complete" {
+		spec.Phase = "replacing"
+		if err := saveSpec(root, spec); err != nil {
+			return err
+		}
+		if err := replaceManaged(spec, spec.StageDir); err != nil {
+			return rollbackAfterFailure(root, &spec, system, err)
 		}
 		spec.Phase = "files_replaced"
 		if err := saveSpec(root, spec); err != nil {
-			return err
+			return rollbackAfterFailure(root, &spec, system, err)
 		}
 	}
 	if spec.Phase == "files_replaced" {
@@ -79,6 +92,10 @@ func Apply(root, commandID string, system SystemController) error {
 }
 
 func applyRollback(root string, spec *Spec, system SystemController) error {
+	spec.Phase = "rolling_back"
+	if err := saveSpec(root, *spec); err != nil {
+		return err
+	}
 	if err := replaceManaged(*spec, spec.BackupDir); err != nil {
 		return err
 	}
@@ -107,7 +124,8 @@ func backupManaged(spec Spec) error {
 	if err := os.MkdirAll(spec.BackupDir, 0o700); err != nil {
 		return err
 	}
-	for name, target := range managedTargets {
+	for _, managed := range managedTargets {
+		name, target := managed.name, managed.target
 		source := filepath.Join(spec.InstallRoot, filepath.FromSlash(target))
 		if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
 			if err := os.WriteFile(filepath.Join(spec.BackupDir, name+".missing"), nil, 0o600); err != nil {
@@ -124,7 +142,8 @@ func backupManaged(spec Spec) error {
 	return nil
 }
 func replaceManaged(spec Spec, sourceRoot string) error {
-	for name, target := range managedTargets {
+	for _, managed := range managedTargets {
+		name, target := managed.name, managed.target
 		destination := filepath.Join(spec.InstallRoot, filepath.FromSlash(target))
 		if _, err := os.Stat(filepath.Join(sourceRoot, name+".missing")); err == nil {
 			if err := os.Remove(destination); err != nil && !errors.Is(err, os.ErrNotExist) {

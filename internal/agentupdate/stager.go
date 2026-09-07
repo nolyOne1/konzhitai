@@ -128,6 +128,22 @@ func (m *Manager) Rollback(ctx context.Context, command agentprotocol.UpgradeCom
 		return err
 	}
 	backup := filepath.Join(m.root, "previous")
+	if command.InstallCommandID != "" {
+		if !validCommandID(command.InstallCommandID) {
+			return ErrInvalidCommandID
+		}
+		installSpec, err := loadSpec(m.root, command.InstallCommandID)
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrNoRollbackNeeded
+		}
+		if err != nil {
+			return err
+		}
+		if installSpec.Phase == "staged" || installSpec.Phase == "backup_complete" || installSpec.Phase == "rolled_back" {
+			return ErrNoRollbackNeeded
+		}
+		backup = installSpec.BackupDir
+	}
 	if info, err := os.Stat(backup); err != nil || !info.IsDir() {
 		if err != nil {
 			return err

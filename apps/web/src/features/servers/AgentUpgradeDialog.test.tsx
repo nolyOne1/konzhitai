@@ -51,4 +51,15 @@ describe('升级计划向导', () => {
     await user.click(screen.getByRole('button', { name: '启动升级计划' }))
     expect(within(screen.getByLabelText('排空超时（秒）').closest('.form-field')!).getByRole('alert')).toHaveTextContent('60 到 86400')
   })
+
+  it('键盘焦点保持在升级向导内', async () => {
+    render(<AgentUpgradeDialog releases={releases} servers={[baseServer]} onClose={vi.fn()} onCreated={vi.fn()} />)
+    const user = userEvent.setup()
+    const close = screen.getByRole('button', { name: '关闭升级向导' })
+    close.focus()
+    await user.keyboard('{Shift>}{Tab}{/Shift}')
+    expect(screen.getByRole('button', { name: '下一步' })).toHaveFocus()
+    await user.tab()
+    expect(close).toHaveFocus()
+  })
 })

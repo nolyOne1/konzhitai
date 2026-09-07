@@ -2,6 +2,7 @@ package agentupgrade
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -13,6 +14,9 @@ func TestCoordinatorWaitsForTasksThenDispatchesCanary(t *testing.T) {
 	store.runtime["s1"] = ServerRuntime{Status: "online", Enabled: true, RunningTasks: 1}
 	sender := &fakeUpgradeSender{}
 	coordinator := NewCoordinator(store, sender, fixedCoordinatorNow)
+	if err := coordinator.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if err := coordinator.Scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +41,7 @@ func TestCoordinatorPausesAndRollsBackOnlyFailedBatch(t *testing.T) {
 		{ID: "canary", PlanID: "plan-1", ServerID: "s1", BatchNumber: 1, Status: TargetSucceeded},
 		{ID: "batch-2-a", PlanID: "plan-1", ServerID: "s2", BatchNumber: 2, Status: TargetInstalling, CommandID: "cmd-a", SourceVersion: "0.1.0", TargetVersion: "0.2.0"},
 		{ID: "batch-2-b", PlanID: "plan-1", ServerID: "s3", BatchNumber: 2, Status: TargetReconnecting, CommandID: "cmd-b", SourceVersion: "0.1.0", TargetVersion: "0.2.0"},
+		{ID: "batch-2-c", PlanID: "plan-1", ServerID: "s4", BatchNumber: 2, Status: TargetSucceeded, CommandID: "cmd-c", SourceVersion: "0.1.0", TargetVersion: "0.2.0"},
 		{ID: "waiting", PlanID: "plan-1", ServerID: "s4", BatchNumber: 3, Status: TargetWaiting},
 	}
 	coordinator := NewCoordinator(store, &fakeUpgradeSender{}, fixedCoordinatorNow)
@@ -51,8 +56,9 @@ func TestCoordinatorPausesAndRollsBackOnlyFailedBatch(t *testing.T) {
 		t.Fatalf("代理事件未持久化：%+v", store.events)
 	}
 	assertCoordinatorStatus(t, store, "canary", TargetSucceeded)
-	assertCoordinatorStatus(t, store, "batch-2-a", TargetRollingBack)
+	assertCoordinatorStatus(t, store, "batch-2-a", TargetRolledBack)
 	assertCoordinatorStatus(t, store, "batch-2-b", TargetRollingBack)
+	assertCoordinatorStatus(t, store, "batch-2-c", TargetRollingBack)
 	assertCoordinatorStatus(t, store, "waiting", TargetWaiting)
 }
 
@@ -108,7 +114,11 @@ func TestCoordinatorReconcilesHeartbeatAndVerificationAfterRestart(t *testing.T)
 		t.Fatal(err)
 	}
 	assertCoordinatorStatus(t, store, "target-canary", TargetHealthChecking)
-	coordinator = NewCoordinator(store, &fakeUpgradeSender{}, func() time.Time { return now.Add(31 * time.Second) })
+	verifiedAt := now.Add(31 * time.Second)
+	runtime := store.runtime["s1"]
+	runtime.LastSeenAt = &verifiedAt
+	store.runtime["s1"] = runtime
+	coordinator = NewCoordinator(store, &fakeUpgradeSender{}, func() time.Time { return verifiedAt })
 	if err := coordinator.Scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -130,6 +140,54 @@ func TestCoordinatorDoesNotSkipReconnectHealthWindowOnAgentSuccessEvent(t *testi
 	assertCoordinatorStatus(t, store, "target-canary", TargetReconnecting)
 	if store.plan.Status != PlanRunning {
 		t.Fatalf("代理成功事件不得绕过重连与健康窗口：%s", store.plan.Status)
+	}
+}
+
+func TestCoordinatorRejectsStaleHeartbeatDuringHealthWindow(t *testing.T) {
+	now := fixedCoordinatorNow()
+	store := coordinatorFixture()
+	store.plan.Targets[0].Status = TargetHealthChecking
+	store.plan.Targets[0].UpdatedAt = now.Add(-31 * time.Second)
+	runtime := store.runtime["s1"]
+	stale := now.Add(-16 * time.Second)
+	runtime.LastSeenAt = &stale
+	store.runtime["s1"] = runtime
+	if err := NewCoordinator(store, &fakeUpgradeSender{}, func() time.Time { return now }).Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertCoordinatorStatus(t, store, "target-canary", TargetRollingBack)
+	if store.plan.Status != PlanPaused {
+		t.Fatalf("健康窗口失去连续心跳后必须暂停：%s", store.plan.Status)
+	}
+}
+
+func TestCoordinatorIgnoresOutOfOrderStageAndResendsPersistedCommands(t *testing.T) {
+	store := coordinatorFixture()
+	store.plan.Targets[0].Status = TargetInstalling
+	coordinator := NewCoordinator(store, &fakeUpgradeSender{}, fixedCoordinatorNow)
+	if err := coordinator.ApplyUpgradeEvent(context.Background(), "s1", agentprotocol.UpgradeEvent{TargetID: "target-canary", CommandID: "command-1", Stage: agentprotocol.StageDownloading}); err != nil {
+		t.Fatal(err)
+	}
+	assertCoordinatorStatus(t, store, "target-canary", TargetInstalling)
+
+	store.plan.Targets[0].Status = TargetDownloading
+	sender := &fakeUpgradeSender{}
+	if err := NewCoordinator(store, sender, fixedCoordinatorNow).Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.commands) != 1 || sender.commands[0].CommandID != "command-1" {
+		t.Fatalf("控制面重启后必须重发持久化命令：%+v", sender.commands)
+	}
+}
+
+func TestCoordinatorPersistsDrainIntentBeforeExternalSideEffect(t *testing.T) {
+	store := coordinatorFixture()
+	store.saveErr = ErrInvalidTransition
+	if err := NewCoordinator(store, &fakeUpgradeSender{}, fixedCoordinatorNow).Scan(context.Background()); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("应返回并发写冲突：%v", err)
+	}
+	if store.runtime["s1"].Draining {
+		t.Fatal("计划状态未保存时不得泄漏排空副作用")
 	}
 }
 
@@ -192,11 +250,13 @@ type coordinatorMemory struct {
 	release ReleaseInfo
 	runtime map[string]ServerRuntime
 	events  []Event
+	saveErr error
 }
 
 func coordinatorFixture() *coordinatorMemory {
 	now := fixedCoordinatorNow()
-	return &coordinatorMemory{plan: Plan{ID: "plan-1", TargetReleaseID: "release-2", TargetVersion: "0.2.0", Status: PlanRunning, CurrentBatch: 1, DrainTimeoutSeconds: 3600, ReconnectTimeoutSeconds: 120, VerificationSeconds: 30, Targets: []Target{{ID: "target-canary", PlanID: "plan-1", ServerID: "s1", BatchNumber: 1, SourceVersion: "0.1.0", TargetVersion: "0.2.0", Status: TargetWaiting, CommandID: "command-1", UpdatedAt: now}}}, release: ReleaseInfo{ID: "release-2", Version: "0.2.0", Artifacts: []ArtifactInfo{{OS: "linux", Arch: "amd64", FileName: "agent.tar.gz", ByteSize: 10, SHA256: "digest", DownloadURL: "/agent.tar.gz"}}}, runtime: map[string]ServerRuntime{"s1": {Status: "online", Enabled: true, AgentOS: "linux", AgentArch: "amd64"}, "s2": {Status: "online", Enabled: true}, "s3": {Status: "online", Enabled: true}, "s4": {Status: "online", Enabled: true}}}
+	seen := now
+	return &coordinatorMemory{plan: Plan{ID: "plan-1", TargetReleaseID: "release-2", TargetVersion: "0.2.0", Status: PlanRunning, CurrentBatch: 1, DrainTimeoutSeconds: 3600, ReconnectTimeoutSeconds: 120, VerificationSeconds: 30, Targets: []Target{{ID: "target-canary", PlanID: "plan-1", ServerID: "s1", BatchNumber: 1, SourceVersion: "0.1.0", TargetVersion: "0.2.0", Status: TargetWaiting, CommandID: "command-1", UpdatedAt: now}}}, release: ReleaseInfo{ID: "release-2", Version: "0.2.0", Artifacts: []ArtifactInfo{{OS: "linux", Arch: "amd64", FileName: "agent.tar.gz", ByteSize: 10, SHA256: "digest", DownloadURL: "https://control.example/agent.tar.gz"}}}, runtime: map[string]ServerRuntime{"s1": {Status: "online", Enabled: true, AgentVersion: "0.2.0", AgentOS: "linux", AgentArch: "amd64", LastSeenAt: &seen, HasSnapshot: true}, "s2": {Status: "online", Enabled: true}, "s3": {Status: "online", Enabled: true}, "s4": {Status: "online", Enabled: true}}}
 }
 func (s *coordinatorMemory) ActivePlan(context.Context) (*Plan, error) {
 	copy := s.plan
@@ -204,6 +264,9 @@ func (s *coordinatorMemory) ActivePlan(context.Context) (*Plan, error) {
 }
 func (s *coordinatorMemory) Plan(context.Context, string) (Plan, error) { return s.plan, nil }
 func (s *coordinatorMemory) SavePlan(_ context.Context, p Plan) (Plan, error) {
+	if s.saveErr != nil {
+		return Plan{}, s.saveErr
+	}
 	s.plan = p
 	return p, nil
 }

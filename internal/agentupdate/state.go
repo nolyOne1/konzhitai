@@ -17,6 +17,7 @@ var (
 	ErrArtifactMismatch = errors.New("代理升级包与命令不一致")
 	ErrVersionMismatch  = errors.New("代理版本不一致")
 	ErrInvalidCommandID = errors.New("升级命令编号无效")
+	ErrNoRollbackNeeded = errors.New("本次升级尚未替换文件，无需回滚")
 )
 
 type Spec struct {

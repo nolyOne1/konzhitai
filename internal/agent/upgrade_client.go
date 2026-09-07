@@ -27,13 +27,14 @@ type UpgradeClient struct {
 	manager   UpgradeManager
 	transport UpgradeTransport
 	now       func() time.Time
+	seen      map[string]bool
 }
 
 func NewUpgradeClient(manager UpgradeManager, transport UpgradeTransport, now func() time.Time) *UpgradeClient {
 	if now == nil {
 		now = time.Now
 	}
-	return &UpgradeClient{manager: manager, transport: transport, now: now}
+	return &UpgradeClient{manager: manager, transport: transport, now: now, seen: map[string]bool{}}
 }
 
 func (c *UpgradeClient) Run(ctx context.Context) error {
@@ -57,8 +58,27 @@ func (c *UpgradeClient) handle(ctx context.Context, command agentprotocol.Upgrad
 		return fmt.Errorf("读取本地升级状态：%w", err)
 	}
 	if current != nil && current.CommandID == command.CommandID {
-		return c.transport.SendUpgradeEvent(ctx, eventFromRuntime(*current, c.now()))
+		if err := c.transport.SendUpgradeEvent(ctx, eventFromRuntime(*current, c.now())); err != nil {
+			return err
+		}
+		if c.seen[command.CommandID] {
+			return nil
+		}
+		c.seen[command.CommandID] = true
+		switch current.Stage {
+		case agentprotocol.StageAccepted, agentprotocol.StageDownloading, agentprotocol.StageVerifying, agentprotocol.StageInstalling:
+			return c.resumeInstall(ctx, command, current.Stage)
+		case agentprotocol.StageRollingBack:
+			if err := c.manager.Rollback(ctx, command); err != nil {
+				if errors.Is(err, agentupdate.ErrNoRollbackNeeded) {
+					return c.transition(ctx, command, agentprotocol.StageRolledBack, "", "升级未替换文件，已安全结束")
+				}
+				return c.fail(ctx, command, "rollback_failed", "代理回滚恢复失败："+err.Error())
+			}
+		}
+		return nil
 	}
+	c.seen[command.CommandID] = true
 	if err := c.transition(ctx, command, agentprotocol.StageAccepted, "", ""); err != nil {
 		return err
 	}
@@ -67,21 +87,40 @@ func (c *UpgradeClient) handle(ctx context.Context, command agentprotocol.Upgrad
 			return err
 		}
 		if err := c.manager.Rollback(ctx, command); err != nil {
+			if errors.Is(err, agentupdate.ErrNoRollbackNeeded) {
+				return c.transition(ctx, command, agentprotocol.StageRolledBack, "", "升级未替换文件，已安全结束")
+			}
 			return c.fail(ctx, command, "rollback_failed", "代理回滚启动失败："+err.Error())
 		}
 		return nil
 	}
-	if err := c.transition(ctx, command, agentprotocol.StageDownloading, "", ""); err != nil {
-		return err
+	return c.resumeInstall(ctx, command, agentprotocol.StageAccepted)
+}
+
+func (c *UpgradeClient) resumeInstall(ctx context.Context, command agentprotocol.UpgradeCommand, stage agentprotocol.UpgradeStage) error {
+	if stage == agentprotocol.StageAccepted {
+		if err := c.transition(ctx, command, agentprotocol.StageDownloading, "", ""); err != nil {
+			return err
+		}
+		stage = agentprotocol.StageDownloading
 	}
-	if _, err := c.manager.Stage(ctx, command); err != nil {
-		return c.fail(ctx, command, "stage_failed", "代理升级暂存失败："+err.Error())
+	if stage == agentprotocol.StageDownloading {
+		if _, err := c.manager.Stage(ctx, command); err != nil {
+			return c.fail(ctx, command, "stage_failed", "代理升级暂存失败："+err.Error())
+		}
+		if err := c.transition(ctx, command, agentprotocol.StageVerifying, "", ""); err != nil {
+			return err
+		}
+		stage = agentprotocol.StageVerifying
 	}
-	if err := c.transition(ctx, command, agentprotocol.StageVerifying, "", ""); err != nil {
-		return err
+	if stage == agentprotocol.StageVerifying {
+		if err := c.transition(ctx, command, agentprotocol.StageInstalling, "", ""); err != nil {
+			return err
+		}
+		stage = agentprotocol.StageInstalling
 	}
-	if err := c.transition(ctx, command, agentprotocol.StageInstalling, "", ""); err != nil {
-		return err
+	if stage != agentprotocol.StageInstalling {
+		return nil
 	}
 	if err := c.manager.StartApply(ctx, command.CommandID); err != nil {
 		return c.fail(ctx, command, "apply_start_failed", "代理升级安装启动失败："+err.Error())

@@ -41,6 +41,21 @@ func TestUpgradeClientDoesNotRestageDuplicateCommand(t *testing.T) {
 	}
 }
 
+func TestUpgradeClientResumesPersistedDownloadAfterRestart(t *testing.T) {
+	command := validUpgradeCommand("upgrade-1")
+	manager := &fakeUpgradeManager{state: &agentprotocol.UpgradeRuntimeState{CommandID: command.CommandID, TargetID: command.TargetID, TargetVersion: command.TargetVersion, Stage: agentprotocol.StageDownloading}}
+	transport, cancel := upgradeTransportWithCommands(command)
+	transport.cancelAt = 3
+	transport.cancel = cancel
+	if err := NewUpgradeClient(manager, transport, fixedUpgradeNow).Run(transport.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if manager.stageCalls != 1 || manager.startCalls != 1 {
+		t.Fatalf("重启后未从下载阶段恢复：stage=%d start=%d", manager.stageCalls, manager.startCalls)
+	}
+	assertUpgradeStages(t, transport.events, "downloading", "verifying", "installing")
+}
+
 func TestUpgradeClientStartsRollback(t *testing.T) {
 	manager := &fakeUpgradeManager{}
 	command := validUpgradeCommand("rollback-1")
@@ -56,6 +71,19 @@ func TestUpgradeClientStartsRollback(t *testing.T) {
 		t.Fatalf("回滚命令未执行：%d", manager.rollbackCalls)
 	}
 	assertUpgradeStages(t, transport.events, "accepted", "rolling_back")
+}
+
+func TestUpgradeClientReportsRolledBackWhenFilesWereNotReplaced(t *testing.T) {
+	manager := &fakeUpgradeManager{rollbackErr: agentupdate.ErrNoRollbackNeeded}
+	command := validUpgradeCommand("rollback-1")
+	command.Action = agentprotocol.UpgradeRollback
+	transport, cancel := upgradeTransportWithCommands(command)
+	transport.cancelAt = 3
+	transport.cancel = cancel
+	if err := NewUpgradeClient(manager, transport, fixedUpgradeNow).Run(transport.ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertUpgradeStages(t, transport.events, "accepted", "rolling_back", "rolled_back")
 }
 
 func TestUpgradeClientReportsStageFailure(t *testing.T) {
@@ -76,6 +104,7 @@ func TestUpgradeClientReportsStageFailure(t *testing.T) {
 type fakeUpgradeManager struct {
 	stageCalls, startCalls, rollbackCalls int
 	stageErr                              error
+	rollbackErr                           error
 	state                                 *agentprotocol.UpgradeRuntimeState
 }
 
@@ -86,7 +115,7 @@ func (m *fakeUpgradeManager) Stage(context.Context, agentprotocol.UpgradeCommand
 func (m *fakeUpgradeManager) StartApply(context.Context, string) error { m.startCalls++; return nil }
 func (m *fakeUpgradeManager) Rollback(context.Context, agentprotocol.UpgradeCommand) error {
 	m.rollbackCalls++
-	return nil
+	return m.rollbackErr
 }
 func (m *fakeUpgradeManager) RuntimeState() (*agentprotocol.UpgradeRuntimeState, error) {
 	if m.state == nil {

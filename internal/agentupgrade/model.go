@@ -75,22 +75,23 @@ type Plan struct {
 }
 
 type Target struct {
-	ID             string       `json:"id"`
-	PlanID         string       `json:"plan_id"`
-	ServerID       string       `json:"server_id"`
-	ServerName     string       `json:"server_name"`
-	BatchNumber    int          `json:"batch_number"`
-	SourceVersion  string       `json:"source_version"`
-	TargetVersion  string       `json:"target_version"`
-	SourceDraining bool         `json:"source_draining"`
-	Status         TargetStatus `json:"status"`
-	Attempts       int          `json:"attempts"`
-	CommandID      string       `json:"command_id"`
-	ErrorCode      string       `json:"error_code"`
-	ErrorMessage   string       `json:"error_message"`
-	StartedAt      *time.Time   `json:"started_at,omitempty"`
-	UpdatedAt      time.Time    `json:"updated_at"`
-	FinishedAt     *time.Time   `json:"finished_at,omitempty"`
+	ID               string       `json:"id"`
+	PlanID           string       `json:"plan_id"`
+	ServerID         string       `json:"server_id"`
+	ServerName       string       `json:"server_name"`
+	BatchNumber      int          `json:"batch_number"`
+	SourceVersion    string       `json:"source_version"`
+	TargetVersion    string       `json:"target_version"`
+	SourceDraining   bool         `json:"source_draining"`
+	Status           TargetStatus `json:"status"`
+	Attempts         int          `json:"attempts"`
+	CommandID        string       `json:"command_id"`
+	InstallCommandID string       `json:"install_command_id"`
+	ErrorCode        string       `json:"error_code"`
+	ErrorMessage     string       `json:"error_message"`
+	StartedAt        *time.Time   `json:"started_at,omitempty"`
+	UpdatedAt        time.Time    `json:"updated_at"`
+	FinishedAt       *time.Time   `json:"finished_at,omitempty"`
 }
 
 type Event struct {
@@ -123,8 +124,11 @@ type ServerRuntime struct {
 	Enabled      bool
 	Draining     bool
 	RunningTasks int
+	AgentVersion string
 	AgentOS      string
 	AgentArch    string
+	LastSeenAt   *time.Time
+	HasSnapshot  bool
 }
 
 type ServerInfo struct {

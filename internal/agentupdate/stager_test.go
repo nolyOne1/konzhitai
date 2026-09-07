@@ -40,6 +40,42 @@ func TestRollbackPersistsPreviousVersionAndStartsApply(t *testing.T) {
 	}
 }
 
+func TestRollbackUsesBackupFromMatchingInstallCommand(t *testing.T) {
+	root := t.TempDir()
+	backup := filepath.Join(root, "install-1", "backup")
+	if err := os.MkdirAll(backup, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSpec(root, Spec{CommandID: "install-1", Action: agentprotocol.UpgradeInstall, Phase: "files_replaced", BackupDir: backup}); err != nil {
+		t.Fatal(err)
+	}
+	starter := &countingStarter{}
+	manager := NewManager(root, nil, starter, nil)
+	err := manager.Rollback(context.Background(), agentprotocol.UpgradeCommand{CommandID: "rollback-1", InstallCommandID: "install-1", Action: agentprotocol.UpgradeRollback, TargetVersion: "0.1.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := loadSpec(root, "rollback-1")
+	if err != nil || spec.BackupDir != backup {
+		t.Fatalf("未绑定本次安装备份：%+v %v", spec, err)
+	}
+}
+
+func TestRollbackBeforeReplacementCompletesWithoutUsingOlderBackup(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "previous"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSpec(root, Spec{CommandID: "install-1", Action: agentprotocol.UpgradeInstall, Phase: "staged", BackupDir: filepath.Join(root, "install-1", "backup")}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(root, nil, &countingStarter{}, nil)
+	err := manager.Rollback(context.Background(), agentprotocol.UpgradeCommand{CommandID: "rollback-1", InstallCommandID: "install-1", Action: agentprotocol.UpgradeRollback, TargetVersion: "0.1.0"})
+	if !errors.Is(err, ErrNoRollbackNeeded) {
+		t.Fatalf("替换前不应使用全局旧备份：%v", err)
+	}
+}
+
 func TestStageRejectsUnexpectedArchiveEntry(t *testing.T) {
 	archive := validArchive(t)
 	archive = makeArchive(t, map[string][]byte{"yunling-agent": []byte("binary"), "unexpected": []byte("bad")})

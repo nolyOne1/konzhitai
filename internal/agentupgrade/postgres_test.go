@@ -37,7 +37,12 @@ func TestPostgresRepositoryPersistsPlanAndTargetsAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	service := NewService(NewPostgresRepository(db))
+	repository := NewPostgresRepository(db, "https://control.example/")
+	service := NewService(repository)
+	release, err := repository.Release(ctx, releaseID)
+	if err != nil || len(release.Artifacts) != 1 || !strings.HasPrefix(release.Artifacts[0].DownloadURL, "https://control.example/api/releases/agent/") {
+		t.Fatalf("代理安装包必须使用绝对同源地址：%+v err=%v", release.Artifacts, err)
+	}
 	plan, err := service.CreatePlan(ctx, CreatePlanInput{TargetReleaseID: releaseID, ServerIDs: []string{serverID}, CreatedBy: userID})
 	if err != nil {
 		t.Fatal(err)

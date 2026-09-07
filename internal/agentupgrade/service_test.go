@@ -101,6 +101,56 @@ func TestPauseResumeCancelRetryAndRollback(t *testing.T) {
 	}
 }
 
+func TestRollbackSucceededTargetInsideActivePlanStartsImmediately(t *testing.T) {
+	ctx := context.Background()
+	repository := validMemoryRepository()
+	service := NewService(repository)
+	plan, err := service.CreatePlan(ctx, CreatePlanInput{TargetReleaseID: "release-2", ServerIDs: []string{"s1", "s2"}, CreatedBy: "user-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := repository.plans[plan.ID]
+	stored.Targets[0].Status = TargetSucceeded
+	stored.Status = PlanPaused
+	repository.plans[plan.ID] = stored
+	repository.active = &stored
+	rolled, err := service.CreateRollbackPlan(ctx, plan.ID, stored.Targets[0].ID, "user-1")
+	if err != nil || rolled.Targets[0].Status != TargetRollingBack || rolled.Status != PlanPaused {
+		t.Fatalf("活动计划内回滚失败：%+v %v", rolled, err)
+	}
+}
+
+func TestPlanControlsAreIdempotent(t *testing.T) {
+	ctx := context.Background()
+	repository := validMemoryRepository()
+	service := NewService(repository)
+	plan, err := service.CreatePlan(ctx, CreatePlanInput{TargetReleaseID: "release-2", ServerIDs: []string{"s1"}, CreatedBy: "user-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused, err := service.Pause(ctx, plan.ID, "人工暂停")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := service.Pause(ctx, plan.ID, "重复请求"); err != nil || again.Status != paused.Status {
+		t.Fatalf("重复暂停不幂等：%+v %v", again, err)
+	}
+	resumed, err := service.Resume(ctx, plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := service.Resume(ctx, plan.ID); err != nil || again.Status != resumed.Status {
+		t.Fatalf("重复继续不幂等：%+v %v", again, err)
+	}
+	cancelled, err := service.Cancel(ctx, plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := service.Cancel(ctx, plan.ID); err != nil || again.Status != cancelled.Status {
+		t.Fatalf("重复取消不幂等：%+v %v", again, err)
+	}
+}
+
 func TestResumeRevalidatesWaitingServers(t *testing.T) {
 	ctx := context.Background()
 	repository := validMemoryRepository()

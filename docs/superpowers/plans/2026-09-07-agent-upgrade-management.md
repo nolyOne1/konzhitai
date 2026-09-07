@@ -472,7 +472,7 @@ git commit -m "feat: add immutable multi-version agent repository"
 
 **Interfaces:**
 - Consumes `agentrelease.Service.Import(context.Context, agentrelease.ImportInput)` from Task 3.
-- Produces CLI `yunling-agent-release import --manifest PATH --directory PATH --notes TEXT [--recommend]`.
+- Produces CLI `yunling-agent-release import --manifest PATH --directory PATH --created-by ADMIN_UUID --notes TEXT [--recommend]`.
 
 - [x] **Step 1: Write failing command parsing and import tests**
 
@@ -506,7 +506,7 @@ Build `/out/yunling-agent-release` in `deploy/Dockerfile.services`, copy it into
 
 ```bash
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml exec -T api \
-  yunling-agent-release import --manifest /release/manifest.json --directory /release \
+  yunling-agent-release import --manifest /release/manifest.json --directory /release --created-by ADMIN_UUID \
   --notes "增加代理升级能力" --recommend
 ```
 

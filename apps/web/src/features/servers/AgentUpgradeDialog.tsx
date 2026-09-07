@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 
 import { createAgentUpgradePlan, type AgentRelease, type AgentUpgradePlan, type ServerView } from '../../api/client'
 
@@ -24,6 +24,7 @@ export function AgentUpgradeDialog({ releases, servers, onClose, onCreated }: Ag
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
   const firstReleaseRef = useRef<HTMLInputElement>(null)
+  const dialogRef = useRef<HTMLElement>(null)
   const targetRelease = releases.find((release) => release.id === releaseID)
   useEffect(() => firstReleaseRef.current?.focus(), [])
 
@@ -63,7 +64,7 @@ export function AgentUpgradeDialog({ releases, servers, onClose, onCreated }: Ag
   }
 
   return <div className="drawer-backdrop centered-dialog" onMouseDown={(event) => { if (event.target === event.currentTarget && !submitting) onClose() }}>
-    <section className="console-dialog upgrade-dialog" role="dialog" aria-modal="true" aria-labelledby="upgrade-dialog-title" onKeyDown={(event) => { if (event.key === 'Escape' && !submitting) onClose() }}>
+    <section ref={dialogRef} className="console-dialog upgrade-dialog" role="dialog" aria-modal="true" aria-labelledby="upgrade-dialog-title" onKeyDown={(event) => handleDialogKeys(event, () => { if (!submitting) onClose() }, dialogRef.current)}>
       <header className="drawer-header"><div><p className="eyebrow">代理版本管理</p><h2 id="upgrade-dialog-title">创建升级计划</h2><p>首批验证一台节点，确认健康后自动进入后续批次。</p></div><button type="button" className="icon-button" aria-label="关闭升级向导" disabled={submitting} onClick={onClose}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg></button></header>
       <ol className="upgrade-wizard-steps" aria-label="升级计划步骤"><li className={step >= 1 ? 'is-active' : ''}><b>1</b><span>选择版本</span></li><li className={step >= 2 ? 'is-active' : ''}><b>2</b><span>选择服务器</span></li><li className={step >= 3 ? 'is-active' : ''}><b>3</b><span>确认策略</span></li></ol>
       {step === 1 ? <section className="upgrade-wizard-body" aria-labelledby="choose-release-title"><h3 id="choose-release-title">选择目标版本</h3><div className="release-choice-list">{releases.filter((release) => release.status === 'available').map((release, index) => <label key={release.id} className="release-choice"><input ref={index === 0 ? firstReleaseRef : undefined} type="radio" name="target-release" checked={releaseID === release.id} onChange={() => { setReleaseID(release.id); setSelectedIDs([]); setErrors({}) }} /><span><strong>{release.version}{release.recommended ? '（推荐）' : ''}</strong><small>{release.releaseNotes || '暂无发布说明'}</small></span></label>)}</div>{errors.release ? <p className="form-error" role="alert">{errors.release}</p> : null}</section> : null}
@@ -80,3 +81,14 @@ function matchesLabel(labels: Record<string, string>, query: string) { const [ke
 function validateSettings(batch: string, drain: string, reconnect: string, verify: string) { const errors: Record<string, string> = {}; if (!between(batch, 1, 100)) errors.batchSize = '请输入 1 到 100。'; if (!between(drain, 60, 86400)) errors.drainTimeout = '请输入 60 到 86400。'; if (!between(reconnect, 30, 3600)) errors.reconnectTimeout = '请输入 30 到 3600。'; if (!between(verify, 10, 600)) errors.verificationSeconds = '请输入 10 到 600。'; return errors }
 function between(value: string, min: number, max: number) { const number = Number(value); return Number.isInteger(number) && number >= min && number <= max }
 function eligibilityReason(server: ServerView, release?: AgentRelease) { if (!(server.agentCapabilities ?? []).includes('self_upgrade_v1')) return '需人工升级基线'; if (!server.enabled || !['online', 'draining'].includes(server.status)) return '节点不可用'; if (release && server.agentVersion === release.version) return '已是目标版本'; return '无匹配安装包' }
+
+function handleDialogKeys(event: KeyboardEvent<HTMLElement>, onClose: () => void, scope: HTMLElement | null) {
+  if (event.key === 'Escape') { event.preventDefault(); onClose(); return }
+  if (event.key !== 'Tab' || !scope) return
+  const focusable = [...scope.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+  if (!focusable.length) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+}

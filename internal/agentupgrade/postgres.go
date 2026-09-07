@@ -6,15 +6,26 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type PostgresRepository struct{ db *pgxpool.Pool }
+type PostgresRepository struct {
+	db            *pgxpool.Pool
+	publicBaseURL string
+}
 
-func NewPostgresRepository(db *pgxpool.Pool) *PostgresRepository { return &PostgresRepository{db: db} }
+func NewPostgresRepository(db *pgxpool.Pool, publicBaseURL ...string) *PostgresRepository {
+	base := "http://127.0.0.1"
+	if len(publicBaseURL) > 0 && strings.TrimSpace(publicBaseURL[0]) != "" {
+		base = strings.TrimRight(publicBaseURL[0], "/")
+	}
+	return &PostgresRepository{db: db, publicBaseURL: base}
+}
 
 func (r *PostgresRepository) ActivePlan(ctx context.Context) (*Plan, error) {
 	plan, err := r.planByQuery(ctx, planSelect+` WHERE plan.status IN ('pending','running','paused') ORDER BY plan.created_at DESC LIMIT 1`)
@@ -58,7 +69,7 @@ func (r *PostgresRepository) releaseBy(ctx context.Context, predicate string, va
 		if err := rows.Scan(&item.OS, &item.Arch, &item.FileName, &item.ByteSize, &item.SHA256); err != nil {
 			return ReleaseInfo{}, err
 		}
-		item.DownloadURL = "/api/releases/agent/" + release.Version + "/" + item.SHA256 + "/" + item.FileName
+		item.DownloadURL = r.publicBaseURL + "/api/releases/agent/" + url.PathEscape(release.Version) + "/" + url.PathEscape(item.SHA256) + "/" + url.PathEscape(item.FileName)
 		release.Artifacts = append(release.Artifacts, item)
 	}
 	return release, rows.Err()
@@ -66,13 +77,19 @@ func (r *PostgresRepository) releaseBy(ctx context.Context, predicate string, va
 
 func (r *PostgresRepository) ServerRuntime(ctx context.Context, serverID string) (ServerRuntime, error) {
 	var runtime ServerRuntime
+	var lastSeen sql.NullTime
 	err := r.db.QueryRow(ctx, `
-		SELECT server.status, server.enabled, server.drain_requested, server.agent_os, server.agent_arch,
+		SELECT server.status, server.enabled, server.drain_requested, server.agent_version, server.agent_os, server.agent_arch,
+		       server.last_seen_at,
+		       EXISTS(SELECT 1 FROM server_snapshots WHERE server_id=server.id),
 		       COALESCE((SELECT running_tasks FROM server_snapshots WHERE server_id=server.id ORDER BY collected_at DESC,id DESC LIMIT 1),0)
 		FROM servers AS server WHERE server.id=$1
-	`, serverID).Scan(&runtime.Status, &runtime.Enabled, &runtime.Draining, &runtime.AgentOS, &runtime.AgentArch, &runtime.RunningTasks)
+	`, serverID).Scan(&runtime.Status, &runtime.Enabled, &runtime.Draining, &runtime.AgentVersion, &runtime.AgentOS, &runtime.AgentArch, &lastSeen, &runtime.HasSnapshot, &runtime.RunningTasks)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ServerRuntime{}, ErrServerIneligible
+	}
+	if lastSeen.Valid {
+		runtime.LastSeenAt = &lastSeen.Time
 	}
 	return runtime, err
 }
@@ -89,7 +106,7 @@ func (r *PostgresRepository) SetServerDraining(ctx context.Context, serverID str
 }
 
 func (r *PostgresRepository) AppendEvent(ctx context.Context, event Event) error {
-	_, err := r.db.Exec(ctx, `INSERT INTO agent_upgrade_events(id,plan_id,target_id,server_id,command_id,stage,error_code,message,occurred_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, event.ID, event.PlanID, event.TargetID, event.ServerID, event.CommandID, event.Stage, event.ErrorCode, event.Message, event.OccurredAt)
+	_, err := r.db.Exec(ctx, `INSERT INTO agent_upgrade_events(id,plan_id,target_id,server_id,command_id,stage,error_code,message,occurred_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (target_id,command_id,stage) DO NOTHING`, event.ID, event.PlanID, event.TargetID, event.ServerID, event.CommandID, event.Stage, event.ErrorCode, event.Message, event.OccurredAt)
 	return err
 }
 
@@ -137,10 +154,10 @@ func (r *PostgresRepository) CreatePlan(ctx context.Context, plan Plan) (Plan, e
 		_, err = tx.Exec(ctx, `
 			INSERT INTO agent_upgrade_targets (
 				id, plan_id, server_id, batch_number, source_version, target_version, source_draining,
-				status, attempts, command_id, error_code, error_message, started_at, updated_at, finished_at
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+				status, attempts, command_id, install_command_id, error_code, error_message, started_at, updated_at, finished_at
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		`, target.ID, plan.ID, target.ServerID, target.BatchNumber, target.SourceVersion, target.TargetVersion,
-			target.SourceDraining, target.Status, target.Attempts, target.CommandID, target.ErrorCode,
+			target.SourceDraining, target.Status, target.Attempts, target.CommandID, target.InstallCommandID, target.ErrorCode,
 			target.ErrorMessage, target.StartedAt, target.UpdatedAt, target.FinishedAt)
 		if err != nil {
 			return Plan{}, mapPostgresError(err)
@@ -208,7 +225,7 @@ func (r *PostgresRepository) SavePlan(ctx context.Context, plan Plan) (Plan, err
 		} else if err != nil {
 			return Plan{}, err
 		}
-		result, err := tx.Exec(ctx, `UPDATE agent_upgrade_targets SET status=$3,attempts=$4,command_id=$5,error_code=$6,error_message=$7,started_at=$8,updated_at=$9,finished_at=$10 WHERE id=$1 AND plan_id=$2`, target.ID, plan.ID, target.Status, target.Attempts, target.CommandID, target.ErrorCode, target.ErrorMessage, target.StartedAt, target.UpdatedAt, target.FinishedAt)
+		result, err := tx.Exec(ctx, `UPDATE agent_upgrade_targets SET status=$3,attempts=$4,command_id=$5,install_command_id=$6,error_code=$7,error_message=$8,started_at=$9,updated_at=$10,finished_at=$11 WHERE id=$1 AND plan_id=$2`, target.ID, plan.ID, target.Status, target.Attempts, target.CommandID, target.InstallCommandID, target.ErrorCode, target.ErrorMessage, target.StartedAt, target.UpdatedAt, target.FinishedAt)
 		if err != nil {
 			return Plan{}, err
 		}
@@ -262,7 +279,7 @@ func (r *PostgresRepository) planByQuery(ctx context.Context, query string, args
 	return plan, err
 }
 func (r *PostgresRepository) targets(ctx context.Context, planID string) ([]Target, error) {
-	rows, err := r.db.Query(ctx, `SELECT target.id,target.plan_id,target.server_id,server.name,target.batch_number,target.source_version,target.target_version,target.source_draining,target.status,target.attempts,target.command_id,target.error_code,target.error_message,target.started_at,target.updated_at,target.finished_at FROM agent_upgrade_targets AS target JOIN servers AS server ON server.id=target.server_id WHERE target.plan_id=$1 ORDER BY target.batch_number,target.updated_at,target.id`, planID)
+	rows, err := r.db.Query(ctx, `SELECT target.id,target.plan_id,target.server_id,server.name,target.batch_number,target.source_version,target.target_version,target.source_draining,target.status,target.attempts,target.command_id,target.install_command_id,target.error_code,target.error_message,target.started_at,target.updated_at,target.finished_at FROM agent_upgrade_targets AS target JOIN servers AS server ON server.id=target.server_id WHERE target.plan_id=$1 ORDER BY target.batch_number,target.updated_at,target.id`, planID)
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +288,7 @@ func (r *PostgresRepository) targets(ctx context.Context, planID string) ([]Targ
 	for rows.Next() {
 		var target Target
 		var started, finished sql.NullTime
-		if err := rows.Scan(&target.ID, &target.PlanID, &target.ServerID, &target.ServerName, &target.BatchNumber, &target.SourceVersion, &target.TargetVersion, &target.SourceDraining, &target.Status, &target.Attempts, &target.CommandID, &target.ErrorCode, &target.ErrorMessage, &started, &target.UpdatedAt, &finished); err != nil {
+		if err := rows.Scan(&target.ID, &target.PlanID, &target.ServerID, &target.ServerName, &target.BatchNumber, &target.SourceVersion, &target.TargetVersion, &target.SourceDraining, &target.Status, &target.Attempts, &target.CommandID, &target.InstallCommandID, &target.ErrorCode, &target.ErrorMessage, &started, &target.UpdatedAt, &finished); err != nil {
 			return nil, err
 		}
 		if started.Valid {

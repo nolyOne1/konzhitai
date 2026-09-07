@@ -168,7 +168,7 @@ func main() {
 				log.Printf("代理版本引导失败，版本与升级接口将返回暂不可用：%v", err)
 			} else {
 				publicAgentReleaseHandler = agentrelease.Handler(releaseService)
-				upgradeRepository := agentupgrade.NewPostgresRepository(pool)
+				upgradeRepository := agentupgrade.NewPostgresRepository(pool, publicBaseURL(address))
 				upgradeService := agentupgrade.NewService(upgradeRepository)
 				upgradeCoordinator := agentupgrade.NewCoordinator(upgradeRepository, connections, time.Now)
 				agentReleaseHandler = protect(agentrelease.ManagementHandler(releaseService))

@@ -84,10 +84,11 @@ func (s *Service) CreatePlan(ctx context.Context, input CreatePlanInput) (Plan, 
 		if index > 0 {
 			batch = 2 + (index-1)/input.BatchSize
 		}
+		commandID := s.newID()
 		plan.Targets = append(plan.Targets, Target{
 			ID: s.newID(), PlanID: plan.ID, ServerID: server.ID, BatchNumber: batch,
 			SourceVersion: server.AgentVersion, TargetVersion: release.Version, SourceDraining: server.Draining,
-			Status: TargetWaiting, CommandID: s.newID(), UpdatedAt: now,
+			Status: TargetWaiting, CommandID: commandID, InstallCommandID: commandID, UpdatedAt: now,
 		})
 	}
 	created, err := s.repository.CreatePlan(ctx, plan)
@@ -107,6 +108,9 @@ func (s *Service) Pause(ctx context.Context, id, reason string) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
+	if plan.Status == PlanPaused {
+		return plan, nil
+	}
 	if plan.Status != PlanPending && plan.Status != PlanRunning {
 		return Plan{}, ErrInvalidTransition
 	}
@@ -118,6 +122,9 @@ func (s *Service) Resume(ctx context.Context, id string) (Plan, error) {
 	plan, err := s.repository.Plan(ctx, id)
 	if err != nil {
 		return Plan{}, err
+	}
+	if plan.Status == PlanRunning || plan.Status == PlanPending {
+		return plan, nil
 	}
 	if plan.Status != PlanPaused {
 		return Plan{}, ErrInvalidTransition
@@ -162,6 +169,9 @@ func (s *Service) Cancel(ctx context.Context, id string) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
+	if plan.Status == PlanCancelled || plan.CancelRequested {
+		return plan, nil
+	}
 	if plan.Status != PlanPending && plan.Status != PlanRunning && plan.Status != PlanPaused {
 		return Plan{}, ErrInvalidTransition
 	}
@@ -196,10 +206,14 @@ func (s *Service) RetryTarget(ctx context.Context, planID, targetID string) (Pla
 		if target.ID != targetID {
 			continue
 		}
+		if target.Status == TargetDraining || target.Status == TargetDownloading || target.Status == TargetVerifying || target.Status == TargetInstalling || target.Status == TargetReconnecting || target.Status == TargetHealthChecking {
+			return plan, nil
+		}
 		if target.Status != TargetRolledBack && target.Status != TargetManualIntervention {
 			return Plan{}, ErrInvalidTransition
 		}
 		target.Status, target.CommandID = TargetDraining, s.newID()
+		target.InstallCommandID = target.CommandID
 		target.Attempts++
 		target.ErrorCode, target.ErrorMessage, target.FinishedAt = "", "", nil
 		target.UpdatedAt = s.now().UTC()
@@ -224,6 +238,9 @@ func (s *Service) CreateRollbackPlan(ctx context.Context, planID, targetID, acto
 	if source == nil {
 		return Plan{}, ErrTargetNotFound
 	}
+	if source.Status == TargetRollingBack || source.Status == TargetRolledBack {
+		return original, nil
+	}
 	if source.Status != TargetSucceeded {
 		return Plan{}, ErrInvalidTransition
 	}
@@ -231,11 +248,31 @@ func (s *Service) CreateRollbackPlan(ctx context.Context, planID, targetID, acto
 	if err != nil {
 		return Plan{}, err
 	}
-	return s.CreatePlan(ctx, CreatePlanInput{
-		TargetReleaseID: release.ID, ServerIDs: []string{source.ServerID}, BatchSize: 1,
-		DrainTimeoutSeconds: original.DrainTimeoutSeconds, ReconnectTimeoutSeconds: original.ReconnectTimeoutSeconds,
-		VerificationSeconds: original.VerificationSeconds, CreatedBy: actorID,
-	})
+	active, err := s.repository.ActivePlan(ctx)
+	if err != nil {
+		return Plan{}, err
+	}
+	if active != nil && active.ID != original.ID {
+		return Plan{}, ErrActivePlanExists
+	}
+	if original.Status == PlanSucceeded || original.Status == PlanCancelled {
+		if active != nil {
+			return Plan{}, ErrActivePlanExists
+		}
+		return s.CreatePlan(ctx, CreatePlanInput{
+			TargetReleaseID: release.ID, ServerIDs: []string{source.ServerID}, BatchSize: 1,
+			DrainTimeoutSeconds: original.DrainTimeoutSeconds, ReconnectTimeoutSeconds: original.ReconnectTimeoutSeconds,
+			VerificationSeconds: original.VerificationSeconds, CreatedBy: actorID,
+		})
+	}
+	now := s.now().UTC()
+	if source.InstallCommandID == "" {
+		source.InstallCommandID = source.CommandID
+	}
+	source.Status, source.CommandID, source.ErrorCode, source.ErrorMessage = TargetRollingBack, s.newID(), "", ""
+	source.UpdatedAt, source.FinishedAt = now, nil
+	original.Status, original.PauseReason, original.CancelRequested, original.FinishedAt = PlanPaused, "管理员正在回滚成功节点", false, nil
+	return s.repository.SavePlan(ctx, original)
 }
 
 func applyPlanDefaults(input *CreatePlanInput) {

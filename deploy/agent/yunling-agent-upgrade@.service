@@ -6,6 +6,8 @@ After=network-online.target
 Type=oneshot
 User=root
 ExecStart=/usr/local/bin/yunling-agent apply-upgrade %i
+Restart=on-failure
+RestartSec=5s
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
@@ -17,4 +19,3 @@ RestrictSUIDSGID=true
 LockPersonality=true
 RestrictRealtime=true
 RestrictNamespaces=true
-

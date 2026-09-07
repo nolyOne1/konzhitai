@@ -73,6 +73,7 @@ CREATE TABLE agent_upgrade_targets (
         )),
     attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
     command_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    install_command_id uuid NOT NULL DEFAULT gen_random_uuid(),
     error_code text NOT NULL DEFAULT '',
     error_message text NOT NULL DEFAULT '',
     started_at timestamptz,
@@ -99,6 +100,9 @@ CREATE TABLE agent_upgrade_events (
 
 CREATE INDEX agent_upgrade_events_target_time_idx
     ON agent_upgrade_events (target_id, occurred_at, id);
+
+CREATE UNIQUE INDEX agent_upgrade_events_command_stage_idx
+    ON agent_upgrade_events (target_id, command_id, stage);
 
 INSERT INTO schema_migrations (version) VALUES (14)
 ON CONFLICT (version) DO NOTHING;

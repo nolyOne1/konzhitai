@@ -76,6 +76,34 @@ func TestApplyResumesAfterFilesWereReplaced(t *testing.T) {
 	}
 }
 
+func TestApplyRestoresOriginalFilesAfterInterruptedReplacement(t *testing.T) {
+	root, install := writeApplyFixture(t)
+	spec, err := loadSpec(root, "upgrade-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backupManaged(spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(install, "usr/local/bin/yunling-agent"), []byte("partially-new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec.Phase = "replacing"
+	if err := saveSpec(root, spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(root, "upgrade-1", &fakeSystem{}); err == nil {
+		t.Fatal("中断恢复必须报告已执行回滚")
+	}
+	if got := readTestFile(t, filepath.Join(install, "usr/local/bin/yunling-agent")); got != "old" {
+		t.Fatalf("未恢复真实升级前版本：%s", got)
+	}
+	recovered, err := loadSpec(root, "upgrade-1")
+	if err != nil || recovered.Phase != "rolled_back" {
+		t.Fatalf("恢复状态错误：%+v %v", recovered, err)
+	}
+}
+
 type fakeSystem struct {
 	waitErr           error
 	reloads, restarts int

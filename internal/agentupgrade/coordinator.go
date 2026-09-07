@@ -47,6 +47,8 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 	}
 	now := c.now().UTC()
 	changed := false
+	commands := []sentCommand{}
+	restoreScheduling := []string{}
 	mayStartTarget := (plan.Status == PlanRunning || plan.Status == PlanPending) && !plan.CancelRequested
 	for index := range plan.Targets {
 		target := &plan.Targets[index]
@@ -58,9 +60,6 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 			if !mayStartTarget {
 				continue
 			}
-			if err := c.store.SetServerDraining(ctx, target.ServerID, true); err != nil {
-				return err
-			}
 			target.Status, target.StartedAt, target.UpdatedAt = TargetDraining, &now, now
 			changed = true
 		case TargetDraining:
@@ -71,6 +70,9 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 				plan.Status, plan.PauseReason = PlanPaused, "服务器排空超时"
 				changed = true
 				continue
+			}
+			if err := c.store.SetServerDraining(ctx, target.ServerID, true); err != nil {
+				return err
 			}
 			runtime, err := c.store.ServerRuntime(ctx, target.ServerID)
 			if err != nil {
@@ -87,21 +89,53 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 			if !ok {
 				return ErrArtifactUnavailable
 			}
-			command := installCommand(*plan, *target, artifact)
-			if err := c.sender.SendUpgradeCommand(ctx, target.ServerID, command); err != nil {
+			target.Status, target.Attempts, target.UpdatedAt = TargetDownloading, target.Attempts+1, now
+			commands = append(commands, sentCommand{target.ServerID, installCommand(*plan, *target, artifact)})
+			changed = true
+		case TargetDownloading:
+			runtime, err := c.store.ServerRuntime(ctx, target.ServerID)
+			if err != nil {
 				return err
 			}
-			target.Status, target.Attempts, target.UpdatedAt = TargetDownloading, target.Attempts+1, now
-			changed = true
+			release, err := c.store.Release(ctx, plan.TargetReleaseID)
+			if err != nil {
+				return err
+			}
+			artifact, ok := matchingArtifact(release.Artifacts, runtime.AgentOS, runtime.AgentArch)
+			if !ok {
+				return ErrArtifactUnavailable
+			}
+			commands = append(commands, sentCommand{target.ServerID, installCommand(*plan, *target, artifact)})
+		case TargetReconnecting:
+			if now.Sub(target.UpdatedAt) >= time.Duration(plan.ReconnectTimeoutSeconds)*time.Second {
+				commands = withoutBatchCommands(commands, *plan, target.BatchNumber)
+				commands = append(commands, c.rollbackBatch(plan, target.BatchNumber, target.ID, "reconnect_timeout", now)...)
+				changed = true
+			}
 		case TargetHealthChecking:
-			if now.Sub(target.UpdatedAt) >= time.Duration(plan.VerificationSeconds)*time.Second {
+			runtime, err := c.store.ServerRuntime(ctx, target.ServerID)
+			if err != nil {
+				return err
+			}
+			if !healthyRuntime(runtime, target.TargetVersion, now) {
+				commands = withoutBatchCommands(commands, *plan, target.BatchNumber)
+				commands = append(commands, c.rollbackBatch(plan, target.BatchNumber, target.ID, "health_check_failed", now)...)
+				changed = true
+			} else if now.Sub(target.UpdatedAt) >= time.Duration(plan.VerificationSeconds)*time.Second {
 				target.Status, target.UpdatedAt, target.FinishedAt = TargetSucceeded, now, &now
 				if !target.SourceDraining {
-					if err := c.store.SetServerDraining(ctx, target.ServerID, false); err != nil {
-						return err
-					}
+					restoreScheduling = append(restoreScheduling, target.ServerID)
 				}
 				changed = true
+			}
+		case TargetRollingBack:
+			if now.Sub(target.UpdatedAt) >= time.Duration(plan.ReconnectTimeoutSeconds)*time.Second {
+				target.Status, target.ErrorCode, target.ErrorMessage = TargetManualIntervention, "rollback_timeout", "代理回滚后未在时限内重连"
+				target.UpdatedAt, target.FinishedAt = now, &now
+				plan.Status, plan.PauseReason = PlanPaused, "代理回滚超时，需要人工处理"
+				changed = true
+			} else {
+				commands = append(commands, sentCommand{target.ServerID, rollbackCommand(*plan, *target)})
 			}
 		}
 	}
@@ -118,9 +152,21 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 		}
 	}
 	if changed {
-		_, err = c.store.SavePlan(ctx, *plan)
+		if _, err = c.store.SavePlan(ctx, *plan); err != nil {
+			return err
+		}
 	}
-	return err
+	for _, command := range commands {
+		if err := c.sender.SendUpgradeCommand(ctx, command.serverID, command.command); err != nil {
+			return err
+		}
+	}
+	for _, serverID := range restoreScheduling {
+		if err := c.store.SetServerDraining(ctx, serverID, false); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Coordinator) ApplyUpgradeEvent(ctx context.Context, serverID string, event agentprotocol.UpgradeEvent) error {
@@ -133,8 +179,8 @@ func (c *Coordinator) ApplyUpgradeEvent(ctx context.Context, serverID string, ev
 	if event.OccurredAt.IsZero() {
 		occurredAt = now
 	}
-	if err := c.store.AppendEvent(ctx, Event{ID: c.newID(), PlanID: plan.ID, TargetID: target.ID, ServerID: serverID, CommandID: event.CommandID, Stage: string(event.Stage), ErrorCode: event.ErrorCode, Message: event.Message, OccurredAt: occurredAt}); err != nil {
-		return err
+	persistEvent := func() error {
+		return c.store.AppendEvent(ctx, Event{ID: c.newID(), PlanID: plan.ID, TargetID: target.ID, ServerID: serverID, CommandID: event.CommandID, Stage: string(event.Stage), ErrorCode: event.ErrorCode, Message: event.Message, OccurredAt: occurredAt})
 	}
 	if event.Stage == agentprotocol.StageFailed {
 		if event.ErrorCode == "rollback_failed" || target.Status == TargetRollingBack {
@@ -142,51 +188,47 @@ func (c *Coordinator) ApplyUpgradeEvent(ctx context.Context, serverID string, ev
 			plan.Targets[index].UpdatedAt = now
 			plan.Status, plan.PauseReason = PlanPaused, "代理回滚失败，需要人工处理"
 			_ = c.store.SetServerDraining(ctx, serverID, true)
-			_, err = c.store.SavePlan(ctx, plan)
-			return err
-		}
-		plan.Status, plan.PauseReason = PlanPaused, "当前批次升级失败，正在回滚"
-		commands := []struct {
-			server  string
-			command agentprotocol.UpgradeCommand
-		}{}
-		for i := range plan.Targets {
-			item := &plan.Targets[i]
-			if item.BatchNumber != target.BatchNumber || item.Status == TargetSucceeded || item.Status == TargetWaiting || item.Status == TargetCancelled {
-				continue
+			if _, err = c.store.SavePlan(ctx, plan); err != nil {
+				return tolerateConcurrentUpdate(err)
 			}
-			item.Status, item.CommandID, item.UpdatedAt = TargetRollingBack, c.newID(), now
-			commands = append(commands, struct {
-				server  string
-				command agentprotocol.UpgradeCommand
-			}{item.ServerID, rollbackCommand(plan, *item)})
+			return persistEvent()
 		}
+		commands := c.rollbackBatch(&plan, target.BatchNumber, target.ID, event.ErrorCode, now)
 		if _, err := c.store.SavePlan(ctx, plan); err != nil {
+			return tolerateConcurrentUpdate(err)
+		}
+		if err := persistEvent(); err != nil {
 			return err
 		}
 		for _, item := range commands {
-			if err := c.sender.SendUpgradeCommand(ctx, item.server, item.command); err != nil {
+			if err := c.sender.SendUpgradeCommand(ctx, item.serverID, item.command); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 	if target.Status == TargetRollingBack && (event.Stage == agentprotocol.StageReconnecting || event.Stage == agentprotocol.StageSucceeded) {
-		plan.Targets[index].UpdatedAt = now
-		_, err = c.store.SavePlan(ctx, plan)
-		return err
+		return persistEvent()
 	}
 	status, ok := targetStatusForStage(event.Stage)
 	if !ok {
 		return ErrInvalidTransition
+	}
+	if target.Status == status {
+		return persistEvent()
+	}
+	if !forwardTransition(target.Status, status) {
+		return nil
 	}
 	plan.Targets[index].Status, plan.Targets[index].UpdatedAt = status, now
 	if status == TargetRolledBack {
 		plan.Targets[index].FinishedAt = &now
 	}
 	plan.Targets[index].ErrorCode, plan.Targets[index].ErrorMessage = event.ErrorCode, event.Message
-	_, err = c.store.SavePlan(ctx, plan)
-	return err
+	if _, err = c.store.SavePlan(ctx, plan); err != nil {
+		return tolerateConcurrentUpdate(err)
+	}
+	return persistEvent()
 }
 
 func (c *Coordinator) ObserveHeartbeat(ctx context.Context, heartbeat agentprotocol.Heartbeat) error {
@@ -214,6 +256,7 @@ func (c *Coordinator) ObserveHeartbeat(ctx context.Context, heartbeat agentproto
 	}
 	if heartbeat.AgentVersion != target.TargetVersion {
 		plan.Targets[index].Status, plan.Targets[index].CommandID, plan.Targets[index].UpdatedAt = TargetRollingBack, c.newID(), now
+		plan.Status, plan.PauseReason = PlanPaused, "代理重连版本不一致，正在回滚"
 		if _, err := c.store.SavePlan(ctx, plan); err != nil {
 			return err
 		}
@@ -221,6 +264,71 @@ func (c *Coordinator) ObserveHeartbeat(ctx context.Context, heartbeat agentproto
 	}
 	plan.Targets[index].Status, plan.Targets[index].UpdatedAt = TargetHealthChecking, now
 	_, err = c.store.SavePlan(ctx, plan)
+	return err
+}
+
+type sentCommand struct {
+	serverID string
+	command  agentprotocol.UpgradeCommand
+}
+
+func (c *Coordinator) rollbackBatch(plan *Plan, batch int, failedTargetID, errorCode string, now time.Time) []sentCommand {
+	plan.Status, plan.PauseReason = PlanPaused, "当前批次升级失败，正在回滚"
+	commands := []sentCommand{}
+	for index := range plan.Targets {
+		target := &plan.Targets[index]
+		if target.BatchNumber != batch || target.Status == TargetCancelled || target.Status == TargetRolledBack || target.Status == TargetManualIntervention {
+			continue
+		}
+		uninstalled := target.Status == TargetWaiting || target.Status == TargetDraining || (target.ID == failedTargetID && (target.Status == TargetDownloading || target.Status == TargetVerifying || errorCode == "apply_start_failed" || errorCode == "stage_failed"))
+		if uninstalled {
+			target.Status, target.UpdatedAt, target.FinishedAt = TargetRolledBack, now, &now
+			continue
+		}
+		target.Status, target.CommandID, target.UpdatedAt, target.FinishedAt = TargetRollingBack, c.newID(), now, nil
+		commands = append(commands, sentCommand{target.ServerID, rollbackCommand(*plan, *target)})
+	}
+	return commands
+}
+
+func healthyRuntime(runtime ServerRuntime, targetVersion string, now time.Time) bool {
+	return runtime.Enabled && (runtime.Status == "online" || runtime.Status == "draining") && runtime.AgentVersion == targetVersion && runtime.HasSnapshot && runtime.LastSeenAt != nil && now.Sub(runtime.LastSeenAt.UTC()) <= 15*time.Second
+}
+
+func withoutBatchCommands(commands []sentCommand, plan Plan, batch int) []sentCommand {
+	kept := commands[:0]
+	for _, command := range commands {
+		remove := false
+		for _, target := range plan.Targets {
+			if target.BatchNumber == batch && command.command.TargetID == target.ID {
+				remove = true
+				break
+			}
+		}
+		if !remove {
+			kept = append(kept, command)
+		}
+	}
+	return kept
+}
+
+func forwardTransition(current, next TargetStatus) bool {
+	if current == next {
+		return true
+	}
+	if current == TargetRollingBack && next == TargetRolledBack {
+		return true
+	}
+	rank := map[TargetStatus]int{TargetWaiting: 0, TargetDraining: 1, TargetDownloading: 2, TargetVerifying: 3, TargetInstalling: 4, TargetReconnecting: 5, TargetHealthChecking: 6, TargetSucceeded: 7}
+	currentRank, currentOK := rank[current]
+	nextRank, nextOK := rank[next]
+	return currentOK && nextOK && nextRank > currentRank
+}
+
+func tolerateConcurrentUpdate(err error) error {
+	if errors.Is(err, ErrInvalidTransition) {
+		return nil
+	}
 	return err
 }
 
@@ -249,7 +357,7 @@ func installCommand(plan Plan, target Target, a ArtifactInfo) agentprotocol.Upgr
 	return agentprotocol.UpgradeCommand{CommandID: target.CommandID, PlanID: plan.ID, TargetID: target.ID, Action: agentprotocol.UpgradeInstall, SourceVersion: target.SourceVersion, TargetVersion: target.TargetVersion, DownloadURL: a.DownloadURL, FileName: a.FileName, ByteSize: a.ByteSize, SHA256: a.SHA256, ReconnectTimeout: time.Duration(plan.ReconnectTimeoutSeconds) * time.Second}
 }
 func rollbackCommand(plan Plan, target Target) agentprotocol.UpgradeCommand {
-	return agentprotocol.UpgradeCommand{CommandID: target.CommandID, PlanID: plan.ID, TargetID: target.ID, Action: agentprotocol.UpgradeRollback, SourceVersion: target.TargetVersion, TargetVersion: target.SourceVersion, ReconnectTimeout: time.Duration(plan.ReconnectTimeoutSeconds) * time.Second}
+	return agentprotocol.UpgradeCommand{CommandID: target.CommandID, PlanID: plan.ID, TargetID: target.ID, Action: agentprotocol.UpgradeRollback, SourceVersion: target.TargetVersion, TargetVersion: target.SourceVersion, InstallCommandID: target.InstallCommandID, ReconnectTimeout: time.Duration(plan.ReconnectTimeoutSeconds) * time.Second}
 }
 func targetStatusForStage(stage agentprotocol.UpgradeStage) (TargetStatus, bool) {
 	m := map[agentprotocol.UpgradeStage]TargetStatus{agentprotocol.StageAccepted: TargetDownloading, agentprotocol.StageDownloading: TargetDownloading, agentprotocol.StageVerifying: TargetVerifying, agentprotocol.StageInstalling: TargetInstalling, agentprotocol.StageReconnecting: TargetReconnecting, agentprotocol.StageSucceeded: TargetReconnecting, agentprotocol.StageRollingBack: TargetRollingBack, agentprotocol.StageRolledBack: TargetRolledBack}

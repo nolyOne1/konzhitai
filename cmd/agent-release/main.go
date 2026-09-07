@@ -17,8 +17,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"yunling.local/platform/internal/agentrelease"
 	"yunling.local/platform/internal/artifact"
+	"yunling.local/platform/internal/audit"
 	storepostgres "yunling.local/platform/internal/store/postgres"
 )
 
@@ -27,6 +29,7 @@ type importConfiguration struct {
 	Directory    string
 	ReleaseNotes string
 	Recommend    bool
+	CreatedBy    string
 }
 
 type commandArtifact struct {
@@ -71,6 +74,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("导入代理版本失败：%v", err)
 	}
+	if err := audit.NewService(audit.NewPostgresRepository(db), time.Now).Record(ctx, audit.Event{ActorID: configuration.CreatedBy, Action: "agent_release.import", TargetType: "agent_release", TargetID: release.ID, Details: map[string]any{"version": release.Version}}); err != nil {
+		log.Fatalf("记录代理版本导入审计失败：%v", err)
+	}
 	fmt.Printf("代理版本 %s 导入成功", release.Version)
 	for _, item := range release.Artifacts {
 		fmt.Printf("，%s %s", item.Arch, item.SHA256[:12])
@@ -96,19 +102,23 @@ func executeImport(ctx context.Context, configuration importConfiguration, impor
 func parseArgs(args []string) (importConfiguration, error) {
 	var configuration importConfiguration
 	if len(args) == 0 || args[0] != "import" {
-		return configuration, errors.New("用法：yunling-agent-release import --manifest 路径 --directory 目录 --notes 说明 [--recommend]")
+		return configuration, errors.New("用法：yunling-agent-release import --manifest 路径 --directory 目录 --created-by 管理员UUID --notes 说明 [--recommend]")
 	}
 	flags := flag.NewFlagSet("import", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&configuration.ManifestPath, "manifest", "", "清单路径")
 	flags.StringVar(&configuration.Directory, "directory", "", "安装包目录")
 	flags.StringVar(&configuration.ReleaseNotes, "notes", "", "发布说明")
+	flags.StringVar(&configuration.CreatedBy, "created-by", "", "执行导入的管理员 UUID")
 	flags.BoolVar(&configuration.Recommend, "recommend", false, "设为推荐版本")
 	if err := flags.Parse(args[1:]); err != nil {
 		return configuration, fmt.Errorf("解析导入参数：%w", err)
 	}
-	if flags.NArg() != 0 || strings.TrimSpace(configuration.ManifestPath) == "" || strings.TrimSpace(configuration.Directory) == "" {
-		return configuration, errors.New("必须提供清单路径和安装包目录")
+	if flags.NArg() != 0 || strings.TrimSpace(configuration.ManifestPath) == "" || strings.TrimSpace(configuration.Directory) == "" || strings.TrimSpace(configuration.CreatedBy) == "" {
+		return configuration, errors.New("必须提供清单路径、安装包目录和管理员 UUID")
+	}
+	if err := uuid.Validate(configuration.CreatedBy); err != nil {
+		return configuration, errors.New("管理员 UUID 格式无效")
 	}
 	return configuration, nil
 }
@@ -136,7 +146,7 @@ func loadImportInput(configuration importConfiguration) (agentrelease.ImportInpu
 		return agentrelease.ImportInput{}, errors.New("代理清单包含尾随内容")
 	}
 	manifestDigest := sha256.Sum256(manifestBody)
-	input := agentrelease.ImportInput{Version: manifest.Version, ReleaseNotes: configuration.ReleaseNotes, Recommend: configuration.Recommend, ManifestSHA256: hex.EncodeToString(manifestDigest[:])}
+	input := agentrelease.ImportInput{Version: manifest.Version, ReleaseNotes: configuration.ReleaseNotes, Recommend: configuration.Recommend, CreatedBy: configuration.CreatedBy, ManifestSHA256: hex.EncodeToString(manifestDigest[:])}
 	for _, item := range manifest.Artifacts {
 		if filepath.Base(item.FileName) != item.FileName {
 			return agentrelease.ImportInput{}, errors.New("代理安装包文件名无效")

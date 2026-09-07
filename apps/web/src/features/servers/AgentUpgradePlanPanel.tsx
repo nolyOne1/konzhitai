@@ -20,6 +20,7 @@ export function AgentUpgradePlanPanel({ plan, serverNames = {}, onUpdated, readO
   const [current, setCurrent] = useState(plan)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
+  const [confirmation, setConfirmation] = useState<{ kind: 'cancel' | 'rollback'; targetID?: string } | null>(null)
   useEffect(() => setCurrent(plan), [plan])
 
   async function run(key: string, operation: () => Promise<AgentUpgradePlan>) {
@@ -37,6 +38,18 @@ export function AgentUpgradePlanPanel({ plan, serverNames = {}, onUpdated, readO
     } finally { setBusy('') }
   }
 
+  function confirmImpact() {
+    if (!confirmation) return
+    const choice = confirmation
+    setConfirmation(null)
+    if (choice.kind === 'cancel') {
+      void run('cancel', () => cancelAgentUpgradePlan(current.id))
+      return
+    }
+    const targetID = choice.targetID
+    if (targetID) void run(`rollback-${targetID}`, () => rollbackAgentUpgradeTarget(current.id, targetID))
+  }
+
   const completed = current.targets.filter((target) => ['succeeded', 'rolled_back', 'cancelled'].includes(target.status)).length
   const progress = current.targets.length ? Math.round(completed * 100 / current.targets.length) : 0
   return (
@@ -51,7 +64,7 @@ export function AgentUpgradePlanPanel({ plan, serverNames = {}, onUpdated, readO
       {!readOnly ? <div className="upgrade-plan-actions">
         {current.status === 'running' ? <button type="button" className="secondary-action" disabled={Boolean(busy)} onClick={() => void run('pause', () => pauseAgentUpgradePlan(current.id, '管理员手动暂停'))}>{busy === 'pause' ? '处理中…' : '暂停计划'}</button> : null}
         {current.status === 'paused' && !current.cancelRequested ? <button type="button" className="primary-action" disabled={Boolean(busy)} onClick={() => void run('resume', () => resumeAgentUpgradePlan(current.id))}>{busy === 'resume' ? '处理中…' : '继续计划'}</button> : null}
-        {(current.status === 'running' || current.status === 'paused') && !current.cancelRequested ? <button type="button" className="danger-action" disabled={Boolean(busy)} onClick={() => void run('cancel', () => cancelAgentUpgradePlan(current.id))}>{busy === 'cancel' ? '处理中…' : '取消计划'}</button> : null}
+        {(current.status === 'running' || current.status === 'paused') && !current.cancelRequested ? <button type="button" className="danger-action" disabled={Boolean(busy)} onClick={() => setConfirmation({ kind: 'cancel' })}>取消计划</button> : null}
       </div> : null}
       <div className="table-scroll"><table className="data-table upgrade-target-table"><thead><tr><th>服务器</th><th>批次</th><th>版本</th><th>当前阶段</th><th>尝试</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{current.targets.map((target) => <tr key={target.id}>
         <td data-label="服务器"><strong>{target.serverName || serverNames[target.serverId] || target.serverId}</strong>{target.errorMessage ? <small className="target-error">{safeMessage(target.errorMessage)}</small> : null}</td>
@@ -59,9 +72,10 @@ export function AgentUpgradePlanPanel({ plan, serverNames = {}, onUpdated, readO
         <td data-label="版本">{target.sourceVersion || '未知'} → {target.targetVersion}</td>
         <td data-label="当前阶段"><span className={`target-stage stage-${target.status}`}><i aria-hidden="true" />{targetLabels[target.status] ?? '状态未知'}</span></td>
         <td data-label="尝试">{target.attempts}</td>
-        <td data-label="操作"><div className="row-actions">{!readOnly && target.status === 'succeeded' ? <button type="button" disabled={Boolean(busy)} onClick={() => void run(`rollback-${target.id}`, () => rollbackAgentUpgradeTarget(current.id, target.id))}>{busy === `rollback-${target.id}` ? '处理中…' : '回滚此节点'}</button> : null}{!readOnly && ['rolled_back', 'manual_intervention'].includes(target.status) ? <button type="button" disabled={Boolean(busy)} onClick={() => void run(`retry-${target.id}`, () => retryAgentUpgradeTarget(current.id, target.id))}>{busy === `retry-${target.id}` ? '处理中…' : '重试此节点'}</button> : null}</div></td>
+        <td data-label="操作"><div className="row-actions">{!readOnly && target.status === 'succeeded' ? <button type="button" disabled={Boolean(busy)} onClick={() => setConfirmation({ kind: 'rollback', targetID: target.id })}>{busy === `rollback-${target.id}` ? '处理中…' : '回滚此节点'}</button> : null}{!readOnly && ['rolled_back', 'manual_intervention'].includes(target.status) ? <button type="button" disabled={Boolean(busy)} onClick={() => void run(`retry-${target.id}`, () => retryAgentUpgradeTarget(current.id, target.id))}>{busy === `retry-${target.id}` ? '处理中…' : '重试此节点'}</button> : null}</div></td>
       </tr>)}</tbody></table></div>
       {current.events.length ? <section className="upgrade-events" aria-label="升级事件"><h3>最近事件</h3><ol>{[...current.events].reverse().map((event) => <li key={event.id}><time dateTime={event.occurredAt}>{formatTime(event.occurredAt)}</time><div><strong>{targetLabels[event.stage] ?? '状态更新'}</strong><p>{safeMessage(event.message)}</p></div></li>)}</ol></section> : null}
+      {confirmation ? <div className="drawer-backdrop centered-dialog"><section className="console-dialog" role="alertdialog" aria-modal="true" aria-labelledby={`upgrade-confirm-${current.id}`}><header className="drawer-header"><div><p className="eyebrow">确认影响范围</p><h3 id={`upgrade-confirm-${current.id}`}>{confirmation.kind === 'cancel' ? '确认取消升级计划？' : '确认回滚此节点？'}</h3><p>{confirmation.kind === 'cancel' ? `将取消 ${current.targets.filter((target) => target.status === 'waiting').length} 台尚未开始的服务器；已开始节点会继续完成当前闭环。` : '该服务器会保持排空，恢复升级前版本并重新连接；其他已成功批次不受影响。'}</p></div></header><footer className="dialog-actions"><button autoFocus type="button" className="secondary-action" onClick={() => setConfirmation(null)}>返回</button><button type="button" className="danger-action" disabled={Boolean(busy)} onClick={confirmImpact}>{confirmation.kind === 'cancel' ? '确认取消计划' : '确认回滚节点'}</button></footer></section></div> : null}
     </section>
   )
 }

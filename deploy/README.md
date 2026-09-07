@@ -114,7 +114,7 @@ Caddy 现有 `/api/*` 反向代理已经覆盖以下公开只读路由，不需�
 
 ```bash
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml exec -T api \
-  yunling-agent-release import --manifest /release/manifest.json --directory /release \
+  yunling-agent-release import --manifest /release/manifest.json --directory /release --created-by 管理员UUID \
   --notes "增加代理升级能力" --recommend
 ```
 
@@ -127,7 +127,7 @@ sudo install -d -m 0755 /srv/yunling-agent-releases/0.2.0
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml run --rm --no-deps \
   --entrypoint /usr/local/bin/yunling-agent-release \
   -v /srv/yunling-agent-releases/0.2.0:/release:ro api import \
-  --manifest /release/manifest.json --directory /release \
+  --manifest /release/manifest.json --directory /release --created-by 管理员UUID \
   --notes "0.2.0 稳定版" --recommend
 ```
 

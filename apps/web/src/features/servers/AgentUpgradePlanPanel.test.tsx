@@ -43,9 +43,18 @@ describe('升级计划详情', () => {
   it('成功节点可回滚，已回滚节点可重试', async () => {
     const { rerender } = render(<AgentUpgradePlanPanel plan={plan('succeeded', 'succeeded')} onUpdated={vi.fn()} />)
     await userEvent.setup().click(screen.getByRole('button', { name: '回滚此节点' }))
+    expect(screen.getByText('该服务器会保持排空，恢复升级前版本并重新连接；其他已成功批次不受影响。')).toBeVisible()
+    await userEvent.setup().click(screen.getByRole('button', { name: '确认回滚节点' }))
     expect(rollbackAgentUpgradeTarget).toHaveBeenCalledWith('plan-1', 'target-1')
     rerender(<AgentUpgradePlanPanel plan={plan('rolled_back', 'paused')} onUpdated={vi.fn()} />)
     await userEvent.setup().click(screen.getByRole('button', { name: '重试此节点' }))
     expect(retryAgentUpgradeTarget).toHaveBeenCalledWith('plan-1', 'target-1')
+  })
+
+  it('取消前明确显示尚未开始节点数量', async () => {
+    render(<AgentUpgradePlanPanel plan={plan('waiting')} onUpdated={vi.fn()} />)
+    await userEvent.setup().click(screen.getByRole('button', { name: '取消计划' }))
+    expect(screen.getByText('将取消 1 台尚未开始的服务器；已开始节点会继续完成当前闭环。')).toBeVisible()
+    expect(screen.getByRole('button', { name: '确认取消计划' })).toBeEnabled()
   })
 })

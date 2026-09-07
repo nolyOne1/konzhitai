@@ -2,12 +2,12 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getAgentReleases, getAgentUpgradePlans, getServers, withdrawAgentRelease, type ServerView } from '../../api/client'
+import { getAgentReleases, getAgentUpgradePlans, getServers, getSession, withdrawAgentRelease, type ServerView } from '../../api/client'
 import { AgentUpgradesPage } from './AgentUpgradesPage'
 
 vi.mock('../../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/client')>()
-  return { ...actual, getAgentReleases: vi.fn(), getAgentUpgradePlans: vi.fn(), getServers: vi.fn(), withdrawAgentRelease: vi.fn(), recommendAgentRelease: vi.fn() }
+  return { ...actual, getAgentReleases: vi.fn(), getAgentUpgradePlans: vi.fn(), getServers: vi.fn(), getSession: vi.fn(), withdrawAgentRelease: vi.fn(), recommendAgentRelease: vi.fn() }
 })
 
 const release = (version: string, recommended = false) => ({ id: `release-${version}`, version, status: 'available' as const, recommended, releaseNotes: '稳定版', capabilities: ['self_upgrade_v1'], createdAt: '2026-09-07T00:00:00Z', artifacts: [] })
@@ -24,6 +24,7 @@ describe('代理升级工作台', () => {
     vi.mocked(getAgentReleases).mockReset().mockResolvedValue([release('0.2.0', true)])
     vi.mocked(getAgentUpgradePlans).mockReset().mockResolvedValue([])
     vi.mocked(getServers).mockReset().mockResolvedValue([])
+    vi.mocked(getSession).mockReset().mockResolvedValue({ id: 'admin-1', displayName: '管理员', email: 'admin@example.com', roles: ['admin'], mustChangePassword: false })
     vi.mocked(withdrawAgentRelease).mockReset().mockResolvedValue(undefined)
   })
 
@@ -64,5 +65,14 @@ describe('代理升级工作台', () => {
     render(<AgentUpgradesPage />)
     expect(await screen.findByRole('alert')).toHaveTextContent('升级服务暂时不可用')
     expect(screen.getByRole('button', { name: '重新加载' })).toBeEnabled()
+  })
+
+  it('普通成员只能查看升级状态', async () => {
+    vi.mocked(getSession).mockResolvedValue({ id: 'viewer-1', displayName: '观察员', email: 'viewer@example.com', roles: ['viewer'], mustChangePassword: false })
+    vi.mocked(getAgentReleases).mockResolvedValue([release('0.2.0', true), release('0.1.0')])
+    render(<AgentUpgradesPage />)
+    expect(await screen.findByText('当前账号可以查看升级盘点和进度；计划控制仅限管理员。')).toBeVisible()
+    expect(screen.queryByRole('button', { name: '创建升级计划' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '撤回版本' })).not.toBeInTheDocument()
   })
 })

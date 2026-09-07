@@ -17,8 +17,8 @@ import (
 )
 
 func TestParseImportCommand(t *testing.T) {
-	configuration, err := parseArgs([]string{"import", "--manifest", "/tmp/release/manifest.json", "--directory", "/tmp/release", "--notes", "增加自升级器", "--recommend"})
-	if err != nil || !configuration.Recommend || configuration.ReleaseNotes != "增加自升级器" {
+	configuration, err := parseArgs([]string{"import", "--manifest", "/tmp/release/manifest.json", "--directory", "/tmp/release", "--created-by", "00000000-0000-0000-0000-000000000001", "--notes", "增加自升级器", "--recommend"})
+	if err != nil || !configuration.Recommend || configuration.ReleaseNotes != "增加自升级器" || configuration.CreatedBy == "" {
 		t.Fatalf("解析导入参数失败：config=%+v err=%v", configuration, err)
 	}
 }
@@ -41,11 +41,11 @@ func TestLoadImportInputOpensBothArchitecturesAndVerifiesManifest(t *testing.T) 
 		t.Fatal(err)
 	}
 	importer := &recordingImporter{}
-	if _, err := executeImport(context.Background(), importConfiguration{ManifestPath: manifestPath, Directory: root, ReleaseNotes: "说明", Recommend: true}, importer); err != nil {
+	if _, err := executeImport(context.Background(), importConfiguration{ManifestPath: manifestPath, Directory: root, ReleaseNotes: "说明", Recommend: true, CreatedBy: "00000000-0000-0000-0000-000000000001"}, importer); err != nil {
 		t.Fatal(err)
 	}
 	input := importer.input
-	if input.Version != "0.2.0" || len(input.Artifacts) != 2 || !input.Recommend || input.ManifestSHA256 == "" {
+	if input.Version != "0.2.0" || len(input.Artifacts) != 2 || !input.Recommend || input.ManifestSHA256 == "" || input.CreatedBy == "" {
 		t.Fatalf("导入内容：%+v", input)
 	}
 	for _, item := range input.Artifacts {
