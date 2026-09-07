@@ -39,6 +39,9 @@ func Apply(root, commandID string, system SystemController) error {
 	if spec.Action == "rollback" {
 		return applyRollback(root, &spec, system)
 	}
+	if spec.Phase == "rollback_ready" {
+		return finishAutomaticRollback(root, &spec, system, errors.New("检测到旧版本重启尚未完成"))
+	}
 	if spec.Phase == "replacing" || spec.Phase == "rollback_failed" {
 		return rollbackAfterFailure(root, &spec, system, errors.New("检测到上次文件替换未完整结束"))
 	}
@@ -127,20 +130,20 @@ func rollbackAfterFailure(root string, spec *Spec, system SystemController, caus
 		}
 		return errors.Join(cause, err)
 	}
-	spec.Phase = "rolled_back"
+	spec.Phase = "rollback_ready"
 	if err := saveSpec(root, *spec); err != nil {
 		return errors.Join(cause, err)
 	}
+	return finishAutomaticRollback(root, spec, system, cause)
+}
+
+func finishAutomaticRollback(root string, spec *Spec, system SystemController, cause error) error {
 	state, err := LoadRuntimeState(root)
 	if err != nil {
-		spec.Phase = "rollback_failed"
-		_ = saveSpec(root, *spec)
 		return errors.Join(cause, err)
 	}
 	if state == nil || state.CommandID != spec.CommandID {
 		if spec.TargetID == "" {
-			spec.Phase = "rollback_failed"
-			_ = saveSpec(root, *spec)
 			return errors.Join(cause, errors.New("升级恢复状态缺少目标编号"))
 		}
 		state = &agentprotocol.UpgradeRuntimeState{CommandID: spec.CommandID, TargetID: spec.TargetID, TargetVersion: spec.TargetVersion}
@@ -150,15 +153,13 @@ func rollbackAfterFailure(root string, spec *Spec, system SystemController, caus
 	state.Message = "代理升级失败，已恢复升级前版本"
 	state.UpdatedAt = time.Now().UTC()
 	if err := SaveRuntimeState(root, *state); err != nil {
-		spec.Phase = "rollback_failed"
-		_ = saveSpec(root, *spec)
 		return errors.Join(cause, err)
 	}
 	if err := system.RestartAgent(context.Background()); err != nil {
-		spec.Phase = "rollback_failed"
-		if saveErr := saveSpec(root, *spec); saveErr != nil {
-			return errors.Join(cause, err, saveErr)
-		}
+		return errors.Join(cause, err)
+	}
+	spec.Phase = "rolled_back"
+	if err := saveSpec(root, *spec); err != nil {
 		return errors.Join(cause, err)
 	}
 	return fmt.Errorf("代理升级失败并已回滚：%w", cause)

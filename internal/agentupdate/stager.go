@@ -113,7 +113,7 @@ func (m *Manager) StartApply(ctx context.Context, commandID string) error {
 	if err == nil {
 		return nil
 	}
-	if spec, loadErr := loadSpec(m.root, commandID); loadErr == nil && spec.Phase == "rollback_failed" {
+	if spec, loadErr := loadSpec(m.root, commandID); loadErr == nil && (spec.Phase == "rollback_failed" || spec.Phase == "rollback_ready") {
 		return fmt.Errorf("%w：%v", ErrRollbackFailed, err)
 	}
 	return err

@@ -282,7 +282,7 @@ func (c *Coordinator) rollbackBatch(plan *Plan, batch int, failedTargetID, error
 	commands := []sentCommand{}
 	for index := range plan.Targets {
 		target := &plan.Targets[index]
-		if target.BatchNumber != batch || target.Status == TargetCancelled || target.Status == TargetRolledBack || target.Status == TargetManualIntervention {
+		if target.BatchNumber != batch || target.Status == TargetCancelled || target.Status == TargetRollingBack || target.Status == TargetRolledBack || target.Status == TargetManualIntervention {
 			continue
 		}
 		uninstalled := target.Status == TargetWaiting || target.Status == TargetDraining || (target.ID == failedTargetID && (target.Status == TargetDownloading || target.Status == TargetVerifying || errorCode == "apply_start_failed" || errorCode == "apply_rolled_back" || errorCode == "stage_failed"))

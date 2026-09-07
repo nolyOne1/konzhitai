@@ -78,14 +78,28 @@ func TestCoordinatorMarksManualInterventionWhenRollbackFails(t *testing.T) {
 func TestCoordinatorAcceptsPersistedAutomaticRollbackResult(t *testing.T) {
 	store := coordinatorFixture()
 	store.plan.Targets[0].Status = TargetInstalling
-	err := NewCoordinator(store, &fakeUpgradeSender{}, fixedCoordinatorNow).ApplyUpgradeEvent(context.Background(), "s1", agentprotocol.UpgradeEvent{
+	store.plan.Targets = append(store.plan.Targets, Target{ID: "target-peer", PlanID: "plan-1", ServerID: "s2", BatchNumber: 1, SourceVersion: "0.1.0", TargetVersion: "0.2.0", Status: TargetInstalling, CommandID: "peer-install", InstallCommandID: "peer-install"})
+	sender := &fakeUpgradeSender{}
+	coordinator := NewCoordinator(store, sender, fixedCoordinatorNow)
+	event := agentprotocol.UpgradeEvent{
 		TargetID: "target-canary", CommandID: "command-1", Stage: agentprotocol.StageFailed,
 		ErrorCode: "apply_rolled_back", Message: "代理升级失败，已恢复升级前版本",
-	})
+	}
+	err := coordinator.ApplyUpgradeEvent(context.Background(), "s1", event)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertCoordinatorStatus(t, store, "target-canary", TargetRolledBack)
+	peerCommand := store.plan.Targets[1].CommandID
+	if peerCommand == "peer-install" || len(sender.commands) != 1 {
+		t.Fatalf("首次失败必须为同批次已安装节点创建回滚命令：target=%+v commands=%+v", store.plan.Targets[1], sender.commands)
+	}
+	if err := coordinator.ApplyUpgradeEvent(context.Background(), "s1", event); err != nil {
+		t.Fatal(err)
+	}
+	if store.plan.Targets[1].CommandID != peerCommand || len(sender.commands) != 1 {
+		t.Fatalf("重复失败事件不得轮换同批次回滚命令：target=%+v commands=%+v", store.plan.Targets[1], sender.commands)
+	}
 	if store.plan.Status != PlanPaused {
 		t.Fatalf("自动回滚后批次必须暂停：%s", store.plan.Status)
 	}

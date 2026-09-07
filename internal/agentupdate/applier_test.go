@@ -32,7 +32,7 @@ func TestApplySuccessAndTimeoutRollback(t *testing.T) {
 				return
 			}
 			spec, err := loadSpec(root, "upgrade-1")
-			if err != nil || spec.Phase != "rolled_back" {
+			if err != nil || spec.Phase != "rollback_ready" {
 				t.Fatalf("重启旧代理前必须持久化回滚结果：spec=%+v err=%v", spec, err)
 			}
 			state, err := LoadRuntimeState(root)
@@ -47,6 +47,30 @@ func TestApplySuccessAndTimeoutRollback(t *testing.T) {
 			t.Fatalf("未恢复旧版本：restarts=%d", system.restarts)
 		}
 	})
+}
+
+func TestApplyResumesAfterRollbackOutcomeWasInterrupted(t *testing.T) {
+	root, _ := writeApplyFixture(t)
+	spec, err := loadSpec(root, "upgrade-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Phase = "rollback_ready"
+	if err := saveSpec(root, spec); err != nil {
+		t.Fatal(err)
+	}
+	system := &fakeSystem{}
+	if err := Apply(root, "upgrade-1", system); err == nil {
+		t.Fatal("恢复完成后仍应报告原升级失败")
+	}
+	state, err := LoadRuntimeState(root)
+	if err != nil || state == nil || state.ErrorCode != "apply_rolled_back" {
+		t.Fatalf("中断恢复未补写可重放运行状态：state=%+v err=%v", state, err)
+	}
+	recovered, err := loadSpec(root, "upgrade-1")
+	if err != nil || recovered.Phase != "rolled_back" || system.restarts != 1 {
+		t.Fatalf("中断恢复未完成旧代理重启：spec=%+v restarts=%d err=%v", recovered, system.restarts, err)
+	}
 }
 
 func TestExplicitRollbackRestoresBackup(t *testing.T) {
