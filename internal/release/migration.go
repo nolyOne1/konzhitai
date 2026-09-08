@@ -86,13 +86,27 @@ func (rollout *MigrationRollout) Apply(ctx context.Context, request MigrationReq
 	if err != nil || digest != target.Compatibility.MigrationTreeSHA256 {
 		return ErrMigrationDigestMismatch
 	}
-	migrationPath, err := validateMemberLifecycleMigrationTree(request.MigrationsDir)
+	targetVersion := memberLifecycleMigration
+	if _, err := os.Lstat(filepath.Join(request.MigrationsDir, "000015_agent_upgrade_recovery.up.sql")); err == nil {
+		targetVersion = 15
+	}
+	migrationPath, err := validateMemberLifecycleMigrationTree(request.MigrationsDir, targetVersion)
 	if err != nil {
 		return err
 	}
 	migrationSQL, err := readRegularFile(migrationPath, 1<<20)
 	if err != nil {
 		return fmt.Errorf("读取成员生命周期迁移：%w", err)
+	}
+	if targetVersion == 15 {
+		for _, name := range []string{"000014_agent_upgrade_management.up.sql", "000015_agent_upgrade_recovery.up.sql"} {
+			body, err := readRegularFile(filepath.Join(request.MigrationsDir, name), 1<<20)
+			if err != nil {
+				return fmt.Errorf("读取代理升级迁移：%w", err)
+			}
+			migrationSQL = append(migrationSQL, '\n')
+			migrationSQL = append(migrationSQL, body...)
+		}
 	}
 	migrationSHA := sha256.Sum256(migrationSQL)
 
@@ -126,7 +140,7 @@ func (rollout *MigrationRollout) Apply(ctx context.Context, request MigrationReq
 	if err != nil {
 		return err
 	}
-	if preState.version != memberLifecyclePreviousVersion && preState.version != memberLifecycleMigration {
+	if preState.version != memberLifecyclePreviousVersion && preState.version != targetVersion {
 		return fmt.Errorf("%w：当前版本为 %d", ErrMigrationState, preState.version)
 	}
 	if !preState.recoveryPointVerified {
@@ -142,11 +156,11 @@ func (rollout *MigrationRollout) Apply(ctx context.Context, request MigrationReq
 			return fmt.Errorf("执行成员生命周期迁移：%w", err)
 		}
 	}
-	verification, err := runMigrationSQL(ctx, rollout.Runner, config, migrationVerificationSQL())
+	verification, err := runMigrationSQL(ctx, rollout.Runner, config, migrationVerificationSQL(targetVersion))
 	if err != nil {
 		return fmt.Errorf("读取迁移后数据库状态：%w", err)
 	}
-	if err := verifyMigrationState(verification.Stdout, preState); err != nil {
+	if err := verifyMigrationState(verification.Stdout, preState, targetVersion); err != nil {
 		return err
 	}
 	if digestAfter, err := MigrationTreeDigest(request.MigrationsDir); err != nil || digestAfter != digest {
@@ -162,7 +176,7 @@ func (rollout *MigrationRollout) Apply(ctx context.Context, request MigrationReq
 		TargetID: target.TargetID, TargetSourceSHA: target.SourceSHA,
 		FromMigrationTreeSHA256: current.Compatibility.MigrationTreeSHA256,
 		ToMigrationTreeSHA256:   target.Compatibility.MigrationTreeSHA256,
-		MigrationVersion:        memberLifecycleMigration, MigrationFileSHA256: hex.EncodeToString(migrationSHA[:]),
+		MigrationVersion:        targetVersion, MigrationFileSHA256: hex.EncodeToString(migrationSHA[:]),
 		RecoveryPointID: recoveryPointID, Actor: request.Actor, AppliedAt: now().UTC(),
 	}
 	return rollout.Store.SaveMigrationBaseline(baseline)
@@ -189,9 +203,13 @@ func parseMigrationPreflight(output []byte) (migrationPreState, error) {
 	return migrationPreState{version: version, recoveryPointVerified: fields[1] == "t", users: users, liveSessions: sessions}, nil
 }
 
-func verifyMigrationState(output []byte, before migrationPreState) error {
+func verifyMigrationState(output []byte, before migrationPreState, target ...int) error {
+	version := memberLifecycleMigration
+	if len(target) > 0 {
+		version = target[0]
+	}
 	fields := strings.Split(strings.TrimSpace(string(output)), "|")
-	if len(fields) != 6 || fields[0] != strconv.Itoa(memberLifecycleMigration) ||
+	if len(fields) != 6 || fields[0] != strconv.Itoa(version) ||
 		fields[1] != "t" || fields[2] != "t" || fields[3] != "t" ||
 		fields[4] != strconv.FormatInt(before.users, 10) || fields[5] != strconv.FormatInt(before.liveSessions, 10) {
 		return ErrMigrationVerification
@@ -216,8 +234,8 @@ func migrationPreflightSQL(recoveryPointID string) []byte {
 `, recoveryPointID))
 }
 
-func migrationVerificationSQL() []byte {
-	return []byte(`SELECT concat(
+func migrationVerificationSQL(target ...int) []byte {
+	sql := `SELECT concat(
   COALESCE((SELECT max(version) FROM schema_migrations),0), '|',
   EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='must_change_password'), '|',
   EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='removed_at'), '|',
@@ -225,7 +243,23 @@ func migrationVerificationSQL() []byte {
   (SELECT count(*) FROM users), '|',
   (SELECT count(*) FROM sessions WHERE revoked_at IS NULL AND expires_at>now())
 );
-`)
+`
+	if len(target) > 0 && target[0] == 15 {
+		checks := []string{"to_regclass('public.users_removed_at_idx') IS NOT NULL"}
+		for _, table := range []string{"agent_releases", "agent_release_artifacts", "agent_upgrade_plans", "agent_upgrade_targets", "agent_upgrade_events"} {
+			checks = append(checks, fmt.Sprintf("to_regclass('public.%s') IS NOT NULL", table))
+		}
+		for _, column := range []string{"agent_os", "agent_arch", "agent_capabilities"} {
+			checks = append(checks, fmt.Sprintf("EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='servers' AND column_name='%s')", column))
+		}
+		checks = append(checks, "EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='agent_upgrade_targets' AND column_name='install_command_id' AND is_nullable='NO')")
+		for _, index := range []string{"agent_releases_one_recommended_idx", "agent_upgrade_plans_one_active_idx", "agent_upgrade_events_command_stage_idx"} {
+			checks = append(checks, fmt.Sprintf("EXISTS(SELECT 1 FROM pg_index WHERE indexrelid=to_regclass('public.%s') AND indisunique AND indisvalid)", index))
+		}
+		checks = append(checks, "(SELECT count(*)=15 AND min(version)=1 AND max(version)=15 FROM schema_migrations)")
+		sql = strings.Replace(sql, "to_regclass('public.users_removed_at_idx') IS NOT NULL", "("+strings.Join(checks, " AND ")+")", 1)
+	}
+	return []byte(sql)
 }
 
 func runMigrationSQL(ctx context.Context, runner CommandRunner, config HostConfig, input []byte) (CommandResult, error) {
@@ -241,7 +275,14 @@ func runMigrationSQL(ctx context.Context, runner CommandRunner, config HostConfi
 	return result, nil
 }
 
-func validateMemberLifecycleMigrationTree(root string) (string, error) {
+func validateMemberLifecycleMigrationTree(root string, target ...int) (string, error) {
+	maximum := memberLifecycleMigration
+	if len(target) > 0 {
+		maximum = target[0]
+	}
+	if maximum != 13 && maximum != 15 {
+		return "", ErrInvalidMigrationRequest
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return "", ErrInvalidMigrationRequest
@@ -254,7 +295,7 @@ func validateMemberLifecycleMigrationTree(root string) (string, error) {
 			return "", ErrInvalidMigrationRequest
 		}
 		version, err := strconv.Atoi(matches[1])
-		if err != nil || version < 1 || version > memberLifecycleMigration {
+		if err != nil || version < 1 || version > maximum {
 			return "", ErrInvalidMigrationRequest
 		}
 		if versions[version] == nil {
@@ -266,15 +307,24 @@ func validateMemberLifecycleMigrationTree(root string) (string, error) {
 		}
 		versions[version][direction] = entry.Name()
 	}
-	for version := 1; version <= memberLifecycleMigration; version++ {
+	for version := 1; version <= maximum; version++ {
 		if versions[version]["up"] == "" || versions[version]["down"] == "" {
 			return "", ErrInvalidMigrationRequest
 		}
 	}
-	if len(entries) != memberLifecycleMigration*2 || len(versions) != memberLifecycleMigration ||
+	if len(entries) != maximum*2 || len(versions) != maximum ||
 		versions[memberLifecycleMigration]["up"] != memberLifecycleMigrationFile ||
 		versions[memberLifecycleMigration]["down"] != memberLifecycleRollbackFile {
 		return "", ErrInvalidMigrationRequest
+	}
+	if maximum == 15 {
+		for version, name := range map[int]string{14: "agent_upgrade_management", 15: "agent_upgrade_recovery"} {
+			for _, direction := range []string{"up", "down"} {
+				if versions[version][direction] != fmt.Sprintf("%06d_%s.%s.sql", version, name, direction) {
+					return "", ErrInvalidMigrationRequest
+				}
+			}
+		}
 	}
 	return filepath.Join(root, memberLifecycleMigrationFile), nil
 }
@@ -519,7 +569,7 @@ func validateMigrationBaseline(baseline MigrationBaseline) error {
 	if baseline.SchemaVersion != migrationBaselineSchemaVersion || !validTargetID(baseline.CurrentTargetID) ||
 		!targetIDPattern.MatchString(baseline.TargetID) || !lowerHex40Pattern.MatchString(baseline.TargetSourceSHA) ||
 		!lowerHex64Pattern.MatchString(baseline.FromMigrationTreeSHA256) || !lowerHex64Pattern.MatchString(baseline.ToMigrationTreeSHA256) ||
-		baseline.FromMigrationTreeSHA256 == baseline.ToMigrationTreeSHA256 || baseline.MigrationVersion != memberLifecycleMigration ||
+		baseline.FromMigrationTreeSHA256 == baseline.ToMigrationTreeSHA256 || (baseline.MigrationVersion != memberLifecycleMigration && baseline.MigrationVersion != 15) ||
 		!lowerHex64Pattern.MatchString(baseline.MigrationFileSHA256) || !actorPattern.MatchString(baseline.Actor) ||
 		!isUTCNonZero(baseline.AppliedAt) {
 		return ErrInvalidMigrationRequest
