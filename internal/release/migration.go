@@ -128,8 +128,8 @@ func (rollout *MigrationRollout) Apply(ctx context.Context, request MigrationReq
 		current.Compatibility.MigrationTreeSHA256 == target.Compatibility.MigrationTreeSHA256 {
 		return ErrIncompatibleRelease
 	}
-	historicalDigest, err := migrationTreeDigestThrough(request.MigrationsDir, memberLifecyclePreviousVersion)
-	if err != nil || historicalDigest != current.Compatibility.MigrationTreeSHA256 {
+	historyMatches, err := historicalMigrationDigestMatches(request.MigrationsDir, current.Compatibility.MigrationTreeSHA256)
+	if err != nil || !historyMatches {
 		return ErrMigrationDigestMismatch
 	}
 	preflight, err := runMigrationSQL(ctx, rollout.Runner, config, migrationPreflightSQL(recoveryPointID))
@@ -329,7 +329,18 @@ func validateMemberLifecycleMigrationTree(root string, target ...int) (string, e
 	return filepath.Join(root, memberLifecycleMigrationFile), nil
 }
 
-func migrationTreeDigestThrough(root string, maximumVersion int) (string, error) {
+func historicalMigrationDigestMatches(root, expected string) (bool, error) {
+	digest, err := migrationTreeDigestThrough(root, 12)
+	if err != nil || digest == expected {
+		return digest == expected, err
+	}
+	// Historical Windows uploads used CRLF. Reconstruct those exact bytes
+	// in memory; never alter the signed candidate or the stored baseline.
+	digest, err = migrationTreeDigestThrough(root, 12, true)
+	return digest == expected, err
+}
+
+func migrationTreeDigestThrough(root string, maximumVersion int, legacyCRLF ...bool) (string, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return "", err
@@ -350,6 +361,16 @@ func migrationTreeDigestThrough(root string, maximumVersion int) (string, error)
 		digest, err := FileSHA256(filepath.Join(root, entry.Name()))
 		if err != nil {
 			return "", err
+		}
+		if len(legacyCRLF) > 0 && legacyCRLF[0] {
+			body, err := readRegularFile(filepath.Join(root, entry.Name()), 1<<20)
+			if err != nil {
+				return "", err
+			}
+			body = bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
+			body = bytes.ReplaceAll(body, []byte("\n"), []byte("\r\n"))
+			sum := sha256.Sum256(body)
+			digest = hex.EncodeToString(sum[:])
 		}
 		digests = append(digests, digestEntry{path: filepath.ToSlash(entry.Name()), digest: digest})
 	}
