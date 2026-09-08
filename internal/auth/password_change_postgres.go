@@ -127,7 +127,9 @@ func (s *PostgresPasswordChangeStore) CommitPasswordChange(ctx context.Context, 
 	}
 	changedAt := change.ChangedAt.UTC()
 	if _, err := tx.Exec(ctx, `
-		UPDATE users SET password_hash=$2, updated_at=$3 WHERE id=$1
+		UPDATE users
+		SET password_hash=$2, must_change_password=false, updated_at=$3
+		WHERE id=$1
 	`, change.UserID, change.NewHash, changedAt); err != nil {
 		return fmt.Errorf("更新用户密码：%w", err)
 	}

@@ -3,6 +3,7 @@ package auth_test
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"testing"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 func TestPostgresRepositoryLoadsUserRolesAndSession(t *testing.T) {
 	db := testpostgres.Start(t)
 	testpostgres.ApplyInitialMigration(t, db)
+	testpostgres.ApplyMigration(t, db, "000010_password_change_security.up.sql")
+	testpostgres.ApplyMigration(t, db, "000013_member_lifecycle.up.sql")
 	ctx := context.Background()
 
 	passwordHash, err := auth.HashPassword("正确密码")
@@ -52,11 +55,12 @@ func TestPostgresRepositoryLoadsUserRolesAndSession(t *testing.T) {
 
 	tokenHash := sha256.Sum256([]byte("test-token"))
 	err = repository.Create(ctx, auth.StoredSession{
-		ID:        "123e4567-e89b-42d3-a456-426614174000",
-		UserID:    userID,
-		TokenHash: tokenHash[:],
-		ExpiresAt: time.Now().Add(time.Hour),
-		CreatedAt: time.Now(),
+		ID:                   "123e4567-e89b-42d3-a456-426614174000",
+		UserID:               userID,
+		TokenHash:            tokenHash[:],
+		ExpectedPasswordHash: passwordHash,
+		ExpiresAt:            time.Now().Add(time.Hour),
+		CreatedAt:            time.Now(),
 	})
 	if err != nil {
 		t.Fatalf("保存服务端会话：%v", err)
@@ -70,36 +74,77 @@ func TestPostgresRepositoryLoadsUserRolesAndSession(t *testing.T) {
 	}
 }
 
-func TestPostgresRepositoryReplacesAndListsMemberRoles(t *testing.T) {
+func TestPostgresRepositoryLoadsMustChangePassword(t *testing.T) {
 	db := testpostgres.Start(t)
 	testpostgres.ApplyInitialMigration(t, db)
+	testpostgres.ApplyMigration(t, db, "000010_password_change_security.up.sql")
+	testpostgres.ApplyMigration(t, db, "000013_member_lifecycle.up.sql")
 	ctx := context.Background()
-	passwordHash, err := auth.HashPassword("团队成员密码")
-	if err != nil {
-		t.Fatal(err)
-	}
 	var userID string
 	if err := db.QueryRow(ctx, `
-		INSERT INTO users (email, display_name, password_hash)
-		VALUES ('developer@example.com', '脚本开发者', $1)
-		RETURNING id
-	`, passwordHash).Scan(&userID); err != nil {
+		INSERT INTO users (email, display_name, password_hash, must_change_password)
+		VALUES ('temporary@example.com', '临时成员', 'hash', true)
+		RETURNING id::text
+	`).Scan(&userID); err != nil {
 		t.Fatal(err)
 	}
+	repository := auth.NewPostgresRepository(db)
 
-	service := auth.NewTeamService(auth.NewPostgresRepository(db))
-	updated, err := service.UpdateRoles(ctx, userID, []auth.RoleName{auth.RoleViewer, auth.RoleDeveloper})
+	user, err := repository.FindByEmail(ctx, "temporary@example.com")
 	if err != nil {
-		t.Fatalf("替换成员角色：%v", err)
+		t.Fatalf("读取临时密码用户：%v", err)
 	}
-	if len(updated.Roles) != 2 || updated.Roles[0] != auth.RoleDeveloper || updated.Roles[1] != auth.RoleViewer {
-		t.Fatalf("返回角色不正确：%v", updated.Roles)
+	if !user.MustChangePassword {
+		t.Fatal("用户查询必须读取首次改密标记")
 	}
-	members, err := service.List(ctx)
+
+	tokenHash := sha256.Sum256([]byte("temporary-session"))
+	if err := repository.Create(ctx, auth.StoredSession{
+		ID:                   "55555555-5555-4555-8555-555555555555",
+		UserID:               userID,
+		TokenHash:            tokenHash[:],
+		ExpectedPasswordHash: "hash",
+		ExpiresAt:            time.Now().Add(time.Hour),
+		CreatedAt:            time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	principal, err := repository.FindPrincipal(ctx, tokenHash[:])
 	if err != nil {
-		t.Fatalf("读取团队成员：%v", err)
+		t.Fatalf("读取临时密码会话：%v", err)
 	}
-	if len(members) != 1 || members[0].ID != userID || len(members[0].Roles) != 2 {
-		t.Fatalf("成员列表未持久化角色：%+v", members)
+	if !principal.MustChangePassword {
+		t.Fatal("会话主体必须读取首次改密标记")
+	}
+}
+
+func TestPostgresRepositoryRejectsRemovedUserLoginAndSession(t *testing.T) {
+	db := testpostgres.Start(t)
+	testpostgres.ApplyInitialMigration(t, db)
+	testpostgres.ApplyMigration(t, db, "000010_password_change_security.up.sql")
+	testpostgres.ApplyMigration(t, db, "000013_member_lifecycle.up.sql")
+	ctx := context.Background()
+	var userID string
+	if err := db.QueryRow(ctx, `
+		INSERT INTO users (email, display_name, password_hash, enabled, removed_at)
+		VALUES ('removed@example.com', '已移除成员', 'hash', true, now())
+		RETURNING id::text
+	`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	tokenHash := sha256.Sum256([]byte("removed-session"))
+	if _, err := db.Exec(ctx, `
+		INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at)
+		VALUES ('66666666-6666-4666-8666-666666666666', $1, $2, now() + interval '1 hour', now())
+	`, userID, tokenHash[:]); err != nil {
+		t.Fatal(err)
+	}
+	repository := auth.NewPostgresRepository(db)
+
+	if _, err := repository.FindByEmail(ctx, "removed@example.com"); !errors.Is(err, auth.ErrUserNotFound) {
+		t.Fatalf("已移除成员不得登录：%v", err)
+	}
+	if _, err := repository.FindPrincipal(ctx, tokenHash[:]); !errors.Is(err, auth.ErrSessionNotFound) {
+		t.Fatalf("已移除成员的现存会话必须失效：%v", err)
 	}
 }

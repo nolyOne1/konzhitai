@@ -75,6 +75,7 @@ services:
     volumes:
       - yunling_api_secrets:/run/secrets:ro
       - yunling_agent_releases:/opt/yunling/releases/agent:ro
+      - ${YUNLING_AGENT_IMPORT_DIR:-./agent-release-import}:/release:ro
     tmpfs:
       - /tmp:size=64m,uid=10001,gid=10001,mode=1770
     expose:

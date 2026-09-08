@@ -68,4 +68,20 @@ describe('账号安全面板', () => {
     expect(confirmation).toHaveValue('')
     expect(document.body).not.toHaveTextContent('new-password-2026')
   })
+
+  it('必改密模式显示首次登录说明并在成功后通知调用方', async () => {
+    vi.mocked(changePassword).mockResolvedValue(undefined)
+    const onChanged = vi.fn()
+    const user = userEvent.setup()
+    render(<AccountSecurityPanel required onChanged={onChanged} />)
+
+    expect(screen.getByRole('heading', { name: '设置新密码' })).toBeVisible()
+    expect(screen.getByText('当前密码是管理员分配的临时密码。')).toBeVisible()
+    await user.type(screen.getByLabelText('当前密码'), 'temporary-password')
+    await user.type(screen.getByLabelText('新密码'), 'member-password-2026')
+    await user.type(screen.getByLabelText('确认新密码'), 'member-password-2026')
+    await user.click(screen.getByRole('button', { name: '更新密码' }))
+
+    expect(onChanged).toHaveBeenCalledOnce()
+  })
 })

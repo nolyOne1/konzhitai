@@ -11,7 +11,8 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/yunling-api ./cmd/api && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/yunling-scheduler ./cmd/scheduler && \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/yunling-bootstrap ./cmd/bootstrap
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/yunling-bootstrap ./cmd/bootstrap && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/yunling-agent-release ./cmd/agent-release
 
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
@@ -21,5 +22,6 @@ RUN apk add --no-cache ca-certificates tzdata && \
 COPY --from=builder /out/yunling-api /usr/local/bin/yunling-api
 COPY --from=builder /out/yunling-scheduler /usr/local/bin/yunling-scheduler
 COPY --from=builder /out/yunling-bootstrap /usr/local/bin/yunling-bootstrap
+COPY --from=builder /out/yunling-agent-release /usr/local/bin/yunling-agent-release
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/yunling-api"]

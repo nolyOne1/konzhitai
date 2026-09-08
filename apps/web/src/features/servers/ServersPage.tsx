@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { getServers, getSession, revokeServerCredentials, rotateServerCredential, updateServer, type ServerView, type UpdateServerInput } from '../../api/client'
+import { getAgentReleases, getServers, getSession, revokeServerCredentials, rotateServerCredential, updateServer, type ServerView, type UpdateServerInput } from '../../api/client'
 import { ServerDrawer } from './ServerDrawer'
 import { ServerEnrollmentDialog } from './ServerEnrollmentDialog'
+import { ServerSectionTabs } from './ServerSectionTabs'
+import { ServerVersionStatus } from './ServerVersionStatus'
 
 export function ServersPage() {
   const [servers, setServers] = useState<ServerView[]>([])
+  const [recommendedVersion, setRecommendedVersion] = useState<string>()
   const [selectedID, setSelectedID] = useState<string | null>(null)
   const [pendingID, setPendingID] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -24,6 +27,15 @@ export function ServersPage() {
       .then((items) => { if (active) setServers(items) })
       .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : '服务器加载失败') })
       .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    void getAgentReleases().then(
+      (releases) => { if (active) setRecommendedVersion(releases.find((release) => release.recommended && release.status === 'available')?.version) },
+      () => { if (active) setRecommendedVersion(undefined) },
+    )
     return () => { active = false }
   }, [])
 
@@ -96,6 +108,8 @@ export function ServersPage() {
         </div>
       </div>
 
+      <ServerSectionTabs current="nodes" />
+
       {error && <div className="notice notice-error" role="alert">{error}</div>}
 
       <section className="server-summary" aria-label="服务器概况">
@@ -115,12 +129,13 @@ export function ServersPage() {
         ) : (
           <div className="table-scroll">
             <table className="data-table">
-              <thead><tr><th>服务器</th><th>状态</th><th>CPU</th><th>可用内存</th><th>运行任务</th><th>标签</th><th><span className="sr-only">操作</span></th></tr></thead>
+              <thead><tr><th>服务器</th><th>状态</th><th>代理版本</th><th>CPU</th><th>可用内存</th><th>运行任务</th><th>标签</th><th><span className="sr-only">操作</span></th></tr></thead>
               <tbody>
                 {servers.map((server) => (
                   <tr key={server.id}>
                     <td data-label="服务器"><button type="button" className="server-name-button" aria-label={`查看${server.name}详情`} onClick={() => setSelectedID(server.id)}><strong>{server.name}</strong><span>{server.cloudProvider || '未分类'} · {server.region || '未设置地域'}</span></button></td>
                     <td data-label="状态"><StatusBadge server={server} /></td>
+                    <td data-label="代理版本"><div className="agent-version-cell"><strong>{server.agentVersion || '未上报'}</strong><ServerVersionStatus server={server} recommendedVersion={recommendedVersion} /></div></td>
                     <td data-label="CPU"><ResourceValue value={`${formatNumber(server.cpuUsagePercent)}%`} percent={server.cpuUsagePercent} /></td>
                     <td data-label="可用内存"><ResourceValue value={formatBytes(server.memoryAvailableBytes)} percent={percentage(server.memoryTotalBytes - server.memoryAvailableBytes, server.memoryTotalBytes)} /></td>
                     <td data-label="运行任务"><strong>{server.runningTasks}</strong><span className="cell-muted"> / 上限待配置</span></td>

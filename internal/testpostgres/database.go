@@ -32,6 +32,7 @@ func Start(t testing.TB) *pgxpool.Pool {
 	dataPath := filepath.Join(dataRoot, testID)
 	port := availablePort(t)
 	config := embeddedpostgres.DefaultConfig().
+		BinaryRepositoryURL("https://repo.maven.apache.org/maven2").
 		Version(embeddedpostgres.V18).
 		Port(port).
 		Database("yunling_test").
@@ -46,7 +47,7 @@ func Start(t testing.TB) *pgxpool.Pool {
 		Logger(io.Discard)
 	database := embeddedpostgres.NewDatabase(config)
 	if err := database.Start(); err != nil {
-		t.Fatalf("启动嵌入式 PostgreSQL：%v", err)
+		t.Fatalf("启动嵌入式 PostgreSQL（版本 %s，下载源 https://repo.maven.apache.org/maven2；下载失败也可能由 HTTP 限流或仓库暂时不可用引起）：%v", embeddedpostgres.V18, err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

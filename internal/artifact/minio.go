@@ -13,8 +13,6 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
-var errObjectMissing = errors.New("对象不存在")
-
 type MinIOConfig struct {
 	Endpoint  string
 	AccessKey string
@@ -91,7 +89,7 @@ func (s *MinIOStore) Open(ctx context.Context, key string) (io.ReadCloser, error
 	}
 	if _, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{}); err != nil {
 		if isMissingObject(err) {
-			return nil, errObjectMissing
+			return nil, ErrObjectMissing
 		}
 		return nil, fmt.Errorf("检查脚本对象：%w", err)
 	}
@@ -111,7 +109,7 @@ func verifyObject(info minio.ObjectInfo, size int64, checksum string) error {
 		}
 	}
 	if info.Size != size || !strings.EqualFold(storedChecksum, checksum) {
-		return errors.New("内容寻址对象与已保存内容不一致，已拒绝覆盖")
+		return ErrObjectConflict
 	}
 	return nil
 }
@@ -135,7 +133,7 @@ const (
 )
 
 func isMissingObject(err error) bool {
-	if errors.Is(err, errObjectMissing) {
+	if errors.Is(err, ErrObjectMissing) {
 		return true
 	}
 	switch minio.ToErrorResponse(err).Code {

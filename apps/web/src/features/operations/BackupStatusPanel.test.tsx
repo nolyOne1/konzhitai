@@ -11,7 +11,7 @@ vi.mock('../../api/client', () => ({
 
 describe('备份运行保障面板', () => {
   beforeEach(() => {
-    vi.mocked(getSession).mockResolvedValue({ id: 'admin-1', displayName: '管理员', email: 'admin@example.com', roles: ['admin'] })
+    vi.mocked(getSession).mockResolvedValue({ id: 'admin-1', displayName: '管理员', email: 'admin@example.com', roles: ['admin'], mustChangePassword: false })
     vi.mocked(getBackupSummary).mockResolvedValue({
       status: 'not_started', nextBackupAt: '2026-09-01T16:30:00Z', latestLocalBackup: null,
       latestCOSBackup: null, latestVerification: null,
@@ -49,7 +49,7 @@ describe('备份运行保障面板', () => {
   })
 
   it('viewer 看不到写操作按钮', async () => {
-    vi.mocked(getSession).mockResolvedValue({ id: 'viewer-1', displayName: '观察员', email: 'viewer@example.com', roles: ['viewer'] })
+    vi.mocked(getSession).mockResolvedValue({ id: 'viewer-1', displayName: '观察员', email: 'viewer@example.com', roles: ['viewer'], mustChangePassword: false })
     render(<BackupStatusPanel pollIntervalMs={5} />)
     expect(await screen.findByText('下一次自动备份')).toBeVisible()
     expect(screen.queryByRole('button', { name: '立即备份' })).not.toBeInTheDocument()

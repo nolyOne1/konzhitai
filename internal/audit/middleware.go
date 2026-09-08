@@ -72,10 +72,24 @@ func classifyRequest(method, path string) (string, string, string, bool) {
 			if method == http.MethodPost && len(parts) == 4 && (parts[3] == "cancel" || parts[3] == "retry") {
 				return "run." + parts[3], "run", parts[2], true
 			}
+		case "agent-releases":
+			if method == http.MethodPost && len(parts) == 4 && (parts[3] == "recommend" || parts[3] == "withdraw") {
+				return "agent_release." + parts[3], "agent_release", parts[2], true
+			}
+		case "agent-upgrades":
+			if method == http.MethodPost && len(parts) == 4 {
+				return "agent_upgrade." + parts[3], "agent_upgrade", parts[2], true
+			}
+			if method == http.MethodPost && len(parts) == 6 && parts[3] == "targets" && (parts[5] == "retry" || parts[5] == "rollback") {
+				return "agent_upgrade." + parts[5], "agent_upgrade_target", parts[4], true
+			}
 		}
 	}
 	if len(parts) == 2 && parts[0] == "api" && parts[1] == "tasks" && method == http.MethodPost {
 		return "task.create", "task", "new", true
+	}
+	if len(parts) == 2 && parts[0] == "api" && parts[1] == "agent-upgrades" && method == http.MethodPost {
+		return "agent_upgrade.create", "agent_upgrade", "new", true
 	}
 	return "", "", "", false
 }

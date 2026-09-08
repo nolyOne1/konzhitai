@@ -36,3 +36,27 @@ func TestMiddlewareDoesNotRecordFailedOrReadOnlyRequest(t *testing.T) {
 		t.Fatalf("失败请求和只读请求不应写成功审计：%+v", repository.events)
 	}
 }
+
+func TestMiddlewareClassifiesAgentReleaseAndUpgradeMutations(t *testing.T) {
+	for _, test := range []struct{ path, action string }{
+		{"/api/agent-releases/release-1/recommend", "agent_release.recommend"},
+		{"/api/agent-releases/release-1/withdraw", "agent_release.withdraw"},
+		{"/api/agent-upgrades", "agent_upgrade.create"},
+		{"/api/agent-upgrades/plan-1/pause", "agent_upgrade.pause"},
+		{"/api/agent-upgrades/plan-1/resume", "agent_upgrade.resume"},
+		{"/api/agent-upgrades/plan-1/cancel", "agent_upgrade.cancel"},
+		{"/api/agent-upgrades/plan-1/targets/target-1/retry", "agent_upgrade.retry"},
+		{"/api/agent-upgrades/plan-1/targets/target-1/rollback", "agent_upgrade.rollback"},
+	} {
+		t.Run(test.action, func(t *testing.T) {
+			repository := &memoryAuditRepository{}
+			handler := audit.Middleware(audit.NewService(repository, nil))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+			request := httptest.NewRequest(http.MethodPost, test.path, nil)
+			request = request.WithContext(auth.WithPrincipal(request.Context(), auth.Principal{UserID: "admin-1"}))
+			handler.ServeHTTP(httptest.NewRecorder(), request)
+			if len(repository.events) != 1 || repository.events[0].Action != test.action {
+				t.Fatalf("审计动作错误：%+v", repository.events)
+			}
+		})
+	}
+}

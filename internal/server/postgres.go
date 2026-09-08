@@ -49,6 +49,10 @@ func (r *PostgresRepository) SaveHeartbeat(
 	if err != nil {
 		return false, fmt.Errorf("编码运行环境：%w", err)
 	}
+	capabilities, err := json.Marshal(heartbeat.Capabilities)
+	if err != nil {
+		return false, fmt.Errorf("编码代理能力：%w", err)
+	}
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -68,10 +72,13 @@ func (r *PostgresRepository) SaveHeartbeat(
 			END,
 			runtimes = $4,
 			agent_version = $5,
+			agent_os = $6,
+			agent_arch = $7,
+			agent_capabilities = $8,
 			updated_at = $3
 		WHERE id = $1 AND enabled = true AND last_heartbeat_sequence < $2
 		RETURNING id
-	`, heartbeat.ServerID, int64(heartbeat.Sequence), receivedAt, runtimes, heartbeat.AgentVersion).Scan(&serverID)
+	`, heartbeat.ServerID, int64(heartbeat.Sequence), receivedAt, runtimes, heartbeat.AgentVersion, heartbeat.AgentOS, heartbeat.AgentArch, capabilities).Scan(&serverID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -488,6 +495,10 @@ const serverViewSelect = `
 		server.labels,
 		server.runtimes,
 		server.agent_version,
+		server.agent_os,
+		server.agent_arch,
+		server.agent_capabilities,
+		COALESCE(upgrade.status, ''),
 		server.scheduling_weight,
 		COALESCE(snapshot.cpu_usage_percent, 0),
 		COALESCE(snapshot.memory_total_bytes, 0),
@@ -510,6 +521,13 @@ const serverViewSelect = `
 		ORDER BY collected_at DESC
 		LIMIT 1
 	) AS snapshot ON true
+	LEFT JOIN LATERAL (
+		SELECT status
+		FROM agent_upgrade_targets
+		WHERE server_id = server.id
+		ORDER BY updated_at DESC, id DESC
+		LIMIT 1
+	) AS upgrade ON true
 `
 
 type rowScanner interface {
@@ -520,6 +538,7 @@ func scanServerView(row rowScanner) (ServerView, error) {
 	var view ServerView
 	var labels []byte
 	var runtimes []byte
+	var capabilities []byte
 	err := row.Scan(
 		&view.ID,
 		&view.Name,
@@ -531,6 +550,10 @@ func scanServerView(row rowScanner) (ServerView, error) {
 		&labels,
 		&runtimes,
 		&view.AgentVersion,
+		&view.AgentOS,
+		&view.AgentArch,
+		&capabilities,
+		&view.UpgradeStatus,
 		&view.SchedulingWeight,
 		&view.CPUUsagePercent,
 		&view.MemoryTotalBytes,
@@ -549,11 +572,17 @@ func scanServerView(row rowScanner) (ServerView, error) {
 	if err := json.Unmarshal(runtimes, &view.Runtimes); err != nil {
 		return ServerView{}, fmt.Errorf("解析服务器运行环境：%w", err)
 	}
+	if err := json.Unmarshal(capabilities, &view.AgentCapabilities); err != nil {
+		return ServerView{}, fmt.Errorf("解析代理能力：%w", err)
+	}
 	if view.Labels == nil {
 		view.Labels = map[string]string{}
 	}
 	if view.Runtimes == nil {
 		view.Runtimes = []string{}
+	}
+	if view.AgentCapabilities == nil {
+		view.AgentCapabilities = []string{}
 	}
 	return view, nil
 }

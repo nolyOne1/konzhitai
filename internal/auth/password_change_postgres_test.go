@@ -95,13 +95,14 @@ func TestPostgresPasswordChangeCommitsPasswordSessionsAndAuditAtomically(t *test
 	db := testpostgres.Start(t)
 	testpostgres.ApplyInitialMigration(t, db)
 	testpostgres.ApplyMigration(t, db, "000010_password_change_security.up.sql")
+	testpostgres.ApplyMigration(t, db, "000013_member_lifecycle.up.sql")
 	ctx := context.Background()
 	oldHash := "old-password-hash"
 	newHash := "new-password-hash"
 	var userID string
 	if err := db.QueryRow(ctx, `
-		INSERT INTO users (email, display_name, password_hash)
-		VALUES ('admin@example.com', '系统管理员', $1)
+		INSERT INTO users (email, display_name, password_hash, must_change_password)
+		VALUES ('admin@example.com', '系统管理员', $1, true)
 		RETURNING id::text
 	`, oldHash).Scan(&userID); err != nil {
 		t.Fatal(err)
@@ -132,11 +133,15 @@ func TestPostgresPasswordChangeCommitsPasswordSessionsAndAuditAtomically(t *test
 	}
 
 	var storedHash string
-	if err := db.QueryRow(ctx, `SELECT password_hash FROM users WHERE id=$1`, userID).Scan(&storedHash); err != nil {
+	var mustChangePassword bool
+	if err := db.QueryRow(ctx, `SELECT password_hash, must_change_password FROM users WHERE id=$1`, userID).Scan(&storedHash, &mustChangePassword); err != nil {
 		t.Fatal(err)
 	}
 	if storedHash != newHash {
 		t.Fatalf("密码哈希未更新：%q", storedHash)
+	}
+	if mustChangePassword {
+		t.Fatal("成功改密必须在同一事务内清除首次改密标记")
 	}
 
 	rows, err := db.Query(ctx, `SELECT token_hash, revoked_at IS NOT NULL FROM sessions WHERE user_id=$1`, userID)

@@ -21,6 +21,9 @@ func TestPostgresManagementUsesLatestSnapshotAndPersistsDrain(t *testing.T) {
 	testpostgres.ApplyMigration(t, db, "000005_task_scheduling.up.sql")
 	testpostgres.ApplyMigration(t, db, "000006_scheduler_resources.up.sql")
 	testpostgres.ApplyMigration(t, db, "000008_security_audit_alerts.up.sql")
+	testpostgres.ApplyMigration(t, db, "000010_password_change_security.up.sql")
+	testpostgres.ApplyMigration(t, db, "000014_agent_upgrade_management.up.sql")
+	testpostgres.ApplyMigration(t, db, "000015_agent_upgrade_recovery.up.sql")
 	ctx := context.Background()
 	serverID := "123e4567-e89b-42d3-a456-426614174200"
 	credentialHash := sha256.Sum256([]byte("agent-test-secret"))
@@ -79,6 +82,10 @@ func TestPostgresManagementUsesLatestSnapshotAndPersistsDrain(t *testing.T) {
 		MemoryUsedBytes:  4 << 30,
 		DiskTotalBytes:   100 << 30,
 		DiskFreeBytes:    70 << 30,
+		AgentVersion:     "0.2.0",
+		AgentOS:          "linux",
+		AgentArch:        "amd64",
+		Capabilities:     []string{"self_upgrade_v1"},
 	}, time.Now())
 	if err != nil || !accepted {
 		t.Fatalf("排空后仍应接收心跳：accepted=%v err=%v", accepted, err)
@@ -88,6 +95,36 @@ func TestPostgresManagementUsesLatestSnapshotAndPersistsDrain(t *testing.T) {
 	}
 	if updated.Status != server.StatusDraining {
 		t.Fatalf("心跳不得解除排空，实际状态为 %s", updated.Status)
+	}
+	servers, err = repository.ListServers(ctx)
+	if err != nil {
+		t.Fatalf("读取心跳后的服务器列表：%v", err)
+	}
+	if len(servers) != 1 || servers[0].AgentVersion != "0.2.0" || servers[0].AgentOS != "linux" || servers[0].AgentArch != "amd64" {
+		t.Fatalf("服务器列表必须返回代理平台信息：%+v", servers)
+	}
+	if len(servers[0].AgentCapabilities) != 1 || servers[0].AgentCapabilities[0] != "self_upgrade_v1" {
+		t.Fatalf("服务器列表必须返回代理升级能力：%+v", servers[0].AgentCapabilities)
+	}
+	userID := "123e4567-e89b-42d3-a456-426614174202"
+	releaseID := "123e4567-e89b-42d3-a456-426614174203"
+	planID := "123e4567-e89b-42d3-a456-426614174204"
+	installCommandID := "123e4567-e89b-42d3-a456-426614174205"
+	if _, err := db.Exec(ctx, `INSERT INTO users(id,email,display_name,password_hash) VALUES($1,'upgrade@example.test','升级管理员','x')`, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO agent_releases(id,version,manifest_sha256) VALUES($1,'0.3.0',$2)`, releaseID, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO agent_upgrade_plans(id,target_release_id,status,batch_size,drain_timeout_seconds,reconnect_timeout_seconds,verification_seconds,created_by) VALUES($1,$2,'running',1,3600,120,30,$3)`, planID, releaseID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO agent_upgrade_targets(plan_id,server_id,batch_number,source_version,target_version,source_draining,status,command_id,install_command_id) VALUES($1,$2,1,'0.2.0','0.3.0',true,'installing',$3,$3)`, planID, serverID, installCommandID); err != nil {
+		t.Fatal(err)
+	}
+	servers, err = repository.ListServers(ctx)
+	if err != nil || len(servers) != 1 || servers[0].UpgradeStatus != "installing" {
+		t.Fatalf("服务器列表必须返回最近升级状态：servers=%+v err=%v", servers, err)
 	}
 
 	enabled := false

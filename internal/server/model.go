@@ -13,15 +13,18 @@ const (
 )
 
 type Server struct {
-	ID            string
-	Name          string
-	CloudProvider string
-	Region        string
-	Status        Status
-	Labels        map[string]string
-	Runtimes      []string
-	AgentVersion  string
-	LastSeenAt    *time.Time
+	ID                string
+	Name              string
+	CloudProvider     string
+	Region            string
+	Status            Status
+	Labels            map[string]string
+	Runtimes          []string
+	AgentVersion      string
+	AgentOS           string
+	AgentArch         string
+	AgentCapabilities []string
+	LastSeenAt        *time.Time
 }
 
 type ResourceSnapshot struct {

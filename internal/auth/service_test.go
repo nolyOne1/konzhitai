@@ -75,6 +75,29 @@ func TestLoginCreatesHashedServerSession(t *testing.T) {
 	}
 }
 
+func TestLoginPropagatesMustChangePasswordToSession(t *testing.T) {
+	hash, err := auth.HashPassword("temporary-password")
+	if err != nil {
+		t.Fatalf("生成测试密码哈希：%v", err)
+	}
+	users := fakeUsers{user: auth.User{
+		ID:                 "user-1",
+		Email:              "ops@example.com",
+		PasswordHash:       hash,
+		Enabled:            true,
+		MustChangePassword: true,
+	}}
+	service := auth.NewService(users, &fakeSessions{})
+
+	session, err := service.Login(context.Background(), "ops@example.com", "temporary-password")
+	if err != nil {
+		t.Fatalf("临时密码登录失败：%v", err)
+	}
+	if !session.MustChangePassword {
+		t.Fatal("登录会话必须携带首次改密标记")
+	}
+}
+
 func TestRequireRejectsRoleWithoutPermission(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -116,6 +139,52 @@ func TestAuthenticateLoadsServerSessionBeforePermissionCheck(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("有效运维会话应通过执行权限校验，实际状态码为 %d", rec.Code)
 	}
+}
+
+func TestAuthenticateAllowsOnlyPasswordChangeWhenRequired(t *testing.T) {
+	service := authenticatedService(auth.Principal{UserID: "user-1", MustChangePassword: true})
+	protected := auth.Authenticate(service)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	blocked := requestWithSession(http.MethodGet, "/api/members")
+	blockedRecorder := httptest.NewRecorder()
+	protected.ServeHTTP(blockedRecorder, blocked)
+	if blockedRecorder.Code != http.StatusForbidden || blockedRecorder.Body.String() != "{\"code\":\"password_change_required\",\"message\":\"请先修改临时密码\"}\n" {
+		t.Fatalf("临时密码会话未被门禁：%d %s", blockedRecorder.Code, blockedRecorder.Body.String())
+	}
+
+	allowed := requestWithSession(http.MethodPost, "/api/auth/password")
+	allowedRecorder := httptest.NewRecorder()
+	protected.ServeHTTP(allowedRecorder, allowed)
+	if allowedRecorder.Code != http.StatusNoContent {
+		t.Fatalf("改密接口被错误阻止：%d", allowedRecorder.Code)
+	}
+}
+
+type requiredPasswordRepository struct{ principal auth.Principal }
+
+func (r *requiredPasswordRepository) FindByEmail(context.Context, string) (auth.User, error) {
+	return auth.User{}, auth.ErrUserNotFound
+}
+
+func (r *requiredPasswordRepository) Create(context.Context, auth.StoredSession) error { return nil }
+
+func (r *requiredPasswordRepository) FindPrincipal(context.Context, []byte) (auth.Principal, error) {
+	return r.principal, nil
+}
+
+func (r *requiredPasswordRepository) Revoke(context.Context, []byte) error { return nil }
+
+func authenticatedService(principal auth.Principal) *auth.Service {
+	repository := &requiredPasswordRepository{principal: principal}
+	return auth.NewService(repository, repository)
+}
+
+func requestWithSession(method, target string) *http.Request {
+	request := httptest.NewRequest(method, target, nil)
+	request.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "session-token"})
+	return request
 }
 
 type fakeUsers struct {

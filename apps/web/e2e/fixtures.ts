@@ -48,6 +48,7 @@ export const queuedRunFixture = {
 
 export async function mockTaskRun(page: Page) {
   let triggerBody: unknown
+  await mockAdminSession(page)
   await page.route('**/api/tasks', async (route) => {
     if (route.request().method() === 'GET') {
       await json(route, { tasks: [taskFixture] })
@@ -64,6 +65,7 @@ export async function mockTaskRun(page: Page) {
 
 export async function mockQueueWakeup(page: Page) {
   let released = false
+  await mockAdminSession(page)
   await page.route('**/api/runs', async (route) => {
     const run = released
       ? { ...queuedRunFixture, state: 'assigned', serverId: 'server-a', serverName: '京东云执行节点' }
@@ -75,6 +77,7 @@ export async function mockQueueWakeup(page: Page) {
 
 export async function mockPasswordChange(page: Page) {
   let requestBody: unknown
+  await mockAdminSession(page)
   await page.route('**/api/auth/password', async (route) => {
     if (route.request().method() !== 'POST') {
       await route.fallback()
@@ -86,12 +89,167 @@ export async function mockPasswordChange(page: Page) {
   return { requestBody: () => requestBody }
 }
 
+export async function mockMemberLifecycle(page: Page) {
+  let members = [memberFixture]
+  let session: typeof sessionFixture | null = { ...sessionFixture }
+  const accounts = new Map<string, { password: string; user: typeof sessionFixture }>([
+    [sessionFixture.email, { password: 'admin-password-2026', user: { ...sessionFixture } }],
+    [memberFixture.email, { password: 'existing-password-2026', user: memberSession(memberFixture) }],
+  ])
+
+  await page.route('**/api/auth/session', async (route) => {
+    if (session === null) {
+      await json(route, { message: '请先登录' }, 401)
+      return
+    }
+    await json(route, { user: session })
+  })
+  await page.route('**/api/auth/logout', async (route) => {
+    session = null
+    await route.fulfill({ status: 204 })
+  })
+  await page.route('**/api/auth/login', async (route) => {
+    const input = route.request().postDataJSON() as { email: string; password: string }
+    const account = accounts.get(input.email.toLowerCase())
+    if (!account || account.password !== input.password) {
+      await json(route, { message: '邮箱或密码错误' }, 401)
+      return
+    }
+    session = { ...account.user }
+    await json(route, { must_change_password: session.must_change_password })
+  })
+  await page.route('**/api/auth/password', async (route) => {
+    if (session === null) {
+      await json(route, { message: '请先登录' }, 401)
+      return
+    }
+    const input = route.request().postDataJSON() as { currentPassword: string; newPassword: string }
+    const account = accounts.get(session.email)
+    if (!account || account.password !== input.currentPassword) {
+      await json(route, { message: '当前密码错误' }, 401)
+      return
+    }
+    account.password = input.newPassword
+    account.user = { ...account.user, must_change_password: false }
+    session = { ...account.user }
+    members = members.map((member) => member.email === session?.email ? { ...member, mustChangePassword: false } : member)
+    await route.fulfill({ status: 204 })
+  })
+  await page.route('**/api/members**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const method = request.method()
+    const memberID = url.pathname.split('/')[3]
+    if (session === null) {
+      await json(route, { message: '请先登录' }, 401)
+      return
+    }
+    if (session.must_change_password) {
+      await json(route, { code: 'password_change_required', message: '首次登录必须先修改密码' }, 403)
+      return
+    }
+
+    if (method === 'GET' && url.pathname === '/api/members') {
+      const status = url.searchParams.get('status')
+      const visible = status === 'removed'
+        ? members.filter((member) => member.removedAt)
+        : status === 'active'
+          ? members.filter((member) => member.enabled && !member.removedAt)
+          : status === 'disabled'
+            ? members.filter((member) => !member.enabled && !member.removedAt)
+            : members.filter((member) => !member.removedAt)
+      await json(route, { members: visible })
+      return
+    }
+
+    if (method === 'POST' && url.pathname === '/api/members') {
+      const input = request.postDataJSON() as { displayName: string; email: string; roles: string[] }
+      const created = {
+        id: 'member-ops-1', displayName: input.displayName, email: input.email, roles: input.roles,
+        enabled: true, mustChangePassword: true, removedAt: null, createdAt: '2026-09-04T00:00:00Z',
+      }
+      members = [created, ...members]
+      accounts.set(created.email, { password: 'member-temporary-password', user: memberSession(created) })
+      await json(route, { member: created, temporaryPassword: 'member-temporary-password' }, 201)
+      return
+    }
+
+    const index = members.findIndex((member) => member.id === memberID)
+    if (index < 0) {
+      await json(route, { message: '成员不存在' }, 404)
+      return
+    }
+    const member = members[index]
+    const replace = (updated: typeof member) => { members = members.map((item) => item.id === member.id ? updated : item) }
+
+    if (method === 'POST' && url.pathname.endsWith('/disable')) {
+      const updated = { ...member, enabled: false }
+      replace(updated)
+      await json(route, updated)
+      return
+    }
+    if (method === 'POST' && url.pathname.endsWith('/enable')) {
+      const updated = { ...member, enabled: true }
+      replace(updated)
+      await json(route, updated)
+      return
+    }
+    if (method === 'DELETE' && url.pathname === `/api/members/${memberID}`) {
+      replace({ ...member, enabled: false, removedAt: '2026-09-04T01:00:00Z' })
+      await route.fulfill({ status: 204 })
+      return
+    }
+    if (method === 'POST' && url.pathname.endsWith('/restore')) {
+      const updated = { ...member, enabled: false, removedAt: null }
+      replace(updated)
+      await json(route, updated)
+      return
+    }
+    if (method === 'POST' && url.pathname.endsWith('/password/reset')) {
+      const updated = { ...member, mustChangePassword: true }
+      replace(updated)
+      const account = accounts.get(member.email)
+      if (account) {
+        account.password = 'reset-temporary-password'
+        account.user = { ...account.user, must_change_password: true }
+      }
+      await json(route, { member: updated, temporaryPassword: 'reset-temporary-password' })
+      return
+    }
+
+    await route.fallback()
+  })
+}
+
+function memberSession(member: typeof memberFixture): typeof sessionFixture {
+  return {
+    user_id: member.id,
+    display_name: member.displayName,
+    email: member.email,
+    roles: [...member.roles],
+    must_change_password: member.mustChangePassword,
+  }
+}
+
+const sessionFixture = {
+  user_id: 'admin-1', display_name: '管理员', email: 'admin@example.com', roles: ['admin'], must_change_password: false,
+}
+
+const memberFixture = {
+  id: 'member-existing-1', displayName: '值班运维', email: 'ops@example.com', roles: ['operator'],
+  enabled: true, mustChangePassword: false, removedAt: null, createdAt: '2026-09-04T00:00:00Z',
+}
+
+async function mockAdminSession(page: Page) {
+  await page.route('**/api/auth/session', async (route) => {
+    await json(route, { user: sessionFixture })
+  })
+}
+
 export async function mockOperationsNotifications(page: Page) {
   let config = { configured: false, enabled: false, maskedDestination: '' }
   let updateBody: unknown
-  await page.route('**/api/auth/session', async (route) => {
-    await json(route, { user: { user_id: 'admin-1', display_name: '管理员', email: 'admin@example.com', roles: ['admin'] } })
-  })
+  await mockAdminSession(page)
   await page.route('**/api/operations/notifications/feishu', async (route) => {
     if (route.request().method() === 'PUT') {
       updateBody = route.request().postDataJSON()
@@ -116,9 +274,7 @@ export async function mockOperationsBackups(page: Page) {
   let verificationIdempotencyKey = ''
   let verificationBody: unknown
 
-  await page.route('**/api/auth/session', async (route) => {
-    await json(route, { user: { user_id: 'admin-1', display_name: '管理员', email: 'admin@example.com', roles: ['admin'] } })
-  })
+  await mockAdminSession(page)
   await page.route('**/api/operations/notifications/feishu', async (route) => {
     await json(route, { configured: false, enabled: false, maskedDestination: '' })
   })

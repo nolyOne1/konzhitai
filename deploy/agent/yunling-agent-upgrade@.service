@@ -1,0 +1,21 @@
+[Unit]
+Description=云令代理升级 %i
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/yunling-agent apply-upgrade %i
+Restart=on-failure
+RestartSec=5s
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/usr/local/bin /etc/systemd/system /etc/polkit-1/rules.d /var/lib/yunling-agent/upgrades
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true

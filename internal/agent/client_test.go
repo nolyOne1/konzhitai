@@ -31,6 +31,7 @@ func TestClientSendsMonotonicHeartbeatEveryFiveSeconds(t *testing.T) {
 		"0.1.0",
 		collector,
 		sender,
+		WithPlatform("linux", "amd64", []string{"self_upgrade_v1"}),
 		WithTickerFactory(func(interval time.Duration) Ticker {
 			ticker.ready <- interval
 			return ticker
@@ -55,6 +56,9 @@ func TestClientSendsMonotonicHeartbeatEveryFiveSeconds(t *testing.T) {
 	}
 	if first.ServerID != "server-1" || first.AgentVersion != "0.1.0" {
 		t.Fatalf("心跳必须携带代理身份和版本：%+v", first)
+	}
+	if first.AgentOS != "linux" || first.AgentArch != "amd64" || len(first.Capabilities) != 1 || first.Capabilities[0] != "self_upgrade_v1" {
+		t.Fatalf("心跳必须携带代理平台与升级能力：%+v", first)
 	}
 	if !first.SentAt.Equal(firstAt) || !second.SentAt.Equal(secondAt) {
 		t.Fatalf("心跳发送时间必须来自触发时刻：%s、%s", first.SentAt, second.SentAt)
@@ -154,6 +158,28 @@ func TestWebSocketSenderRoutesSyncAndExecutionCommandsFromOneReader(t *testing.T
 	cancellation, err := transport.ReceiveExecutionCommand(ctx)
 	if err != nil || cancellation.Type != agentprotocol.CommandCancel || cancellation.Cancellation == nil || cancellation.Cancellation.ExecutionToken != "token-1" {
 		t.Fatalf("任务取消命令路由错误：command=%+v err=%v", cancellation, err)
+	}
+}
+
+func TestWebSocketSenderRoutesUpgradeCommand(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer connection.CloseNow()
+		_ = wsjson.Write(context.Background(), connection, agentprotocol.UpgradeCommand{MessageType: "agent_upgrade_command", CommandID: "upgrade-1", Action: agentprotocol.UpgradeInstall})
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	sender, err := DialHeartbeatSender(context.Background(), server.URL, "agent-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	command, err := sender.ReceiveUpgradeCommand(context.Background())
+	if err != nil || command.CommandID != "upgrade-1" || command.Action != agentprotocol.UpgradeInstall {
+		t.Fatalf("升级命令路由错误：command=%+v err=%v", command, err)
 	}
 }
 

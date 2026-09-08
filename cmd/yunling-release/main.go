@@ -26,6 +26,7 @@ const (
 type dependencies struct {
 	bootstrap   func(context.Context) error
 	execute     func(context.Context, release.Request) (release.Result, error)
+	migration   func(context.Context, release.MigrationRequest) error
 	preflight   func(context.Context) error
 	notify      func(context.Context, string, string, release.Result) error
 	now         func() time.Time
@@ -57,6 +58,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, dependency de
 		return runExecute(args[1:], stdin, stdout, stderr, dependency)
 	case "bootstrap":
 		return runBootstrap(args[1:], stderr, dependency)
+	case "migration":
+		return runMigration(args[1:], stderr, dependency)
 	case "preflight":
 		return runPreflight(args[1:], stderr, dependency)
 	case "notify":
@@ -69,6 +72,53 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, dependency de
 		writeUsage(stderr)
 		return 2
 	}
+}
+
+func runMigration(args []string, stderr io.Writer, dependency dependencies) int {
+	if len(args) == 0 || args[0] != "apply" {
+		fmt.Fprintln(stderr, "migration 只支持 apply")
+		return 2
+	}
+	flags := flag.NewFlagSet("migration apply", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	manifestPath := flags.String("manifest", "", "候选发布清单")
+	migrationsDir := flags.String("migrations", "", "候选迁移树目录")
+	actor := flags.String("actor", "", "执行迁移的操作者")
+	recoveryPoint := flags.String("recovery-point", "", "已成功完成隔离恢复核验的备份运行 UUID")
+	if err := flags.Parse(args[1:]); err != nil {
+		return flagExitCode(err)
+	}
+	if flags.NArg() != 0 || *manifestPath == "" || *migrationsDir == "" || *actor == "" || *recoveryPoint == "" {
+		fmt.Fprintln(stderr, "migration apply 参数无效")
+		return 2
+	}
+	if dependency.requireRoot && (dependency.isRoot == nil || !dependency.isRoot()) {
+		fmt.Fprintln(stderr, "生产迁移必须由 root 调用")
+		return 1
+	}
+	if dependency.migration == nil {
+		fmt.Fprintln(stderr, "生产迁移依赖不可用")
+		return 1
+	}
+	manifest, err := loadManifest(*manifestPath)
+	if err != nil {
+		fmt.Fprintln(stderr, "生产迁移候选清单无效")
+		return 1
+	}
+	absoluteMigrations, err := filepath.Abs(*migrationsDir)
+	if err != nil {
+		fmt.Fprintln(stderr, "生产迁移目录无效")
+		return 1
+	}
+	request := release.MigrationRequest{
+		Manifest: manifest, Actor: *actor, MigrationsDir: absoluteMigrations, RecoveryPointID: *recoveryPoint,
+	}
+	if err := dependency.migration(context.Background(), request); err != nil {
+		fmt.Fprintln(stderr, "生产迁移或发布基线更新失败")
+		return 1
+	}
+	fmt.Fprintln(stderr, "迁移与发布基线更新完成")
+	return 0
 }
 
 func runResult(args []string, stderr io.Writer) int {
@@ -461,6 +511,9 @@ func realDependencies() dependencies {
 		Config: config, Policy: policy, Store: store, Runner: runner,
 		Resources: resources, Locker: locker, Health: health, Now: time.Now,
 	}
+	migrationRollout := &release.MigrationRollout{
+		Config: config, Policy: policy, Store: store, Runner: runner, Locker: locker, Now: time.Now,
+	}
 	bootstrapper := &release.Bootstrapper{
 		RootDir: productionRoot, ComposeFile: config.ComposeFile, OverrideFile: config.OverrideFile,
 		AgentLockPath: productionRoot + "/deploy/agent/release-lock.json", Store: store,
@@ -471,6 +524,7 @@ func realDependencies() dependencies {
 	return dependencies{
 		requireRoot: true, isRoot: currentUserIsRoot, now: time.Now,
 		bootstrap: bootstrapper.Run,
+		migration: migrationRollout.Apply,
 		execute: func(ctx context.Context, request release.Request) (release.Result, error) {
 			if healthErr != nil {
 				return release.Result{}, healthErr
@@ -586,5 +640,5 @@ func flagExitCode(err error) int {
 }
 
 func writeUsage(writer io.Writer) {
-	fmt.Fprintln(writer, "用法：yunling-release <manifest|candidate|production|request|result|execute|bootstrap|preflight|notify> [参数]")
+	fmt.Fprintln(writer, "用法：yunling-release <manifest|candidate|production|request|result|execute|bootstrap|migration|preflight|notify> [参数]")
 }

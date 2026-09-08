@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/mail"
 	"strconv"
 	"strings"
 
@@ -33,8 +34,13 @@ type AlertManager interface {
 }
 
 type TeamManager interface {
-	List(context.Context) ([]auth.Member, error)
-	UpdateRoles(context.Context, string, []auth.RoleName) (auth.Member, error)
+	List(context.Context, auth.MemberStatus) ([]auth.Member, error)
+	Create(context.Context, string, auth.CreateMemberInput) (auth.CreateMemberResult, error)
+	UpdateRoles(context.Context, string, string, []auth.RoleName) (auth.Member, error)
+	SetEnabled(context.Context, string, string, bool) (auth.Member, error)
+	Remove(context.Context, string, string) (auth.Member, error)
+	Restore(context.Context, string, string) (auth.Member, error)
+	ResetPassword(context.Context, string, string) (auth.ResetPasswordResult, error)
 }
 
 type CredentialManager interface {
@@ -55,7 +61,13 @@ func NewHandler(services Services) http.Handler {
 	router.Handle("GET /api/secrets", auth.Require(auth.PermissionRead)(listSecrets(services.Secrets)))
 	router.Handle("POST /api/secrets", auth.Require(auth.PermissionAdmin)(createSecret(services.Secrets, services.Audits)))
 	router.Handle("GET /api/members", auth.Require(auth.PermissionRead)(listMembers(services.Team)))
-	router.Handle("PUT /api/members/{id}/roles", auth.Require(auth.PermissionAdmin)(updateMemberRoles(services.Team, services.Audits)))
+	router.Handle("POST /api/members", auth.Require(auth.PermissionAdmin)(createMember(services.Team)))
+	router.Handle("PUT /api/members/{id}/roles", auth.Require(auth.PermissionAdmin)(updateMemberRoles(services.Team)))
+	router.Handle("POST /api/members/{id}/enable", auth.Require(auth.PermissionAdmin)(setMemberEnabled(services.Team, true)))
+	router.Handle("POST /api/members/{id}/disable", auth.Require(auth.PermissionAdmin)(setMemberEnabled(services.Team, false)))
+	router.Handle("DELETE /api/members/{id}", auth.Require(auth.PermissionAdmin)(removeMember(services.Team)))
+	router.Handle("POST /api/members/{id}/restore", auth.Require(auth.PermissionAdmin)(restoreMember(services.Team)))
+	router.Handle("POST /api/members/{id}/password/reset", auth.Require(auth.PermissionAdmin)(resetMemberPassword(services.Team)))
 	router.Handle("GET /api/audit", auth.Require(auth.PermissionRead)(listAudit(services.Audits)))
 	router.Handle("GET /api/alerts", auth.Require(auth.PermissionRead)(listAlerts(services.Alerts)))
 	router.Handle("POST /api/alerts/{id}/acknowledge", auth.Require(auth.PermissionExecute)(acknowledgeAlert(services.Alerts, services.Audits)))
@@ -117,8 +129,19 @@ func listMembers(manager TeamManager) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "团队服务尚未配置")
 			return
 		}
-		members, err := manager.List(r.Context())
+		status := auth.MemberStatus(r.URL.Query().Get("status"))
+		if status == "" {
+			status = auth.MemberStatusAll
+		}
+		if status != auth.MemberStatusActive && status != auth.MemberStatusDisabled && status != auth.MemberStatusRemoved && status != auth.MemberStatusAll {
+			writeError(w, http.StatusBadRequest, auth.ErrInvalidMember.Error())
+			return
+		}
+		members, err := manager.List(r.Context(), status)
 		if err != nil {
+			if writeMemberError(w, err) {
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "读取团队成员失败")
 			return
 		}
@@ -126,10 +149,38 @@ func listMembers(manager TeamManager) http.HandlerFunc {
 	}
 }
 
-func updateMemberRoles(manager TeamManager, audits AuditManager) http.HandlerFunc {
+func createMember(manager TeamManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if manager == nil {
 			writeError(w, http.StatusServiceUnavailable, "团队服务尚未配置")
+			return
+		}
+		var request auth.CreateMemberInput
+		if err := decodeJSON(w, r, &request); err != nil || !validCreateMemberInput(request) {
+			writeError(w, http.StatusBadRequest, auth.ErrInvalidMember.Error())
+			return
+		}
+		result, err := manager.Create(r.Context(), memberActorID(r), request)
+		if err != nil {
+			if writeMemberError(w, err) {
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "创建成员失败")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusCreated, result)
+	}
+}
+
+func updateMemberRoles(manager TeamManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if manager == nil {
+			writeError(w, http.StatusServiceUnavailable, "团队服务尚未配置")
+			return
+		}
+		targetID, ok := memberTargetID(w, r)
+		if !ok {
 			return
 		}
 		var request struct {
@@ -139,26 +190,138 @@ func updateMemberRoles(manager TeamManager, audits AuditManager) http.HandlerFun
 			writeError(w, http.StatusBadRequest, auth.ErrInvalidRoles.Error())
 			return
 		}
-		member, err := manager.UpdateRoles(r.Context(), r.PathValue("id"), request.Roles)
-		if errors.Is(err, auth.ErrInvalidRoles) {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if errors.Is(err, auth.ErrMemberNotFound) {
-			writeError(w, http.StatusNotFound, err.Error())
-			return
-		}
+		member, err := manager.UpdateRoles(r.Context(), memberActorID(r), targetID, request.Roles)
 		if err != nil {
+			if writeMemberError(w, err) {
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "更新成员角色失败")
-			return
-		}
-		principal, _ := auth.PrincipalFromContext(r.Context())
-		if !recordAudit(r, audits, principal.UserID, "member.roles.update", "user", member.ID, map[string]any{"roles": member.Roles}) {
-			writeError(w, http.StatusInternalServerError, "写入审计日志失败")
 			return
 		}
 		writeJSON(w, http.StatusOK, member)
 	}
+}
+
+func setMemberEnabled(manager TeamManager, enabled bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if manager == nil {
+			writeError(w, http.StatusServiceUnavailable, "团队服务尚未配置")
+			return
+		}
+		targetID, ok := memberTargetID(w, r)
+		if !ok {
+			return
+		}
+		member, err := manager.SetEnabled(r.Context(), memberActorID(r), targetID, enabled)
+		if err != nil {
+			if writeMemberError(w, err) {
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "更新成员状态失败")
+			return
+		}
+		writeJSON(w, http.StatusOK, member)
+	}
+}
+
+func removeMember(manager TeamManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if manager == nil {
+			writeError(w, http.StatusServiceUnavailable, "团队服务尚未配置")
+			return
+		}
+		targetID, ok := memberTargetID(w, r)
+		if !ok {
+			return
+		}
+		if _, err := manager.Remove(r.Context(), memberActorID(r), targetID); err != nil {
+			if writeMemberError(w, err) {
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "移除成员失败")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func restoreMember(manager TeamManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if manager == nil {
+			writeError(w, http.StatusServiceUnavailable, "团队服务尚未配置")
+			return
+		}
+		targetID, ok := memberTargetID(w, r)
+		if !ok {
+			return
+		}
+		member, err := manager.Restore(r.Context(), memberActorID(r), targetID)
+		if err != nil {
+			if writeMemberError(w, err) {
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "恢复成员失败")
+			return
+		}
+		writeJSON(w, http.StatusOK, member)
+	}
+}
+
+func resetMemberPassword(manager TeamManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if manager == nil {
+			writeError(w, http.StatusServiceUnavailable, "团队服务尚未配置")
+			return
+		}
+		targetID, ok := memberTargetID(w, r)
+		if !ok {
+			return
+		}
+		result, err := manager.ResetPassword(r.Context(), memberActorID(r), targetID)
+		if err != nil {
+			if writeMemberError(w, err) {
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "重置成员密码失败")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+func memberActorID(r *http.Request) string {
+	principal, _ := auth.PrincipalFromContext(r.Context())
+	return principal.UserID
+}
+
+func memberTargetID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	targetID, err := auth.NormalizeUserID(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, auth.ErrInvalidMember.Error())
+		return "", false
+	}
+	return targetID, true
+}
+
+func validCreateMemberInput(input auth.CreateMemberInput) bool {
+	email := strings.ToLower(strings.TrimSpace(input.Email))
+	parsed, err := mail.ParseAddress(email)
+	return err == nil && parsed.Address == email && strings.TrimSpace(input.DisplayName) != "" && len(input.Roles) > 0
+}
+
+func writeMemberError(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, auth.ErrInvalidMember), errors.Is(err, auth.ErrInvalidRoles):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, auth.ErrMemberNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, auth.ErrDuplicateEmail), errors.Is(err, auth.ErrMemberStateConflict), errors.Is(err, auth.ErrCannotModifySelf), errors.Is(err, auth.ErrLastAdmin):
+		writeError(w, http.StatusConflict, err.Error())
+	default:
+		return false
+	}
+	return true
 }
 
 func listAudit(manager AuditManager) http.HandlerFunc {

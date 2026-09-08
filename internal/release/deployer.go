@@ -208,7 +208,7 @@ func (deployer *Deployer) resolveTarget(request Request, current StoredRelease) 
 	if target.TargetID != request.TargetID {
 		return StoredRelease{}, fmt.Errorf("%w：目标编号与候选运行编号不一致", ErrInvalidRequest)
 	}
-	if target.Compatibility != current.Compatibility {
+	if target.Compatibility != current.Compatibility && !deployer.Store.MigrationBaselineAllows(current, target) {
 		return StoredRelease{}, ErrIncompatibleRelease
 	}
 	return target, nil
