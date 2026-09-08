@@ -177,7 +177,8 @@ func (host *DockerBootstrapHost) populateVolume(ctx context.Context, volume, sou
 		_, _ = host.runner.Run(context.Background(), "docker", []string{"rm", "--force", helper}, nil)
 	}()
 	if _, err := runSuccessful(ctx, host.runner, "docker", []string{
-		"cp", filepath.Join(source, "."), helper + ":/release",
+		// Join cleans away the dot, which makes Docker nest the source directory.
+		"cp", filepath.Clean(source) + string(os.PathSeparator) + ".", helper + ":/release",
 	}); err != nil {
 		return fmt.Errorf("写入代理卷：%w", err)
 	}

@@ -244,7 +244,12 @@ func runBootstrap(args []string, stderr io.Writer, dependency dependencies) int 
 		return 1
 	}
 	if err := dependency.bootstrap(context.Background()); err != nil {
-		fmt.Fprintln(stderr, "生产基线导入失败")
+		var stageErr *release.BootstrapStageError
+		if errors.As(err, &stageErr) {
+			fmt.Fprintln(stderr, stageErr.Error())
+		} else {
+			fmt.Fprintln(stderr, "生产基线导入失败")
+		}
 		return 1
 	}
 	fmt.Fprintln(stderr, "生产基线导入完成")
