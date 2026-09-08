@@ -31,6 +31,10 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
+      - name: 验证发布代理目录的真实 Docker 复制
+        env:
+          YUNLING_TEST_DOCKER: "1"
+        run: go test ./internal/release -run '^TestBootstrapRealDockerCopiesContentsIntoVolumeRoot$' -count=1 -v
       - name: 运行 Go 测试与竞态检测
         run: go test -race -p=1 ./... -count=1 -v
       - name: 编译五个服务程序

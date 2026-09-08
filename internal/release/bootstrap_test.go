@@ -430,7 +430,15 @@ func (runner *bootstrapVolumeRunner) Run(ctx context.Context, name string, args 
 		from, to := args[1], args[2]
 		if separator := strings.Index(to, ":/release"); separator > 0 {
 			helper := to[:separator]
-			return CommandResult{}, copyDirectoryFiles(strings.TrimSuffix(filepath.Clean(from), string(os.PathSeparator)+"."), runner.volumes[runner.helpers[helper]])
+			destination := runner.volumes[runner.helpers[helper]]
+			// Docker copies the directory itself unless the source ends in /.
+			if !strings.HasSuffix(from, string(os.PathSeparator)+".") {
+				destination = filepath.Join(destination, filepath.Base(filepath.Clean(from)))
+				if err := os.MkdirAll(destination, 0o700); err != nil {
+					return CommandResult{}, err
+				}
+			}
+			return CommandResult{}, copyDirectoryFiles(filepath.Clean(from), destination)
 		}
 		if separator := strings.Index(from, ":/release"); separator > 0 {
 			helper := from[:separator]

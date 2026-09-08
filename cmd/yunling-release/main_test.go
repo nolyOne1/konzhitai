@@ -16,6 +16,18 @@ import (
 	"yunling.local/platform/internal/release"
 )
 
+func TestBootstrapReportsStageWithoutUnderlyingSecrets(t *testing.T) {
+	stderr := new(bytes.Buffer)
+	code := run([]string{"bootstrap"}, strings.NewReader(""), new(bytes.Buffer), stderr, dependencies{
+		bootstrap: func(context.Context) error {
+			return &release.BootstrapStageError{Stage: "校验并发布代理卷", Err: errors.New("password=private-value")}
+		},
+	})
+	if code != 1 || !strings.Contains(stderr.String(), "校验并发布代理卷") || strings.Contains(stderr.String(), "private-value") {
+		t.Fatalf("missing safe stage diagnostic: code=%d output=%q", code, stderr.String())
+	}
+}
+
 func TestExecuteReadsOneStrictRequestAndWritesOneResult(t *testing.T) {
 	request := validCLIRequest()
 	body, err := json.Marshal(request)

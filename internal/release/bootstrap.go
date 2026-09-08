@@ -20,6 +20,15 @@ type BootstrapHost interface {
 	PublishAgentVolume(context.Context, string, func(string) error) error
 }
 
+// BootstrapStageError exposes a fixed operation label without command output.
+type BootstrapStageError struct {
+	Stage string
+	Err   error
+}
+
+func (err *BootstrapStageError) Error() string { return "生产基线导入失败：" + err.Stage }
+func (err *BootstrapStageError) Unwrap() error { return err.Err }
+
 type Bootstrapper struct {
 	RootDir       string
 	ComposeFile   string
@@ -31,7 +40,13 @@ type Bootstrapper struct {
 	Now           func() time.Time
 }
 
-func (bootstrapper *Bootstrapper) Run(ctx context.Context) error {
+func (bootstrapper *Bootstrapper) Run(ctx context.Context) (resultErr error) {
+	stage := "检查初始化依赖与现有基线"
+	defer func() {
+		if resultErr != nil {
+			resultErr = &BootstrapStageError{Stage: stage, Err: resultErr}
+		}
+	}()
 	if ctx == nil || bootstrapper == nil || bootstrapper.RootDir == "" || bootstrapper.ComposeFile == "" ||
 		bootstrapper.OverrideFile == "" || bootstrapper.AgentLockPath == "" || bootstrapper.Store == nil ||
 		bootstrapper.Host == nil || bootstrapper.Locker == nil || bootstrapper.Now == nil {
@@ -73,14 +88,17 @@ func (bootstrapper *Bootstrapper) Run(ctx context.Context) error {
 		return fmt.Errorf("检查 Compose 覆盖：%w", err)
 	}
 
+	stage = "读取代理版本锁"
 	lock, err := LoadAgentLock(bootstrapper.AgentLockPath)
 	if err != nil {
 		return err
 	}
+	stage = "捕获当前容器镜像"
 	images, err := bootstrapper.Host.CaptureAndTagImages(ctx)
 	if err != nil {
 		return fmt.Errorf("捕获当前容器镜像：%w", err)
 	}
+	stage = "复制当前代理发布文件"
 	temporaryRoot, err := os.MkdirTemp(bootstrapper.RootDir, ".bootstrap-agent-")
 	if err != nil {
 		return fmt.Errorf("创建代理基线临时目录：%w", err)
@@ -96,15 +114,18 @@ func (bootstrapper *Bootstrapper) Run(ctx context.Context) error {
 	if err := bootstrapper.Host.CopyAgentRelease(ctx, agentDirectory); err != nil {
 		return fmt.Errorf("复制当前代理发布：%w", err)
 	}
+	stage = "校验当前代理发布文件"
 	if err := VerifyAgentReleaseDir(lock, agentDirectory); err != nil {
 		return err
 	}
+	stage = "校验并发布代理卷"
 	if err := bootstrapper.Host.PublishAgentVolume(ctx, agentDirectory, func(path string) error {
 		return VerifyAgentReleaseDir(lock, path)
 	}); err != nil {
 		return fmt.Errorf("发布代理基线卷：%w", err)
 	}
 
+	stage = "计算迁移与部署配置摘要"
 	migrationDigest, err := MigrationTreeDigest(filepath.Join(bootstrapper.RootDir, "migrations"))
 	if err != nil {
 		return err
@@ -117,6 +138,7 @@ func (bootstrapper *Bootstrapper) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	stage = "保存生产基线"
 	stored, err := bootstrapper.Store.CreateBootstrap(images, Compatibility{
 		MigrationTreeSHA256: migrationDigest, DeploymentContractSHA256: contractDigest,
 		AgentVersion: lock.Version, AgentManifestSHA256: lock.ManifestSHA256,
