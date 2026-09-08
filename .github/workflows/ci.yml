@@ -20,7 +20,8 @@ jobs:
   backend:
     name: 后端测试与构建
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # PR #4 已完成的竞态测试约 28 分钟，需预留集成测试与编译时间。
+    timeout-minutes: 60
     steps:
       - name: 检出代码
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -31,7 +32,7 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
       - name: 运行 Go 测试与竞态检测
-        run: go test -race -p=1 ./... -count=1
+        run: go test -race -p=1 ./... -count=1 -v
       - name: 编译五个服务程序
         env:
           CGO_ENABLED: "0"
