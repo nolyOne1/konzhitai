@@ -24,15 +24,38 @@ export function RunDetailPage() {
 
   useEffect(() => {
     let active = true
-    getRun(id).then((value) => { if (active) setRun(value) }).catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : '读取执行详情失败') })
-    return () => { active = false }
-  }, [id])
-
-  useEffect(() => subscribeRunEvents(id, (event) => {
-    setEvents((items) => items.some((item) => item.id === event.id) ? items : [...items, event])
-    if (event.kind === 'state' && event.state) setRun((current) => current ? { ...current, state: event.state! } : current)
+    let request = 0
+    const seen = new Set<string>()
+    setRun(null)
+    setEvents([])
+    setError('')
     setStreamError('')
-  }, () => setStreamError('实时连接暂时中断，浏览器会自动重连。')), [id])
+    setClearedCount(0)
+    setCleared(false)
+    async function refresh() {
+      const currentRequest = ++request
+      try {
+        const value = await getRun(id)
+        if (active && currentRequest === request) { setRun(value); setError('') }
+      } catch (reason) {
+        if (active && currentRequest === request) setError(reason instanceof Error ? reason.message : '读取执行详情失败')
+      }
+    }
+    void refresh()
+    const unsubscribe = subscribeRunEvents(id, (event) => {
+      if (!active || seen.has(event.id)) return
+      seen.add(event.id)
+      setEvents((items) => [...items, event])
+      // State events do not contain the complete execution context. Reload the
+      // authoritative snapshot, ignoring responses superseded by later events.
+      if (event.kind === 'state' && event.state) {
+        setRun((current) => current ? { ...current, state: event.state! } : current)
+        void refresh()
+      }
+      setStreamError('')
+    }, () => { if (active) setStreamError('实时连接暂时中断，浏览器会自动重连。') })
+    return () => { active = false; unsubscribe() }
+  }, [id])
 
   const stateEvents = useMemo(() => events.filter((event) => event.kind === 'state'), [events])
   const allLogs = useMemo(() => events.filter((event) => event.kind === 'log'), [events])
