@@ -522,7 +522,7 @@ func realDependencies() dependencies {
 	bootstrapper := &release.Bootstrapper{
 		RootDir: productionRoot, ComposeFile: config.ComposeFile, OverrideFile: config.OverrideFile,
 		AgentLockPath: productionRoot + "/deploy/agent/release-lock.json", Store: store,
-		Host:   release.NewDockerBootstrapHost(runner, "yunling-api-1", "yunling_agent_releases"),
+		Host:   release.NewDockerBootstrapHost(runner, "yunling-api-1", "yunling_agent_releases", config),
 		Locker: locker, Now: time.Now,
 	}
 	notifier := release.NewNotifier(http.DefaultClient, time.Now)

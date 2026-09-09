@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,19 +16,29 @@ import (
 var dockerImageIDPattern = regexp.MustCompile(`^sha256:([0-9a-f]{64})$`)
 
 type DockerBootstrapHost struct {
-	runner       CommandRunner
-	apiContainer string
-	agentVolume  string
-	apiImageID   string
+	runner        CommandRunner
+	apiContainer  string
+	agentVolume   string
+	apiImageID    string
+	composeConfig *HostConfig
 }
 
-func NewDockerBootstrapHost(runner CommandRunner, apiContainer, agentVolume string) *DockerBootstrapHost {
-	return &DockerBootstrapHost{runner: runner, apiContainer: apiContainer, agentVolume: agentVolume}
+func NewDockerBootstrapHost(runner CommandRunner, apiContainer, agentVolume string, config ...HostConfig) *DockerBootstrapHost {
+	host := &DockerBootstrapHost{runner: runner, apiContainer: apiContainer, agentVolume: agentVolume}
+	if len(config) == 1 {
+		host.composeConfig = &config[0]
+	}
+	return host
 }
 
 func (host *DockerBootstrapHost) CaptureAndTagImages(ctx context.Context) (ServiceImages, error) {
 	if ctx == nil || host == nil || host.runner == nil {
 		return ServiceImages{}, errors.New("Docker 基线依赖无效")
+	}
+	if host.composeConfig != nil {
+		if err := host.resolveAgentVolume(ctx); err != nil {
+			return ServiceImages{}, err
+		}
 	}
 	containers := []struct {
 		service   string
@@ -84,7 +95,7 @@ func (host *DockerBootstrapHost) CopyAgentRelease(ctx context.Context, destinati
 }
 
 func (host *DockerBootstrapHost) PublishAgentVolume(ctx context.Context, source string, verify func(string) error) error {
-	if ctx == nil || host == nil || host.runner == nil || host.agentVolume != "yunling_agent_releases" ||
+	if ctx == nil || host == nil || host.runner == nil || !dockerVolumeNamePattern.MatchString(host.agentVolume) ||
 		host.apiImageID == "" || source == "" || verify == nil {
 		return errors.New("Docker 代理卷发布参数无效")
 	}
@@ -124,9 +135,13 @@ func (host *DockerBootstrapHost) PublishAgentVolume(ctx context.Context, source 
 	}
 
 	ownershipLabel := "yunling.bootstrap.install=" + token
-	if _, err := runSuccessful(ctx, host.runner, "docker", []string{
-		"volume", "create", "--label", ownershipLabel, host.agentVolume,
-	}); err != nil {
+	createArgs := []string{"volume", "create", "--label", ownershipLabel}
+	if host.composeConfig != nil {
+		createArgs = append(createArgs, "--label", "com.docker.compose.project="+host.composeConfig.ProjectName,
+			"--label", "com.docker.compose.volume=yunling_agent_releases")
+	}
+	createArgs = append(createArgs, host.agentVolume)
+	if _, err := runSuccessful(ctx, host.runner, "docker", createArgs); err != nil {
 		return fmt.Errorf("创建正式代理卷：%w", err)
 	}
 	labelResult, err := runSuccessful(ctx, host.runner, "docker", []string{
@@ -153,7 +168,7 @@ func (host *DockerBootstrapHost) PublishAgentVolume(ctx context.Context, source 
 
 func (host *DockerBootstrapHost) volumeExists(ctx context.Context, volume string) (bool, error) {
 	result, err := runSuccessful(ctx, host.runner, "docker", []string{
-		"volume", "ls", "--quiet", "--filter", "name=^" + volume + "$",
+		"volume", "ls", "--quiet", "--filter", "name=^" + regexp.QuoteMeta(volume) + "$",
 	})
 	if err != nil {
 		return false, fmt.Errorf("检查正式代理卷：%w", err)
@@ -166,6 +181,56 @@ func (host *DockerBootstrapHost) volumeExists(ctx context.Context, volume string
 		return false, fmt.Errorf("%w：Docker 返回了意外卷名称", ErrBootstrapConflict)
 	}
 	return true, nil
+}
+
+var dockerVolumeNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+
+// Resolve the logical Compose volume using the same project and environment as
+// deployment. The generated release override contains images only and may not
+// exist yet during bootstrap, so only the base Compose file is required here.
+func (host *DockerBootstrapHost) resolveAgentVolume(ctx context.Context) error {
+	config := host.composeConfig
+	result, err := runSuccessful(ctx, host.runner, "docker", []string{
+		"compose", "--project-name", config.ProjectName, "--env-file", config.EnvFile,
+		"-f", config.ComposeFile, "config", "--format", "json",
+	})
+	if err != nil {
+		return errors.New("解析代理卷 Compose 配置失败")
+	}
+	var document struct {
+		Services map[string]struct {
+			Volumes []struct {
+				Type     string `json:"type"`
+				Source   string `json:"source"`
+				Target   string `json:"target"`
+				ReadOnly bool   `json:"read_only"`
+			} `json:"volumes"`
+		} `json:"services"`
+		Volumes map[string]struct {
+			Name string `json:"name"`
+		} `json:"volumes"`
+	}
+	if json.Unmarshal(result.Stdout, &document) != nil {
+		return errors.New("代理卷 Compose 配置格式无效")
+	}
+	resolved := ""
+	for _, mount := range document.Services["api"].Volumes {
+		if mount.Target != "/opt/yunling/releases/agent" {
+			continue
+		}
+		if resolved != "" || mount.Type != "volume" || !mount.ReadOnly || mount.Source != "yunling_agent_releases" {
+			return errors.New("API 代理目录必须只读挂载发布卷")
+		}
+		resolved = document.Volumes[mount.Source].Name
+		if !dockerVolumeNamePattern.MatchString(resolved) {
+			return errors.New("Compose 代理卷名称无效")
+		}
+	}
+	if resolved == "" {
+		return errors.New("Compose 未配置 API 代理发布卷")
+	}
+	host.agentVolume = resolved
+	return nil
 }
 
 func (host *DockerBootstrapHost) populateVolume(ctx context.Context, volume, source string, readOnly bool) error {

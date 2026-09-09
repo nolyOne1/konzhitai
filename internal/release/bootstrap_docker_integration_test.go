@@ -64,4 +64,45 @@ func TestBootstrapRealDockerCopiesContentsIntoVolumeRoot(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+
+	// Characterize Compose's project prefix using its real parser, then publish
+	// through the same host implementation and read through a Compose consumer.
+	project := "yunling-compose-test-" + token
+	composeFile := filepath.Join(t.TempDir(), "compose.yml")
+	envFile := filepath.Join(filepath.Dir(composeFile), ".env")
+	compose := "services:\n  api:\n    image: alpine:3.23.3\n    entrypoint: [cat, /opt/yunling/releases/agent/manifest.json]\n    volumes:\n      - yunling_agent_releases:/opt/yunling/releases/agent:ro\nvolumes:\n  yunling_agent_releases:\n"
+	if err := os.WriteFile(composeFile, []byte(compose), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envFile, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	composeHost := NewDockerBootstrapHost(NewCommandRunner(), "", "yunling_agent_releases", HostConfig{
+		ProjectName: project, EnvFile: envFile, ComposeFile: composeFile,
+	})
+	if err := composeHost.resolveAgentVolume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	wantVolume := project + "_yunling_agent_releases"
+	if composeHost.agentVolume != wantVolume {
+		t.Fatalf("resolved %q, want %q", composeHost.agentVolume, wantVolume)
+	}
+	composeHost.apiImageID = "alpine:3.23.3"
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		if output, err := exec.CommandContext(cleanupCtx, "docker", "compose", "-p", project, "--env-file", envFile, "-f", composeFile, "down", "--volumes").CombinedOutput(); err != nil {
+			t.Errorf("cleanup test Compose project: %v: %s", err, output)
+		}
+	})
+	if err := composeHost.PublishAgentVolume(ctx, source, func(root string) error {
+		_, err := os.ReadFile(filepath.Join(root, "manifest.json"))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.CommandContext(ctx, "docker", "compose", "-p", project, "--env-file", envFile, "-f", composeFile, "run", "--rm", "--no-deps", "-T", "api").Output()
+	if err != nil || string(output) != "fixture" {
+		t.Fatalf("Compose API cannot read published manifest: %q %v", output, err)
+	}
 }
