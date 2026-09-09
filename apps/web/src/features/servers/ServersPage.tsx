@@ -138,7 +138,7 @@ export function ServersPage() {
                     <td data-label="代理版本"><div className="agent-version-cell"><strong>{server.agentVersion || '未上报'}</strong><ServerVersionStatus server={server} recommendedVersion={recommendedVersion} /></div></td>
                     <td data-label="CPU"><ResourceValue value={`${formatNumber(server.cpuUsagePercent)}%`} percent={server.cpuUsagePercent} /></td>
                     <td data-label="可用内存"><ResourceValue value={formatBytes(server.memoryAvailableBytes)} percent={percentage(server.memoryTotalBytes - server.memoryAvailableBytes, server.memoryTotalBytes)} /></td>
-                    <td data-label="运行任务"><strong>{server.runningTasks}</strong><span className="cell-muted"> / 上限待配置</span></td>
+                    <td data-label="运行任务"><strong>{server.runningTasks}</strong><span className="cell-muted"> 个</span></td>
                     <td data-label="标签"><div className="tag-list">{Object.entries(server.labels).map(([key, value]) => <span key={key}>{key}：{value}</span>)}</div></td>
                     <td data-label="操作"><div className="row-actions"><button type="button" disabled={pendingID === server.id || !server.enabled} onClick={() => void saveServer(server, { draining: !server.draining })}>{server.draining ? '取消排空' : '排空'}</button><button type="button" className={server.enabled ? 'danger-text' : ''} disabled={pendingID === server.id} onClick={() => void saveServer(server, { enabled: !server.enabled })}>{server.enabled ? '停用' : '启用'}</button></div></td>
                   </tr>

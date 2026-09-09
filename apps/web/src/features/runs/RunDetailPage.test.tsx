@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -16,6 +16,34 @@ const run = {
 }
 
 describe('执行记录与实时日志', () => {
+  it('旧详情请求晚返回时不覆盖已完成结果', async () => {
+    const source = installEventSource()
+    let resolveOld!: (value: ReturnType<typeof response>) => void
+    const old = new Promise<ReturnType<typeof response>>((resolve) => { resolveOld = resolve })
+    vi.stubGlobal('fetch', vi.fn().mockReturnValueOnce(old)
+      .mockResolvedValue(response({ ...run, state: 'succeeded', exitCode: 0, finishedAt: '2026-08-28T08:00:09Z' })))
+    render(<MemoryRouter initialEntries={['/runs/run-1']}><Routes><Route path="/runs/:id" element={<RunDetailPage />} /></Routes></MemoryRouter>)
+    act(() => source.emit('state', { id: 'done', kind: 'state', state: 'succeeded', sequence: 4, occurredAt: '2026-08-28T08:00:09Z' }))
+    expect(await screen.findByText('退出码 0')).toBeVisible()
+    await act(async () => { resolveOld(response({ ...run, state: 'queued', serverId: '', serverName: '' })); await old })
+    expect(screen.getByText('退出码 0')).toBeVisible()
+    expect(screen.getByText('京东云-华北-01')).toBeVisible()
+    expect(screen.queryByText('等待自动分配')).not.toBeInTheDocument()
+  })
+
+  it('完成事件后自动刷新服务器和退出码，不需要手动刷新页面', async () => {
+    const source = installEventSource()
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(response({ ...run, state: 'queued', serverId: '', serverName: '' }))
+      .mockResolvedValue(response({ ...run, state: 'succeeded', exitCode: 0, finishedAt: '2026-08-28T08:00:09Z' })))
+    render(<MemoryRouter initialEntries={['/runs/run-1']}><Routes><Route path="/runs/:id" element={<RunDetailPage />} /></Routes></MemoryRouter>)
+    expect(await screen.findByText('等待自动分配')).toBeVisible()
+    act(() => source.emit('state', { id: 'done', kind: 'state', state: 'succeeded', sequence: 4, occurredAt: '2026-08-28T08:00:09Z' }))
+    expect(await screen.findByText('退出码 0')).toBeVisible()
+    expect(screen.getByText('京东云-华北-01')).toBeVisible()
+    expect(screen.queryByText('任务尚未结束')).not.toBeInTheDocument()
+  })
+
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
