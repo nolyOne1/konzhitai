@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -369,8 +370,14 @@ func (runner *bootstrapVolumeRunner) Run(ctx context.Context, name string, args 
 	case "volume":
 		switch args[1] {
 		case "ls":
-			if _, exists := runner.volumes["yunling_agent_releases"]; exists {
-				return CommandResult{Stdout: []byte("yunling_agent_releases\n")}, nil
+			pattern, err := regexp.Compile(strings.TrimPrefix(args[len(args)-1], "name="))
+			if err != nil {
+				return CommandResult{}, err
+			}
+			for volume := range runner.volumes {
+				if pattern.MatchString(volume) {
+					return CommandResult{Stdout: []byte(volume + "\n")}, nil
+				}
 			}
 			return CommandResult{}, nil
 		case "create":

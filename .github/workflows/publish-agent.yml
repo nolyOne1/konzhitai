@@ -1,0 +1,76 @@
+name: 云令代理版本
+
+"on":
+  workflow_run:
+    workflows: ["云令 CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.repository.id == github.repository_id
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AGENT_VERSION: 0.2.0
+      GOTOOLCHAIN: local
+    steps:
+      - name: 检出通过 CI 的精确提交
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - name: 安装 Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: 验证代理与安装器
+        run: |
+          go test ./cmd/agent -count=1
+          bash deploy/agent/install_test.sh
+          sh deploy/agent/package_test.sh
+      - name: 构建并校验独立双架构代理包
+        run: |
+          release_dir="$RUNNER_TEMP/agent-release"
+          mkdir -p "$release_dir"
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags="-s -w -X main.agentVersion=${AGENT_VERSION}" \
+              -o "$RUNNER_TEMP/yunling-agent-linux-$arch" ./cmd/agent
+          done
+          test "$("$RUNNER_TEMP/yunling-agent-linux-amd64" version)" = "$AGENT_VERSION"
+          file "$RUNNER_TEMP/yunling-agent-linux-amd64" | grep -F 'x86-64'
+          file "$RUNNER_TEMP/yunling-agent-linux-arm64" | grep -F 'ARM aarch64'
+          sh deploy/agent/package.sh "$AGENT_VERSION" \
+            "$RUNNER_TEMP/yunling-agent-linux-amd64" \
+            "$RUNNER_TEMP/yunling-agent-linux-arm64" "$release_dir"
+          for arch in amd64 arm64; do
+            archive="$release_dir/yunling-agent-${AGENT_VERSION}-linux-${arch}.tar.gz"
+            expected=$(jq -r --arg arch "$arch" '.artifacts[] | select(.arch == $arch) | .sha256' "$release_dir/manifest.json")
+            test "$(sha256sum "$archive" | cut -d ' ' -f 1)" = "$expected"
+            tar -xOf "$archive" agent-version | grep -Fx "$AGENT_VERSION"
+            tar -tzf "$archive" | grep -Fx 'yunling-agent-upgrade@.service'
+          done
+          jq -n --arg sha "$(git rev-parse HEAD)" --arg version "$AGENT_VERSION" \
+            --arg run "$GITHUB_RUN_ID" \
+            '{source_sha:$sha,version:$version,workflow_run_id:$run}' > "$release_dir/build-info.json"
+          cd "$release_dir"
+          sha256sum manifest.json build-info.json *.tar.gz > SHA256SUMS
+      - name: 保存代理候选（不导入生产、不升级节点）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: yunling-agent-0.2.0-${{ github.event.workflow_run.head_sha }}
+          path: ${{ runner.temp }}/agent-release/
+          if-no-files-found: error
+          retention-days: 30

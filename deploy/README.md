@@ -133,6 +133,16 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml run --rm --no
 
 ### 旧代理的一次性基线升级
 
+`云令代理版本` 工作流在 main 提交通过 CI 后构建独立的 0.2.0 双架构候选。
+产物名称包含来源提交，包含 `manifest.json`、两个归档、`build-info.json` 和
+`SHA256SUMS`。它不会修改 `deploy/agent/release-lock.json`、自动导入生产或升级节点。
+导入前核对来源提交与 CI、校验 SHA256SUMS；仅将清单和对应的两个归档放入导入目录，
+再使用上面的导入命令。版本不可覆盖：相同版本已经导入后，应复用原产物；代码变化需新版本号。
+保留 0.1.0 版本与旧节点身份，待 0.2.0 安装器及单节点验收通过后再推广。
+
+bootstrap 从 Compose 解析后的 API 只读代理卷挂载确定实际卷名，不再假定逻辑键就是
+Docker 卷名。已完成 bootstrap 的生产环境不应重复执行；已有不匹配内容的卷仍会拒绝覆盖。
+
 没有 `self_upgrade_v1` 能力的旧节点只能盘点，不能加入控制台升级计划。先在该节点按受控变更窗口运行新版本归档内的 `install.sh`，完成后检查 `yunling-agent.service` 已重新连接、控制台显示正确的 Linux 架构和“支持控制台升级”。这一步只需执行一次；之后的版本升级不再需要 SSH。
 
 ### 控制台分批升级
