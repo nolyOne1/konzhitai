@@ -43,6 +43,9 @@ func SSHArguments(host, identityFile, knownHostsFile string) ([]string, error) {
 	return []string{
 		"-i", identityFile,
 		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=30",
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=8",
 		"-o", "IdentitiesOnly=yes",
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=" + knownHostsFile,
