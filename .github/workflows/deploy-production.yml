@@ -224,10 +224,14 @@ jobs:
             set -e
             if [[ "$ssh_status" -ne 0 ]]; then
               deploy_exit="$ssh_status"
+              echo '::warning::生产远程连接非正常结束，服务器操作可能已完成。请核对 releases/current.json 与 audit.jsonl，勿直接重复部署。'
+              echo '生产远程连接非正常结束：服务器结果待核对，勿直接重复部署。请核对 releases/current.json 与 audit.jsonl。' >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
           if [[ ! -f result.json ]] || [[ "$(wc -c < result.json)" -gt 65536 ]] || ! ./yunling-release result validate --input result.json; then
             deploy_exit=1
+            echo '::warning::未收到有效生产结果，不能据此判定服务器部署失败。请先核对服务器发布记录，勿直接重复部署。'
+            echo '未收到有效生产结果：请先核对服务器发布记录，勿直接重复部署。' >> "$GITHUB_STEP_SUMMARY"
           fi
           printf '%s\n' "$deploy_exit" > "$RUNNER_TEMP/deploy-exit-code"
 
