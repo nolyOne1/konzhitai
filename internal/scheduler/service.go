@@ -132,6 +132,17 @@ func (s *Service) HandleEvent(ctx context.Context, event Event) error {
 }
 
 func (s *Service) Scan(ctx context.Context) error {
+	if source, ok := s.runs.(ReleasedLeaseSource); ok {
+		leases, err := source.ListReleasedLeases(ctx, s.now())
+		if err != nil {
+			return fmt.Errorf("读取已释放资源租约：%w", err)
+		}
+		for _, lease := range leases {
+			if err := s.leases.Release(ctx, lease); err != nil {
+				return fmt.Errorf("清理已释放资源租约：%w", err)
+			}
+		}
+	}
 	if err := s.restoreActiveLeases(ctx); err != nil {
 		return err
 	}
