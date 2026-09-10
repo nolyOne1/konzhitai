@@ -60,6 +60,26 @@ func (s *PostgresStore) CountActive(ctx context.Context, definitionID string) (i
 	return count, nil
 }
 
+// Repeated cleanup is intentional: a Redis outage must not lose the durable
+// release. Expired reservations are also reclaimed by TryReserve's Lua script.
+func (s *PostgresStore) ListReleasedLeases(ctx context.Context, now time.Time) ([]Lease, error) {
+	rows, err := s.db.Query(ctx, `SELECT id, task_run_id, server_id FROM resource_leases
+		WHERE released_at IS NOT NULL AND expires_at > $1`, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var leases []Lease
+	for rows.Next() {
+		var lease Lease
+		if err := rows.Scan(&lease.ID, &lease.RunID, &lease.ServerID); err != nil {
+			return nil, err
+		}
+		leases = append(leases, lease)
+	}
+	return leases, rows.Err()
+}
+
 func (s *PostgresStore) ListActiveLeases(ctx context.Context, now time.Time) ([]Lease, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT lease.id, lease.task_run_id, lease.server_id,

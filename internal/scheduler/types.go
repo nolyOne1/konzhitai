@@ -105,3 +105,7 @@ type ActiveLeaseSource interface {
 type LeaseRestorer interface {
 	Restore(context.Context, Lease, time.Time) error
 }
+
+type ReleasedLeaseSource interface {
+	ListReleasedLeases(context.Context, time.Time) ([]Lease, error)
+}
