@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -64,6 +65,9 @@ func TestRunSystemdSpecExecutesArgumentArrayWithoutShell(t *testing.T) {
 
 func TestBuildSystemdCommandUsesFixedRunnerTemplateWithoutShell(t *testing.T) {
 	workDir := t.TempDir()
+	if err := writeSystemdExitCode(workDir, 0); err != nil {
+		t.Fatal(err)
+	}
 	script := exec.Command("python3", "/cache/script.py", "--name", "a; rm -rf /")
 	script.Path = "python3"
 	command, err := buildSystemdCommand(LaunchSpec{
@@ -80,6 +84,9 @@ func TestBuildSystemdCommandUsesFixedRunnerTemplateWithoutShell(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("构建 systemd 模板单元命令：%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, systemdResultFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("旧任务结果未清除：%v", err)
 	}
 	want := []string{
 		"systemctl",
@@ -119,6 +126,9 @@ func TestBuildSystemdKillCommandTargetsEveryProcessInUnit(t *testing.T) {
 
 func TestSystemdProcessStreamsLogsBeforeTaskFinishes(t *testing.T) {
 	directory := t.TempDir()
+	if err := writeSystemdExitCode(directory, 0); err != nil {
+		t.Fatal(err)
+	}
 	specPath := filepath.Join(directory, systemdSpecFileName)
 	stdoutPath := filepath.Join(directory, systemdStdoutFileName)
 	stderrPath := filepath.Join(directory, systemdStderrFileName)
@@ -198,7 +208,7 @@ func TestSystemdProcessReportsBoundedSystemctlDiagnostic(t *testing.T) {
 	}
 
 	exitCode, err := process.Wait()
-	if exitCode != 4 || err == nil {
+	if exitCode != -1 || err == nil {
 		t.Fatalf("systemctl 失败结果不完整：exit=%d err=%v", exitCode, err)
 	}
 	if !strings.Contains(err.Error(), "systemctl：Failed to start yunling-run@run-1.service: Access denied.") {
@@ -210,6 +220,20 @@ func TestSystemdProcessReportsBoundedSystemctlDiagnostic(t *testing.T) {
 }
 
 type blockingSystemdTestProcess struct{ done chan struct{} }
+
+func TestSystemdStoppedProcessDoesNotReportControlCommandSuccess(t *testing.T) {
+	for _, controlCode := range []int{0, 1} {
+		t.Run(fmt.Sprint(controlCode), func(t *testing.T) {
+			directory := t.TempDir()
+			p := &systemdProcess{Process: instantSystemdTestProcess{exitCode: controlCode}, specPath: filepath.Join(directory, "spec")}
+			p.markStopped()
+			code, err := p.Wait()
+			if err != nil || code != -1 {
+				t.Fatalf("stopped workload must not use systemctl status: code=%d err=%v", code, err)
+			}
+		})
+	}
+}
 
 func (p *blockingSystemdTestProcess) Wait() (int, error) { <-p.done; return 0, nil }
 func (p *blockingSystemdTestProcess) Terminate() error   { return nil }
