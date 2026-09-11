@@ -112,7 +112,7 @@ export function RunDetailPage() {
         <article className="panel run-context-card"><span>执行服务器</span><strong>{run.serverName || '等待自动分配'}</strong><small>{run.serverId || '暂无分配服务器'}</small></article>
         <article className="panel run-context-card"><span>脚本版本</span><strong>{run.scriptName}</strong><small>版本 {run.versionNumber} · {run.requiredRuntime}</small></article>
         <article className="panel run-context-card"><span>资源申请</span><strong>{run.resources.cpuMillicores} 毫核 · {formatBytes(run.resources.memoryBytes)}</strong><small>磁盘 {formatBytes(run.resources.diskBytes)} · 优先级 {run.priority}</small></article>
-        <article className="panel run-context-card"><span>执行结果</span><strong>{run.exitCode === undefined ? '尚无退出码' : `退出码 ${run.exitCode}`}</strong><small>{run.finishedAt ? formatDateTime(run.finishedAt) : '任务尚未结束'}</small></article>
+        <article className="panel run-context-card"><span>执行结果</span><strong>{run.state === 'timed_out' ? '执行超时' : run.state === 'cancelled' ? '任务已取消' : run.exitCode === undefined ? '尚无退出码' : run.exitCode === -1 ? '未取得正常退出码' : `退出码 ${run.exitCode}`}</strong><small>{run.finishedAt ? formatDateTime(run.finishedAt) : '任务尚未结束'}</small></article>
       </section>
       <div className="run-detail-grid">
         <section className="panel run-timeline" aria-labelledby="timeline-title"><header className="panel-header"><h2 id="timeline-title">状态时间线</h2><span>{stateEvents.length} 条事件</span></header><ol>{(stateEvents.length ? stateEvents : baseTimeline(run)).map((event) => <li key={event.id}><i aria-hidden="true" /><div><strong>{event.message}</strong><span>{formatDateTime(event.occurredAt)}</span></div></li>)}</ol></section>

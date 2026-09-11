@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 
 const (
 	systemdSpecFileName   = "systemd-run-spec.json"
+	systemdResultFileName = "systemd-exit-code"
 	systemdStdoutFileName = "stdout.log"
 	systemdStderrFileName = "stderr.log"
 	systemctlPath         = "/usr/bin/systemctl"
@@ -73,6 +75,8 @@ type systemdProcess struct {
 	stdoutPath, stderrPath string
 	stdout, stderr         io.Writer
 	controlOutput          *boundedBuffer
+	stopMu                 sync.Mutex
+	stopRequested          bool
 }
 
 func (p *systemdProcess) Wait() (int, error) {
@@ -102,6 +106,22 @@ func (p *systemdProcess) Wait() (int, error) {
 			}
 			_ = os.Remove(p.stdoutPath)
 			_ = os.Remove(p.stderrPath)
+			p.stopMu.Lock()
+			stopped := p.stopRequested
+			p.stopMu.Unlock()
+			if stopped {
+				// This is systemctl's status, not the killed workload's exit code.
+				result.exitCode = -1
+			} else {
+				code, readErr := readSystemdExitCode(filepath.Join(filepath.Dir(p.specPath), systemdResultFileName))
+				if code == 0 && result.err != nil {
+					// A control failure must not be disguised as successful execution.
+					code = -1
+				}
+				result.exitCode = code
+				result.err = errors.Join(result.err, readErr)
+			}
+			_ = os.Remove(filepath.Join(filepath.Dir(p.specPath), systemdResultFileName))
 			return result.exitCode, errors.Join(result.err, streamErr, removeErr)
 		case <-ticker.C:
 			streamErr = errors.Join(streamErr, stdoutTail.copyAvailable(), stderrTail.copyAvailable())
@@ -141,6 +161,7 @@ func (buffer *boundedBuffer) String() string {
 }
 
 func (p *systemdProcess) Terminate() error {
+	p.markStopped()
 	if err := buildSystemdKillCommand(p.unitName, "TERM").Run(); err != nil {
 		return errors.Join(err, p.Process.Terminate())
 	}
@@ -148,15 +169,26 @@ func (p *systemdProcess) Terminate() error {
 }
 
 func (p *systemdProcess) KillGroup() error {
+	p.markStopped()
 	if err := buildSystemdKillCommand(p.unitName, "KILL").Run(); err != nil {
 		return errors.Join(err, p.Process.KillGroup())
 	}
 	return nil
 }
 
+func (p *systemdProcess) markStopped() {
+	p.stopMu.Lock()
+	p.stopRequested = true
+	p.stopMu.Unlock()
+}
+
 func buildSystemdCommand(spec LaunchSpec) (*exec.Cmd, error) {
 	if spec.Command == nil || len(spec.Command.Args) == 0 || spec.WorkingDirectory == "" || spec.Timeout <= 0 {
 		return nil, fmt.Errorf("%w：systemd 执行规格不完整", ErrInvalidAssignment)
+	}
+	// Never accept a result left by an earlier attempt in this working directory.
+	if err := os.Remove(filepath.Join(spec.WorkingDirectory, systemdResultFileName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("清除旧执行结果：%w", err)
 	}
 	stored := systemdRunSpec{
 		Arguments:        append([]string(nil), spec.Command.Args...),
@@ -232,7 +264,14 @@ func buildSystemdKillCommand(unitName, signal string) *exec.Cmd {
 }
 
 // RunSystemdSpec 只由 root 管理的 yunling-run@.service 模板调用；模板负责固定执行账户与安全边界。
-func RunSystemdSpec(path string) (int, error) {
+func RunSystemdSpec(path string) (exitCode int, runErr error) {
+	exitCode = -1
+	defer func() {
+		if err := writeSystemdExitCode(filepath.Dir(path), exitCode); err != nil {
+			exitCode = -1
+			runErr = errors.Join(runErr, fmt.Errorf("保存任务退出结果：%w", err))
+		}
+	}()
 	file, err := os.Open(path)
 	if err != nil {
 		return -1, fmt.Errorf("打开任务执行规格：%w", err)
@@ -268,4 +307,44 @@ func RunSystemdSpec(path string) (int, error) {
 		return -1, err
 	}
 	return 0, nil
+}
+
+// Publish a complete, bounded result without following a pre-existing result symlink.
+func writeSystemdExitCode(directory string, code int) error {
+	file, err := os.CreateTemp(directory, ".exit-code-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	// The agent reads via its yunling-runner supplementary group.
+	if err := file.Chmod(0o640); err != nil {
+		_ = file.Close()
+		return err
+	}
+	_, writeErr := fmt.Fprintf(file, "%d\n", code)
+	closeErr := file.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), filepath.Join(directory, systemdResultFileName))
+}
+
+func readSystemdExitCode(path string) (int, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return -1, fmt.Errorf("未取得任务真实退出码：%w", err)
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, 17))
+	if err != nil {
+		return -1, err
+	}
+	code, parseErr := strconv.Atoi(strings.TrimSpace(string(body)))
+	if parseErr != nil || len(body) > 16 || code < -1 || code > 255 {
+		return -1, errors.New("任务退出结果格式无效")
+	}
+	if code == -1 {
+		return -1, errors.New("任务未正常退出，未取得正常退出码")
+	}
+	return code, nil
 }

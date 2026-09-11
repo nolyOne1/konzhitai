@@ -16,6 +16,13 @@ const run = {
 }
 
 describe('执行记录与实时日志', () => {
+  it.each(['timed_out', 'cancelled'])('终止状态 %s 不将历史退出码 0 展示为成功', async (state) => {
+    installEventSource()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ ...run, state, exitCode: 0, finishedAt: '2026-08-28T08:00:09Z' })))
+    render(<MemoryRouter initialEntries={['/runs/run-1']}><Routes><Route path="/runs/:id" element={<RunDetailPage />} /></Routes></MemoryRouter>)
+    await waitFor(() => expect(screen.getAllByText(state === 'timed_out' ? '执行超时' : '任务已取消').length).toBeGreaterThan(0))
+    expect(screen.queryByText('退出码 0')).not.toBeInTheDocument()
+  })
   it('旧详情请求晚返回时不覆盖已完成结果', async () => {
     const source = installEventSource()
     let resolveOld!: (value: ReturnType<typeof response>) => void
