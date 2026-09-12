@@ -117,6 +117,13 @@ jobs:
         run: bash deploy/agent/install_test.sh
       - name: 验证代理发布包约束
         run: sh deploy/agent/package_test.sh
+      - name: 验证升级状态跨用户权限与回滚恢复
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go test -c -o "$RUNNER_TEMP/agentupdate-permissions.test" ./internal/agentupdate
+          "$RUNNER_TEMP/agentupdate-permissions.test" -test.list '^TestStateOwnershipRoot' | grep -q '^TestStateOwnershipRoot'
+          sudo -n env YUNLING_TEST_REQUIRE_ROOT=1 "$RUNNER_TEMP/agentupdate-permissions.test" -test.run '^TestStateOwnershipRoot' -test.count=1 -test.v
       - name: 真实构建并校验双架构发布包
         env:
           AGENT_VERSION: 0.1.0
