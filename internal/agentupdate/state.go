@@ -3,6 +3,7 @@ package agentupdate
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -58,11 +59,7 @@ func saveSpec(root string, spec Spec) error {
 	if err != nil {
 		return err
 	}
-	temporary := filepath.Join(directory, "spec.json.tmp")
-	if err := os.WriteFile(temporary, body, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(temporary, filepath.Join(directory, "spec.json"))
+	return writeStateFile(filepath.Join(directory, "spec.json"), body)
 }
 
 func SaveRuntimeState(root string, state agentprotocol.UpgradeRuntimeState) error {
@@ -76,15 +73,44 @@ func SaveRuntimeState(root string, state agentprotocol.UpgradeRuntimeState) erro
 	if err != nil {
 		return err
 	}
-	temporary := filepath.Join(root, "runtime.json.tmp")
-	if err := os.WriteFile(temporary, body, 0o600); err != nil {
+	return writeStateFile(filepath.Join(root, "runtime.json"), body)
+}
+
+// Both the unprivileged agent and the root upgrade helper replace these files.
+// The owning directory, not the current writer or a legacy root-owned file,
+// determines who must be able to read the new private state after a restart.
+func writeStateFile(path string, body []byte) error {
+	directory := filepath.Dir(path)
+	info, err := os.Lstat(directory)
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(temporary, filepath.Join(root, "runtime.json")); err != nil {
-		_ = os.Remove(temporary)
+	if !info.IsDir() {
+		return fmt.Errorf("升级状态父路径不是普通目录：%s", directory)
+	}
+	file, err := os.CreateTemp(directory, filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	return nil
+	temporary := file.Name()
+	defer os.Remove(temporary)
+	defer file.Close()
+	if _, err := file.Write(body); err != nil {
+		return err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return err
+	}
+	if err := inheritStateOwner(file, info); err != nil {
+		return fmt.Errorf("保留升级状态目录属主失败：%w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporary, path)
 }
 
 func LoadRuntimeState(root string) (*agentprotocol.UpgradeRuntimeState, error) {
