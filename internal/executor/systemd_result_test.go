@@ -5,7 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunSystemdSpecPersistsActualNonzeroExit(t *testing.T) {
@@ -63,6 +65,12 @@ func TestSystemdProcessUsesWorkloadResult(t *testing.T) {
 			code, err := p.Wait()
 			if code != tc.want || (err != nil) != tc.wantErr {
 				t.Fatalf("code=%d err=%v", code, err)
+			}
+			if tc.name == "script failure" {
+				event := (&Runner{now: time.Now}).exitEvent(2, processResult{exitCode: code, err: err})
+				if event.ExitCode != 7 || !strings.Contains(event.Message, "脚本退出码 7") || !strings.Contains(event.Message, "systemctl 控制进程错误") {
+					t.Fatalf("workload and control results confused: %+v", event)
+				}
 			}
 			if _, err := os.Stat(resultPath); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("result not cleaned: %v", err)

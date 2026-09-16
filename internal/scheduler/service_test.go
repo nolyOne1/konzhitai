@@ -207,6 +207,43 @@ func (r *memoryRuns) mustGet(id string) task.Run {
 
 type staticServers struct{ items []server.Snapshot }
 
+type preparingRunStore struct {
+	*memoryRuns
+	ready bool
+}
+
+func (s *preparingRunStore) Assign(ctx context.Context, assignment scheduler.Assignment) (bool, error) {
+	if !s.ready {
+		return false, nil
+	}
+	return s.memoryRuns.Assign(ctx, assignment)
+}
+
+func TestPreparingScriptReleasesReservationAndIsRevisited(t *testing.T) {
+	now := time.Now().UTC()
+	run := schedulableRun("run-preparing", 1000, 128<<20, 128<<20)
+	run.QueuedAt, run.MaxWaitSeconds = now, 180
+	runs := &preparingRunStore{memoryRuns: newMemoryRuns(run)}
+	capacity := task.Resources{CPUMillicores: 4000, MemoryBytes: 4 << 30, DiskBytes: 4 << 30}
+	leases := newMemoryLeases(capacity)
+	service := scheduler.NewService(runs, staticServers{items: []server.Snapshot{schedulableServer("server-a")}}, leases, func() time.Time { return now })
+	for range 2 {
+		if err := service.Scan(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if runs.mustGet(run.ID).State != task.Queued || leases.available != capacity {
+			t.Fatal("preparation retained resources or left queue")
+		}
+	}
+	runs.ready = true
+	if err := service.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if runs.mustGet(run.ID).State != task.Assigned || len(runs.assignments) != 1 {
+		t.Fatal("verified script was not revisited")
+	}
+}
+
 func (s staticServers) Snapshots(context.Context, task.Run) ([]server.Snapshot, error) {
 	return s.items, nil
 }
