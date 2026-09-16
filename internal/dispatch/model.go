@@ -20,6 +20,8 @@ type Run struct {
 	Resources       agentprotocol.ResourceLimits
 	Timeout         time.Duration
 	Attempt         int
+	SyncState       agentprotocol.SyncState
+	ScriptVerified  bool
 }
 
 type Store interface {

@@ -140,7 +140,7 @@ func seedDispatchRuns(t *testing.T, db *pgxpool.Pool, now time.Time) {
 		args  []any
 	}{
 		{`INSERT INTO scripts (id,name,runtime) VALUES ($1,'派发测试脚本','bash')`, []any{dispatchScriptID}},
-		{`INSERT INTO script_versions (id,script_id,version,artifact_uri,artifact_sha256,entrypoint,manifest) VALUES ($1,$2,1,'scripts/test.tar.gz',repeat('a',64),'main.sh','{"runtime":"bash","entrypoint":"main.sh"}')`, []any{dispatchVersionID, dispatchScriptID}},
+		{`INSERT INTO script_versions (id,script_id,version,artifact_uri,artifact_sha256,entrypoint,manifest) VALUES ($1,$2,1,'scripts/test.tar.gz',repeat('a',64),'main.sh','{"runtime":"bash","entrypoint":"main.sh","distribution":{"mode":"on_demand"}}')`, []any{dispatchVersionID, dispatchScriptID}},
 		{`INSERT INTO task_definitions (id,name,script_id,version_policy,pinned_version_id,parameters,secret_bindings,required_runtime,cpu_millicores,memory_bytes,disk_bytes,timeout_seconds) VALUES ($1,'派发测试任务',$2,'pinned',$3,'{"日期":"2026-08-29"}','{"访问令牌":"secret-1"}','bash',100,$4,$5,60)`, []any{dispatchDefinitionID, dispatchScriptID, dispatchVersionID, int64(64 << 20), int64(16 << 20)}},
 		{`INSERT INTO servers (id,name,status,runtimes) VALUES ($1,'派发测试节点','online','["bash"]')`, []any{dispatchServerID}},
 		{`INSERT INTO task_runs (id,task_definition_id,script_version_id,assigned_server_id,trigger_type,state,parameters_snapshot,queued_at,assigned_at,execution_token,required_labels,required_runtime,cpu_millicores,memory_bytes,disk_bytes,timeout_seconds) VALUES ($1,$2,$3,$4,'manual','assigned','{"日期":"2026-08-29"}',$5,$5,'token-due','{}','bash',100,$6,$7,60)`, []any{dispatchDueRunID, dispatchDefinitionID, dispatchVersionID, dispatchServerID, now.Add(-time.Minute), int64(64 << 20), int64(16 << 20)}},

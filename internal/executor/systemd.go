@@ -100,6 +100,9 @@ func (p *systemdProcess) Wait() (int, error) {
 					result.err = fmt.Errorf("%w；systemctl：%s", result.err, diagnostic)
 				}
 			}
+			if result.err != nil {
+				result.err = fmt.Errorf("systemctl 控制进程错误：%w", result.err)
+			}
 			removeErr := os.Remove(p.specPath)
 			if errors.Is(removeErr, os.ErrNotExist) {
 				removeErr = nil

@@ -17,7 +17,7 @@ func TestServiceDispatchesCompleteAssignment(t *testing.T) {
 	store := &fakeDispatchStore{runs: []dispatch.Run{{
 		ID: "run-1", ExecutionToken: "token-1", ServerID: "server-1",
 		ScriptID: "script-1", ScriptVersionID: "version-1",
-		Runtime: "bash", Entrypoint: "main.sh",
+		Runtime: "bash", Entrypoint: "main.sh", SyncState: agentprotocol.SyncReady, ScriptVerified: true,
 		Parameters:     map[string]any{"日期": "2026-08-29"},
 		SecretBindings: map[string]string{"访问令牌": "secret-1"},
 		Resources: agentprotocol.ResourceLimits{
@@ -72,6 +72,7 @@ func TestServiceKeepsAssignedRunForConnectionFailure(t *testing.T) {
 	store := &fakeDispatchStore{runs: []dispatch.Run{{
 		ID: "run-1", ExecutionToken: "token-1", ServerID: "server-1",
 		ScriptID: "script-1", ScriptVersionID: "version-1", Runtime: "bash", Entrypoint: "main.sh",
+		SyncState: agentprotocol.SyncReady, ScriptVerified: true,
 	}}}
 	sender := &fakeCommandSender{err: errors.New("拨号失败：secret-value")}
 	failures := &fakeFailureSink{}
@@ -93,6 +94,7 @@ func TestServiceFailsRunWhenSecretCannotResolve(t *testing.T) {
 	store := &fakeDispatchStore{runs: []dispatch.Run{{
 		ID: "run-1", ExecutionToken: "token-1", ServerID: "server-1",
 		ScriptID: "script-1", ScriptVersionID: "version-1", Runtime: "bash", Entrypoint: "main.sh",
+		SyncState: agentprotocol.SyncReady, ScriptVerified: true,
 		SecretBindings: map[string]string{"访问令牌": "secret-1"},
 	}}}
 	sender := &fakeCommandSender{}

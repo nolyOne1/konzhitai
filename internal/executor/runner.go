@@ -323,8 +323,11 @@ func (r *Runner) exitEvent(sequence uint64, result processResult) Event {
 		return Event{Sequence: sequence, Type: EventSucceeded, OccurredAt: r.now().UTC(), Message: "任务执行成功"}
 	}
 	message := "任务执行失败"
+	if result.exitCode >= 0 {
+		message += fmt.Sprintf("：脚本退出码 %d", result.exitCode)
+	}
 	if result.err != nil {
-		message += "：" + result.err.Error()
+		message += "；诊断信息：" + result.err.Error()
 	}
 	return Event{Sequence: sequence, Type: EventFailed, OccurredAt: r.now().UTC(), ExitCode: result.exitCode, Message: message}
 }

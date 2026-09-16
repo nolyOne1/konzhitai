@@ -195,6 +195,34 @@ func (s *PostgresStore) Assign(ctx context.Context, assignment Assignment) (bool
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, definitionID); err != nil {
 		return false, fmt.Errorf("锁定任务并发配额：%w", err)
 	}
+	// Keep cold-cache runs queued until the selected node has verified the exact
+	// pinned version. Queued runs remain cancellable and retain their queue deadline.
+	var versionID string
+	err = tx.QueryRow(ctx, `SELECT script_version_id::text FROM task_runs WHERE id=$1 AND state='queued' FOR UPDATE`, assignment.RunID).Scan(&versionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("锁定待同步运行：%w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO script_syncs (server_id, script_version_id, status, created_at, updated_at)
+		VALUES ($1, $2, 'pending', $3, $3)
+		ON CONFLICT (server_id, script_version_id) DO NOTHING
+	`, assignment.ServerID, versionID, assignment.AssignedAt); err != nil {
+		return false, fmt.Errorf("准备按需脚本同步：%w", err)
+	}
+	var verified bool
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(sync.status='ready' AND sync.artifact_sha256=version.artifact_sha256, false)
+		FROM script_syncs AS sync JOIN script_versions AS version ON version.id=sync.script_version_id
+		WHERE sync.server_id=$1 AND sync.script_version_id=$2
+	`, assignment.ServerID, versionID).Scan(&verified); err != nil {
+		return false, fmt.Errorf("检查按需脚本同步：%w", err)
+	}
+	if !verified {
+		return false, tx.Commit(ctx)
+	}
 	var runID string
 	err = tx.QueryRow(ctx, `
 		UPDATE task_runs AS candidate

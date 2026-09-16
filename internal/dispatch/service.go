@@ -27,7 +27,7 @@ const (
 
 	invalidPayloadMessage    = "任务执行配置无效，无法下发"
 	secretUnavailableMessage = "任务敏感参数不可用，无法下发"
-	transientDispatchMessage  = "目标服务器暂时不可用，任务将自动重试"
+	transientDispatchMessage = "目标服务器暂时不可用，任务将自动重试"
 )
 
 type CommandSender interface {
@@ -98,7 +98,19 @@ func (s *Service) Dispatch(ctx context.Context) error {
 	}
 	var infrastructureErrors []error
 	for _, run := range runs {
-		command, failureMessage, valid := s.executionCommand(ctx, run)
+		var command agentprotocol.ExecutionCommand
+		var failureMessage string
+		valid := false
+		switch {
+		case run.SyncState == agentprotocol.SyncFailed:
+			failureMessage = "任务启动前脚本同步失败，请检查脚本同步记录"
+		case run.SyncState == agentprotocol.SyncReady && !run.ScriptVerified:
+			failureMessage = "任务启动前脚本校验值不一致，已阻止执行"
+		case run.SyncState == agentprotocol.SyncReady && run.ScriptVerified:
+			command, failureMessage, valid = s.executionCommand(ctx, run)
+		default:
+			failureMessage = "任务启动前脚本尚未校验就绪，已阻止执行"
+		}
 		if !valid {
 			if s.failures == nil {
 				infrastructureErrors = append(infrastructureErrors, fmt.Errorf("运行 %s 的失败事件服务不可用", run.ID))
@@ -172,8 +184,8 @@ func (s *Service) executionCommand(ctx context.Context, run Run) (agentprotocol.
 		),
 		Arguments: []string{},
 		Environment: map[string]string{
-			runIDEnvironmentKey:       run.ID,
-			versionEnvironmentKey:     run.ScriptVersionID,
+			runIDEnvironmentKey:      run.ID,
+			versionEnvironmentKey:    run.ScriptVersionID,
 			parametersEnvironmentKey: string(parametersJSON),
 			secretsEnvironmentKey:    string(secretsJSON),
 		},

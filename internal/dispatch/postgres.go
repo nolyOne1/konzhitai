@@ -64,10 +64,13 @@ func (s *PostgresStore) Claim(ctx context.Context, cutoff, now time.Time, limit 
 		       claimed.memory_bytes,
 		       claimed.disk_bytes,
 		       claimed.timeout_seconds,
-		       claimed.dispatch_attempts
+		       claimed.dispatch_attempts,
+		       COALESCE(sync.status, ''),
+		       COALESCE(sync.status = 'ready' AND sync.artifact_sha256 = version.artifact_sha256, false)
 		FROM claimed
 		JOIN task_definitions AS definition ON definition.id=claimed.task_definition_id
 		JOIN script_versions AS version ON version.id=claimed.script_version_id
+		LEFT JOIN script_syncs AS sync ON sync.server_id=claimed.assigned_server_id AND sync.script_version_id=claimed.script_version_id
 		ORDER BY claimed.assigned_at NULLS FIRST, claimed.created_at, claimed.id
 	`, cutoff, limit, now)
 	if err != nil {
@@ -94,6 +97,8 @@ func (s *PostgresStore) Claim(ctx context.Context, cutoff, now time.Time, limit 
 			&run.Resources.DiskBytes,
 			&timeoutSeconds,
 			&run.Attempt,
+			&run.SyncState,
+			&run.ScriptVerified,
 		); err != nil {
 			return nil, fmt.Errorf("解析待派发运行：%w", err)
 		}
