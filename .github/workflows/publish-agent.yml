@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      AGENT_VERSION: 0.2.3
+      AGENT_VERSION: 0.2.4
       GOTOOLCHAIN: local
     steps:
       - name: 检出通过 CI 的精确提交
