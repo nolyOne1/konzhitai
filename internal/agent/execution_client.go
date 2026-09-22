@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"yunling.local/platform/internal/agentprotocol"
@@ -70,6 +71,12 @@ func (c *ExecutionClient) Run(ctx context.Context) error {
 				}
 				events, err := c.runner.Start(ctx, *command.Assignment)
 				if errors.Is(err, executor.ErrRunAlreadyActive) {
+					continue
+				}
+				if errors.Is(err, executor.ErrExecutionUncertain) || errors.Is(err, executor.ErrExecutionTokenMismatch) {
+					// Neither condition proves that the original process has exited.
+					// Do not fabricate a failed event that would release its lease.
+					log.Printf("运行 %s 需要执行对账：%v", command.Assignment.RunID, err)
 					continue
 				}
 				if err != nil {

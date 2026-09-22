@@ -82,7 +82,10 @@ func (s *PostgresRunEventStore) ApplyRunEvent(ctx context.Context, event agentpr
 	if !validAgentTransition(currentState, state) {
 		return false, ErrInvalidRunEvent
 	}
-	payload, _ := json.Marshal(map[string]any{"message": event.Message, "exitCode": event.ExitCode})
+	// Server-owned durable retry intent, committed atomically with the terminal
+	// state. Duplicate/historical terminal replays must not opt old failures in.
+	payload, _ := json.Marshal(map[string]any{"message": event.Message, "exitCode": event.ExitCode,
+		"automaticRetry": !currentState.Terminal() && (state == Failed || state == TimedOut)})
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO run_events (
 			task_run_id, sequence, event_type, state, payload, occurred_at,

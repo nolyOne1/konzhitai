@@ -148,6 +148,36 @@ jobs:
             test "$(wc -c < "$release_dir/$file_name" | tr -d '[:space:]')" = "$byte_size"
           done
 
+  systemd-isolated:
+    name: 隔离 systemd 与重试验收
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: 安装 Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: 验证重试、退避与资源回收
+        run: go test ./internal/task ./internal/scheduler ./internal/store/redis -count=1 -timeout=8m -v
+      - name: 编译真实 systemd 验收程序
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p "$RUNNER_TEMP/yunling-systemd-ci"
+          go build -trimpath -o "$RUNNER_TEMP/yunling-systemd-ci/yunling-agent" ./cmd/agent
+          go test -tags=systemdintegration -c -o "$RUNNER_TEMP/yunling-systemd-ci/executor.test" ./internal/executor
+      - name: 在一次性主机上验收真实执行与重放
+        run: |
+          bash -n deploy/agent/systemd_ci_test.sh
+          sudo -n env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" RUNNER_TEMP="$RUNNER_TEMP" \
+            bash deploy/agent/systemd_ci_test.sh "$RUNNER_TEMP/yunling-systemd-ci"
+
   deployment:
     name: 部署配置与镜像
     runs-on: ubuntu-latest
