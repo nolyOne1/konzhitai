@@ -118,6 +118,25 @@ func assignmentCommand(runID, token string) agentprotocol.ExecutionCommand {
 	}
 }
 
+func TestExecutionClientDoesNotReportUncertainExecutionAsFailed(t *testing.T) {
+	for _, startErr := range []error{executor.ErrExecutionUncertain, executor.ErrExecutionTokenMismatch} {
+		transport := &fakeExecutionTransport{commands: make(chan agentprotocol.ExecutionCommand, 2), events: make(chan agentprotocol.RunEvent, 3)}
+		transport.commands <- assignmentCommand("run-1", "token-1")
+		transport.commands <- assignmentCommand("run-2", "token-2")
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		done := make(chan error, 1)
+		go func() { done <- NewExecutionClient(&failsOnceExecutionRunner{err: startErr}, transport).Run(ctx) }()
+		first, second := receiveRunEvent(t, transport.events), receiveRunEvent(t, transport.events)
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if first.RunID != "run-2" || second.RunID != "run-2" || len(transport.events) != 0 {
+			t.Fatal("uncertain execution emitted a false terminal event")
+		}
+	}
+}
+
 func receiveRunEvent(t *testing.T, events <-chan agentprotocol.RunEvent) agentprotocol.RunEvent {
 	t.Helper()
 	select {

@@ -109,3 +109,7 @@ type LeaseRestorer interface {
 type ReleasedLeaseSource interface {
 	ListReleasedLeases(context.Context, time.Time) ([]Lease, error)
 }
+
+type AutomaticRetrySource interface {
+	RetryFailed(context.Context, time.Time) error
+}

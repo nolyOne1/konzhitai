@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -159,6 +160,11 @@ func (r *Runner) Start(ctx context.Context, assignment agentprotocol.Assignment)
 		}
 		return nil, ErrExecutionTokenMismatch
 	}
+	replayed, found, replayErr := r.replay(assignment)
+	if found {
+		r.mu.Unlock()
+		return replayed, replayErr
+	}
 	r.mu.Unlock()
 	scriptPath, err := r.resolveScriptPath(assignment.ScriptPath)
 	if err != nil {
@@ -194,10 +200,23 @@ func (r *Runner) Start(ctx context.Context, assignment agentprotocol.Assignment)
 		}
 		return nil, ErrExecutionTokenMismatch
 	}
+	replayed, found, replayErr = r.replay(assignment)
+	if found {
+		r.mu.Unlock()
+		return replayed, replayErr
+	}
+	if err := r.claimExecution(assignment); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
 	process, err := r.launcher.Start(ctx, spec)
 	if err != nil {
+		failed := Event{Sequence: 1, Type: EventFailed, OccurredAt: r.now().UTC(), ExitCode: -1, Message: "任务启动失败：启动隔离任务：" + err.Error()}
+		if saveErr := r.saveExecution(assignment, failed); saveErr != nil {
+			log.Printf("保存运行 %s 的启动失败结果：%v", assignment.RunID, saveErr)
+		}
 		r.mu.Unlock()
-		return nil, fmt.Errorf("启动隔离任务：%w", err)
+		return recordedEvents([]Event{failed}), nil
 	}
 	active := &activeRun{
 		token: assignment.ExecutionToken,
@@ -208,8 +227,9 @@ func (r *Runner) Start(ctx context.Context, assignment agentprotocol.Assignment)
 	r.mu.Unlock()
 
 	events := make(chan Event, 2)
-	events <- Event{Sequence: 1, Type: EventStarted, OccurredAt: r.now().UTC(), Message: "任务已开始执行"}
-	go r.supervise(ctx, assignment, process, active, events)
+	started := Event{Sequence: 1, Type: EventStarted, OccurredAt: r.now().UTC(), Message: "任务已开始执行"}
+	events <- started
+	go r.supervise(ctx, assignment, process, active, events, started)
 	return events, nil
 }
 
@@ -258,7 +278,7 @@ func (r *Runner) RunningProcesses() []agentprotocol.RunningProcess {
 	return processes
 }
 
-func (r *Runner) supervise(ctx context.Context, assignment agentprotocol.Assignment, process Process, active *activeRun, events chan<- Event) {
+func (r *Runner) supervise(ctx context.Context, assignment agentprotocol.Assignment, process Process, active *activeRun, events chan<- Event, started Event) {
 	defer func() {
 		r.mu.Lock()
 		if r.active[assignment.RunID] == active {
@@ -276,24 +296,32 @@ func (r *Runner) supervise(ctx context.Context, assignment agentprotocol.Assignm
 	}()
 	timer := time.NewTimer(assignment.Timeout)
 	defer timer.Stop()
+	complete := func(event Event) {
+		if err := r.saveExecution(assignment, started, event); err != nil {
+			// The durable claim is retained, so even a failed result write cannot
+			// permit a second launch. Report the real event to the live transport.
+			log.Printf("保存运行 %s 的终态结果：%v", assignment.RunID, err)
+		}
+		events <- event
+	}
 
 	select {
 	case result := <-finished:
-		events <- r.exitEvent(2, result)
+		complete(r.exitEvent(2, result))
 	case <-timer.C:
 		result, stopErr := r.stopProcess(ctx, process, finished)
 		message := "任务执行超时，已终止整个进程组"
 		if stopErr != nil {
 			message += "：" + stopErr.Error()
 		}
-		events <- Event{Sequence: 2, Type: EventTimedOut, OccurredAt: r.now().UTC(), ExitCode: result.exitCode, Message: message}
+		complete(Event{Sequence: 2, Type: EventTimedOut, OccurredAt: r.now().UTC(), ExitCode: result.exitCode, Message: message})
 	case request := <-active.stop:
 		result, stopErr := r.stopProcess(ctx, process, finished)
-		events <- Event{Sequence: 2, Type: request.typeName, OccurredAt: r.now().UTC(), ExitCode: result.exitCode, Message: "任务已取消"}
+		complete(Event{Sequence: 2, Type: request.typeName, OccurredAt: r.now().UTC(), ExitCode: result.exitCode, Message: "任务已取消"})
 		request.result <- stopErr
 	case <-ctx.Done():
 		result, _ := r.stopProcess(context.Background(), process, finished)
-		events <- Event{Sequence: 2, Type: EventCancelled, OccurredAt: r.now().UTC(), ExitCode: result.exitCode, Message: "代理停止，任务已终止"}
+		complete(Event{Sequence: 2, Type: EventCancelled, OccurredAt: r.now().UTC(), ExitCode: result.exitCode, Message: "代理停止，任务已终止"})
 	}
 }
 

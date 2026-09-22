@@ -52,6 +52,11 @@ func (s *Service) ScheduleOne(ctx context.Context, runID string) (Outcome, error
 		return OutcomeQueued, nil
 	}
 	now := s.now()
+	// Retry queued_at is its eligibility time. Backoff consumes neither a
+	// reservation nor the maximum resource-queue waiting budget.
+	if now.Before(run.QueuedAt) {
+		return OutcomeQueued, nil
+	}
 	if run.MaxWaitSeconds > 0 && !now.Before(run.QueuedAt.Add(time.Duration(run.MaxWaitSeconds)*time.Second)) {
 		expired, err := s.runs.Expire(ctx, run.ID, now)
 		if err != nil {
@@ -132,6 +137,11 @@ func (s *Service) HandleEvent(ctx context.Context, event Event) error {
 }
 
 func (s *Service) Scan(ctx context.Context) error {
+	if source, ok := s.runs.(AutomaticRetrySource); ok {
+		if err := source.RetryFailed(ctx, s.now()); err != nil {
+			return fmt.Errorf("扫描自动重试：%w", err)
+		}
+	}
 	if source, ok := s.runs.(ReleasedLeaseSource); ok {
 		leases, err := source.ListReleasedLeases(ctx, s.now())
 		if err != nil {

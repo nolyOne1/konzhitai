@@ -21,6 +21,10 @@ func NewPostgresStore(db *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{db: db}
 }
 
+func (s *PostgresStore) RetryFailed(ctx context.Context, at time.Time) error {
+	return task.NewPostgresReconcileStore(s.db).RetryFailed(ctx, at)
+}
+
 func (s *PostgresStore) Get(ctx context.Context, runID string) (task.Run, error) {
 	run, err := scanRun(s.db.QueryRow(ctx, runSelect+` WHERE run.id=$1`, runID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -198,7 +202,7 @@ func (s *PostgresStore) Assign(ctx context.Context, assignment Assignment) (bool
 	// Keep cold-cache runs queued until the selected node has verified the exact
 	// pinned version. Queued runs remain cancellable and retain their queue deadline.
 	var versionID string
-	err = tx.QueryRow(ctx, `SELECT script_version_id::text FROM task_runs WHERE id=$1 AND state='queued' FOR UPDATE`, assignment.RunID).Scan(&versionID)
+	err = tx.QueryRow(ctx, `SELECT script_version_id::text FROM task_runs WHERE id=$1 AND state='queued' AND queued_at<=$2 FOR UPDATE`, assignment.RunID, assignment.AssignedAt).Scan(&versionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

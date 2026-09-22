@@ -75,7 +75,7 @@ func (s *PostgresReconcileStore) ReconcileRunning(ctx context.Context, report ag
 		active[process.RunID] = process.ExecutionToken
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT id::text, COALESCE(execution_token,''), state
+		SELECT id::text, COALESCE(execution_token,''), state, process_confirmed_gone
 		FROM task_runs
 		WHERE assigned_server_id=$1 AND state IN ('assigned','syncing','running','unknown')
 		FOR UPDATE
@@ -86,11 +86,12 @@ func (s *PostgresReconcileStore) ReconcileRunning(ctx context.Context, report ag
 	type candidate struct {
 		id, token string
 		state     RunState
+		gone      bool
 	}
 	var candidates []candidate
 	for rows.Next() {
 		var item candidate
-		if err := rows.Scan(&item.id, &item.token, &item.state); err != nil {
+		if err := rows.Scan(&item.id, &item.token, &item.state, &item.gone); err != nil {
 			rows.Close()
 			return err
 		}
@@ -117,6 +118,13 @@ func (s *PostgresReconcileStore) ReconcileRunning(ctx context.Context, report ag
 		if !report.Authoritative {
 			continue
 		}
+		if _, err := tx.Exec(ctx, `UPDATE resource_leases SET released_at=$2 WHERE task_run_id=$1 AND released_at IS NULL`, item.id, at); err != nil {
+			return fmt.Errorf("释放已确认消失进程的租约：%w", err)
+		}
+		// Repeated absence reports must not postpone the retry backoff clock.
+		if item.gone {
+			continue
+		}
 		if _, err := tx.Exec(ctx, `UPDATE task_runs SET state='unknown', process_confirmed_gone=true, updated_at=$2 WHERE id=$1`, item.id, at); err != nil {
 			return fmt.Errorf("确认原任务进程已结束：%w", err)
 		}
@@ -130,11 +138,42 @@ func (s *PostgresReconcileStore) ReconcileRunning(ctx context.Context, report ag
 }
 
 func (s *PostgresReconcileStore) RetryRun(ctx context.Context, runID RunID, at time.Time) (RunID, error) {
+	return s.retryRun(ctx, runID, at, false)
+}
+
+func (s *PostgresReconcileStore) retryRun(ctx context.Context, runID RunID, at time.Time, automatic bool) (RunID, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return "", fmt.Errorf("开始任务重试事务：%w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// Serialize the whole retry lineage, not only one parent row. retry_of
+	// points at the root, so requests for an ancestor and a descendant share
+	// the same lock. Take this before row locks to keep lock ordering stable.
+	var rootID string
+	err = tx.QueryRow(ctx, `SELECT COALESCE(retry_of,id)::text FROM task_runs WHERE id=$1`, runID).Scan(&rootID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrRunNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("读取任务重试链：%w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "task-retry:"+rootID); err != nil {
+		return "", fmt.Errorf("锁定任务重试链：%w", err)
+	}
+	if automatic {
+		// Match SetEnabled's lock order: definition before run. A concurrent
+		// disable-and-cancel then either blocks creation or cancels this child.
+		var enabled bool
+		if err := tx.QueryRow(ctx, `SELECT enabled FROM task_definitions
+			WHERE id=(SELECT task_definition_id FROM task_runs WHERE id=$1)
+			FOR SHARE`, runID).Scan(&enabled); err != nil {
+			return "", err
+		}
+		if !enabled {
+			return "", ErrRunNotRetryable
+		}
+	}
 	var state RunState
 	var idempotent, processGone bool
 	var attempt, maxRetries int
@@ -152,7 +191,34 @@ func (s *PostgresReconcileStore) RetryRun(ctx context.Context, runID RunID, at t
 		(state != Failed && state != TimedOut && state != Cancelled && state != Unknown) {
 		return "", ErrRunNotRetryable
 	}
+	if automatic {
+		var eligible bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM run_events
+			WHERE task_run_id=$1 AND payload @> '{"automaticRetry":true}'::jsonb
+			AND event_type IN ('run.failed','run.timed_out'))
+			AND NOT EXISTS(SELECT 1 FROM run_events WHERE task_run_id=$1 AND event_type='run.cancel_requested')`, runID).Scan(&eligible); err != nil {
+			return "", err
+		}
+		if !eligible || (state != Failed && state != TimedOut) {
+			return "", ErrRunNotRetryable
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE resource_leases SET released_at=$2 WHERE task_run_id=$1 AND released_at IS NULL`, runID, at); err != nil {
+		return "", fmt.Errorf("释放重试前的旧租约：%w", err)
+	}
 	var retryID RunID
+	// Replaying an accepted request returns its existing successor, including
+	// when that successor has already completed. Never fork an older attempt.
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM task_runs WHERE retry_of=$1 AND attempt>$2
+		ORDER BY attempt, created_at, id LIMIT 1
+	`, rootID, attempt).Scan(&retryID)
+	if err == nil {
+		return retryID, tx.Commit(ctx)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("读取已有重试实例：%w", err)
+	}
 	err = tx.QueryRow(ctx, `
 		INSERT INTO task_runs (
 			task_definition_id, script_version_id, requested_by, trigger_type, state,
@@ -162,7 +228,9 @@ func (s *PostgresReconcileStore) RetryRun(ctx context.Context, runID RunID, at t
 			idempotent, required_labels, required_runtime, created_at, updated_at
 		)
 		SELECT task_definition_id, script_version_id, requested_by, 'retry', 'queued',
-		       parameters_snapshot, NULL, $2, attempt+1, COALESCE(retry_of,id),
+		       parameters_snapshot, NULL,
+		       GREATEST($2::timestamptz, COALESCE(finished_at,updated_at) + retry_backoff_seconds * interval '1 second'),
+		       attempt+1, COALESCE(retry_of,id),
 		       priority, cpu_millicores, memory_bytes, disk_bytes, max_concurrency,
 		       timeout_seconds, max_wait_seconds, max_retries, retry_backoff_seconds,
 		       idempotent, required_labels, required_runtime, $2, $2
@@ -179,6 +247,45 @@ func (s *PostgresReconcileStore) RetryRun(ctx context.Context, runID RunID, at t
 		return "", fmt.Errorf("提交任务重试：%w", err)
 	}
 	return retryID, nil
+}
+
+// RetryFailed consumes durable intent recorded with new terminal events. Old
+// failures without this marker are intentionally not replayed on deployment.
+// No in-memory cursor is needed: a successor is the durable acknowledgement.
+func (s *PostgresReconcileStore) RetryFailed(ctx context.Context, at time.Time) error {
+	rows, err := s.db.Query(ctx, `SELECT run.id FROM task_runs AS run
+		JOIN task_definitions AS definition ON definition.id=run.task_definition_id
+		WHERE run.state IN ('failed','timed_out') AND run.idempotent
+		AND run.process_confirmed_gone AND run.attempt<=run.max_retries AND definition.enabled
+		AND EXISTS (SELECT 1 FROM run_events AS event WHERE event.task_run_id=run.id
+		  AND event.event_type IN ('run.failed','run.timed_out') AND event.payload @> '{"automaticRetry":true}'::jsonb)
+		AND NOT EXISTS (SELECT 1 FROM run_events AS event WHERE event.task_run_id=run.id AND event.event_type='run.cancel_requested')
+		AND NOT EXISTS (SELECT 1 FROM task_runs AS child
+		  WHERE child.retry_of=COALESCE(run.retry_of,run.id) AND child.attempt>run.attempt)
+		ORDER BY run.finished_at,run.id LIMIT 100`)
+	if err != nil {
+		return fmt.Errorf("读取自动重试意图：%w", err)
+	}
+	var ids []RunID
+	for rows.Next() {
+		var id RunID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err := s.retryRun(ctx, id, at, true); err != nil && !errors.Is(err, ErrRunNotRetryable) && !errors.Is(err, ErrRunNotFound) {
+			return fmt.Errorf("自动重试 %s：%w", id, err)
+		}
+	}
+	return nil
 }
 
 type runEventExecutor interface {
