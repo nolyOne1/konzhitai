@@ -111,8 +111,9 @@ func main() {
 		log.Fatalf("初始化本地日志缓冲失败：%v", err)
 	}
 	logClient := agent.NewLogClient(spool, sender)
+	executionMode := os.Getenv("YUNLING_EXECUTION_MODE")
 	runner := executor.NewRunner(
-		newAgentLauncher(runtime.GOOS, os.Getenv("YUNLING_EXECUTION_MODE")),
+		newAgentLauncher(runtime.GOOS, executionMode),
 		10*time.Second,
 		executor.WithWorkRoot(filepath.Join(diskPath, "runs")),
 		executor.WithAllowedScriptRoots(filepath.Join(cacheRoot, "scripts")),
@@ -162,8 +163,18 @@ func main() {
 		nil,
 	)
 	upgradeClient := agent.NewUpgradeClient(upgradeManager, sender, time.Now)
+	authoritative := false
+	if runtime.GOOS == "linux" && !strings.EqualFold(strings.TrimSpace(executionMode), "process") {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		var probeErr error
+		authoritative, probeErr = executor.NoActiveSystemdRuns(probeCtx)
+		cancel()
+		if probeErr != nil {
+			log.Printf("无法确认历史任务进程均已结束，保持待确认状态：%v", probeErr)
+		}
+	}
 	if err := sender.SendRunningReport(ctx, agentprotocol.RunningReport{
-		ServerID: credentials.ServerID, ReportedAt: time.Now().UTC(), Authoritative: false, Processes: runner.RunningProcesses(),
+		ServerID: credentials.ServerID, ReportedAt: time.Now().UTC(), Authoritative: authoritative, Processes: runner.RunningProcesses(),
 	}); err != nil {
 		log.Fatalf("上报代理重连状态失败：%v", err)
 	}
