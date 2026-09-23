@@ -38,11 +38,18 @@ func TestCISystemdAcceptanceIsIsolatedAndMandatory(t *testing.T) {
 	requireCIText(t, script, "set -euo pipefail", `"${RUNNER_ENVIRONMENT:-}" == github-hosted`,
 		`"$(cat /proc/1/comm)" == systemd`, `[[ ! -e "$path" && ! -L "$path" ]]`,
 		"list-unit-files --no-legend", "runuser -u yunling-agent -- env -i", "YUNLING_TEST_SYSTEMD=1",
-		"grep -Fx 'TestSystemdIsolatedAcceptance'", "-test.run '^TestSystemdIsolatedAcceptance$'", "-test.timeout=3m")
+		"grep -Fx 'TestSystemdIsolatedAcceptance'", "-test.run '^TestSystemdIsolatedAcceptance$'", "-test.timeout=3m",
+		"'ExecStart='", "'ExecStart=/usr/bin/sleep infinity'", "systemctl start yunling-agent.service")
 	if strings.Index(script, "RUNNER_ENVIRONMENT") > strings.Index(script, "groupadd --system") {
 		t.Fatal("guard must precede mutations")
 	}
-	for _, forbidden := range []string{"rm -rf", "--control-url", "systemctl start yunling-agent", "curl ", "ssh ", "scp "} {
+	override := strings.Index(script, ">/etc/systemd/system/yunling-agent.service.d/ci.conf")
+	reload := strings.Index(script, "systemctl daemon-reload")
+	start := strings.Index(script, "systemctl start yunling-agent.service")
+	if override < 0 || reload < override || start < reload {
+		t.Fatal("dummy parent override and daemon-reload must precede starting the agent service")
+	}
+	for _, forbidden := range []string{"rm -rf", "--control-url", "systemctl enable yunling-agent", "curl ", "ssh ", "scp "} {
 		if strings.Contains(script, forbidden) {
 			t.Errorf("fixture may access production or erase installation: %s", forbidden)
 		}

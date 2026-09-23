@@ -1,6 +1,7 @@
 [Unit]
 Description=云令隔离任务 %i
-After=network-online.target
+After=network-online.target yunling-agent.service
+BindsTo=yunling-agent.service
 CollectMode=inactive-or-failed
 
 [Service]
