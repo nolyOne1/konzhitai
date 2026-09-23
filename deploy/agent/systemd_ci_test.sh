@@ -91,7 +91,13 @@ for attempt in {1..100}; do
 done
 ! systemctl is-active --quiet "$restart_unit"
 [[ ! -e "/proc/$child_pid/exe" ]]
-runuser -u yunling-agent -- env -i PATH=/usr/bin:/bin YUNLING_TEST_SYSTEMD=1 YUNLING_CI_EXPECT_EMPTY=1 \
-  /usr/local/libexec/yunling-systemd-ci.test -test.run '^TestSystemdRecoveryProbe$' -test.count=1 -test.v
+if ! runuser -u yunling-agent -- env -i PATH=/usr/bin:/bin YUNLING_TEST_SYSTEMD=1 \
+  YUNLING_CI_EXPECT_EMPTY=1 YUNLING_CI_WAIT_EMPTY=1 \
+  /usr/local/libexec/yunling-systemd-ci.test -test.run '^TestSystemdRecoveryProbe$' -test.count=1 -test.v; then
+  systemctl list-units --all --no-pager 'yunling-run@*.service' || true
+  systemctl list-jobs --no-pager || true
+  systemctl show "$restart_unit" -p ActiveState -p SubState -p Result || true
+  exit 1
+fi
 # The entire disposable VM is discarded by GitHub after the job; do not add
 # recursive cleanup commands that could make this script dangerous elsewhere.

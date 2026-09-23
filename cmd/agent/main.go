@@ -165,9 +165,9 @@ func main() {
 	upgradeClient := agent.NewUpgradeClient(upgradeManager, sender, time.Now)
 	authoritative := false
 	if runtime.GOOS == "linux" && !strings.EqualFold(strings.TrimSpace(executionMode), "process") {
-		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		var probeErr error
-		authoritative, probeErr = executor.NoActiveSystemdRuns(probeCtx)
+		authoritative, probeErr = executor.WaitForNoActiveSystemdRuns(probeCtx)
 		cancel()
 		if probeErr != nil {
 			log.Printf("无法确认历史任务进程均已结束，保持待确认状态：%v", probeErr)

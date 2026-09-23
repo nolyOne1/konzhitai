@@ -38,9 +38,15 @@ func requireSystemdCI(t *testing.T) {
 
 func TestSystemdRecoveryProbe(t *testing.T) {
 	requireSystemdCI(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	empty, err := executor.NoActiveSystemdRuns(ctx)
+	var empty bool
+	var err error
+	if os.Getenv("YUNLING_CI_WAIT_EMPTY") == "1" {
+		empty, err = executor.WaitForNoActiveSystemdRuns(ctx)
+	} else {
+		empty, err = executor.NoActiveSystemdRuns(ctx)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

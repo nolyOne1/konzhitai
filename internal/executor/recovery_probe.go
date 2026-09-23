@@ -5,7 +5,26 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"time"
 )
+
+// WaitForNoActiveSystemdRuns allows systemd to finish stopping bound run units
+// after an agent restart. A timeout or probe error must not authorize absence.
+func WaitForNoActiveSystemdRuns(ctx context.Context) (bool, error) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		empty, err := NoActiveSystemdRuns(ctx)
+		if err != nil || empty {
+			return empty, err
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
 
 // NoActiveSystemdRuns is only used before the new agent accepts assignments.
 // An error, active run unit, or pending run job leaves the report non-authoritative.
