@@ -11,10 +11,12 @@ import (
 	"yunling.local/platform/internal/scheduler"
 	"yunling.local/platform/internal/script"
 	"yunling.local/platform/internal/task"
+	"yunling.local/platform/internal/testpostgres"
 )
 
 func TestOnDemandDispatchSynchronizesPinnedVersionBeforeExecution(t *testing.T) {
 	db := dispatchDatabase(t)
+	testpostgres.ApplyMigration(t, db, "000017_script_sync_retries.up.sql")
 	ctx := context.Background()
 	now := time.Date(2026, 9, 16, 1, 0, 0, 0, time.UTC)
 	seedDispatchRuns(t, db, now)

@@ -1,0 +1,9 @@
+.server-groups-panel { margin-block: 20px; }
+.server-groups-body { padding: 20px; }
+.server-group-form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 20px; }
+.server-group-form .form-field { flex: 1 1 220px; }
+.server-group-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 12px; list-style: none; padding: 0; margin: 0; }
+.server-group-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--border, #e2e8f0); border-radius: 10px; padding: 12px; }
+.server-group-list li span { min-width: 0; overflow-wrap: anywhere; }
+.server-group-list strong, .server-group-list small { display: block; }
+.server-group-list small { margin-top: 4px; }

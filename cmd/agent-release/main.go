@@ -40,8 +40,9 @@ type commandArtifact struct {
 }
 
 type commandManifest struct {
-	Version   string            `json:"version"`
-	Artifacts []commandArtifact `json:"artifacts"`
+	Version      string            `json:"version"`
+	Artifacts    []commandArtifact `json:"artifacts"`
+	Capabilities []string          `json:"capabilities,omitempty"`
 }
 
 func main() {
@@ -141,8 +142,13 @@ func loadImportInput(configuration importConfiguration) (agentrelease.ImportInpu
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return agentrelease.ImportInput{}, errors.New("代理清单包含尾随内容")
 	}
+	if err := agentrelease.ValidateCapabilities(manifest.Capabilities); err != nil {
+		return agentrelease.ImportInput{}, err
+	}
 	manifestDigest := sha256.Sum256(manifestBody)
 	input := agentrelease.ImportInput{Version: manifest.Version, ReleaseNotes: configuration.ReleaseNotes, Recommend: configuration.Recommend, CreatedBy: configuration.CreatedBy, ManifestSHA256: hex.EncodeToString(manifestDigest[:])}
+	input.Capabilities = manifest.Capabilities
+	input.ManifestJSON = append([]byte(nil), manifestBody...)
 	for _, item := range manifest.Artifacts {
 		if filepath.Base(item.FileName) != item.FileName {
 			return agentrelease.ImportInput{}, errors.New("代理安装包文件名无效")

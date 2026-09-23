@@ -3,6 +3,7 @@ package notification
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -132,6 +133,29 @@ func (r *PostgresRepository) EnqueueTest(
 		return Delivery{}, fmt.Errorf("开始测试通知事务：%w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// Serialize only this logical request. A replay must return the original
+	// delivery even if configuration changed while the response was in flight.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, idempotencyKey); err != nil {
+		return Delivery{}, err
+	}
+	var existing Delivery
+	err = tx.QueryRow(ctx, `SELECT id::text,event_type,status,attempts,next_attempt_at,
+		lease_until,last_error,response_id,created_at,sent_at,updated_at
+		FROM notification_outbox WHERE idempotency_key=$1`, idempotencyKey).Scan(
+		&existing.ID, &existing.EventType, &existing.Status, &existing.Attempts, &existing.NextAttemptAt,
+		&existing.LeaseUntil, &existing.LastError, &existing.ResponseID, &existing.CreatedAt, &existing.SentAt, &existing.UpdatedAt)
+	if err == nil {
+		if existing.EventType != "test" {
+			return Delivery{}, ErrInvalidRequest
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return Delivery{}, err
+		}
+		return existing, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Delivery{}, err
+	}
 	var enabled bool
 	if err := tx.QueryRow(ctx, `
 		SELECT enabled FROM notification_configs WHERE channel='feishu' FOR SHARE

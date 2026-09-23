@@ -64,9 +64,14 @@ type fakeRunManager struct {
 	cancelled string
 	retried   string
 	retryID   RunID
+	filter    RunFilter
 }
 
 func (m *fakeRunManager) ListRuns(context.Context) ([]RunView, error) { return m.runs, nil }
+func (m *fakeRunManager) QueryRuns(_ context.Context, filter RunFilter) (RunPage, error) {
+	m.filter = filter
+	return RunPage{Runs: m.runs, Limit: filter.Limit, Offset: filter.Offset}, nil
+}
 func (m *fakeRunManager) GetRun(_ context.Context, id string) (RunView, error) {
 	if m.detail.ID == "" {
 		m.detail = RunView{ID: id}

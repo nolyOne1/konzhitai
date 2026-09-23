@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"yunling.local/platform/internal/agentprotocol"
 	"yunling.local/platform/internal/artifact"
 )
 
@@ -31,6 +32,8 @@ var (
 	ErrInvalidPublish        = errors.New("发布信息不完整")
 	ErrInvalidReleaseNotes   = errors.New("发布说明必须包含中文")
 	ErrInvalidDistribution   = errors.New("请选择有效的发布目标")
+	ErrInvalidParameters     = errors.New("参数定义无效")
+	ErrInvalidArtifacts      = errors.New("运行产物配置无效")
 	ErrScriptContentTooLarge = errors.New("脚本内容不能超过 1 MB")
 )
 
@@ -46,6 +49,7 @@ type CreateInput struct {
 }
 
 type DraftInput struct {
+	Artifacts            *agentprotocol.ArtifactPolicy
 	ScriptID             string
 	Content              []byte
 	Runtime              string
@@ -59,6 +63,7 @@ type DraftInput struct {
 }
 
 type PublishInput struct {
+	Artifacts            *agentprotocol.ArtifactPolicy
 	ScriptID             string
 	Content              []byte
 	Runtime              string
@@ -206,13 +211,21 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Script, error)
 }
 
 func (s *Service) SaveDraft(ctx context.Context, input DraftInput) (Draft, error) {
+	if err := input.Artifacts.Validate(); err != nil {
+		return Draft{}, fmt.Errorf("%w：%v", ErrInvalidArtifacts, err)
+	}
+	parameters, err := normalizeParameters(input.ParameterDefinitions)
+	if err != nil {
+		return Draft{}, err
+	}
 	manifest := withResourceDefaults(Manifest{
+		Artifacts:            input.Artifacts,
 		Runtime:              normalizeRuntime(input.Runtime),
 		Entrypoint:           strings.TrimSpace(input.Entrypoint),
 		Category:             strings.TrimSpace(input.Category),
 		Tags:                 normalizeTags(input.Tags),
 		Distribution:         normalizeDistribution(input.Distribution),
-		ParameterDefinitions: input.ParameterDefinitions,
+		ParameterDefinitions: parameters,
 		Resources:            input.Resources,
 	})
 	if strings.TrimSpace(input.ScriptID) == "" || len(input.Content) == 0 || int64(len(input.Content)) > MaxScriptBytes ||
@@ -272,6 +285,9 @@ func (s *Service) Publish(ctx context.Context, input PublishInput) (Version, err
 }
 
 func (s *Service) publish(ctx context.Context, input PublishInput, auditAction, sourceVersionID string) (Version, error) {
+	if err := input.Artifacts.Validate(); err != nil {
+		return Version{}, fmt.Errorf("%w：%v", ErrInvalidArtifacts, err)
+	}
 	input.ScriptID = strings.TrimSpace(input.ScriptID)
 	input.Runtime = normalizeRuntime(input.Runtime)
 	input.Entrypoint = strings.TrimSpace(input.Entrypoint)
@@ -289,13 +305,18 @@ func (s *Service) publish(ctx context.Context, input PublishInput, auditAction, 
 	if err := validateDistribution(input.Distribution); err != nil {
 		return Version{}, err
 	}
+	parameters, err := normalizeParameters(input.ParameterDefinitions)
+	if err != nil {
+		return Version{}, err
+	}
 	manifest := withResourceDefaults(Manifest{
+		Artifacts:            input.Artifacts,
 		Runtime:              input.Runtime,
 		Entrypoint:           input.Entrypoint,
 		Category:             strings.TrimSpace(input.Category),
 		Tags:                 normalizeTags(input.Tags),
 		Distribution:         input.Distribution,
-		ParameterDefinitions: input.ParameterDefinitions,
+		ParameterDefinitions: parameters,
 		Resources:            input.Resources,
 	})
 	archive, err := buildArchive(input.Content, manifest)
@@ -418,6 +439,7 @@ func (s *Service) Rollback(ctx context.Context, input RollbackInput) (Version, e
 		return Version{}, err
 	}
 	return s.publish(ctx, PublishInput{
+		Artifacts:            archivedManifest.Artifacts,
 		ScriptID:             input.ScriptID,
 		Content:              content,
 		Runtime:              archivedManifest.Runtime,
@@ -738,6 +760,26 @@ func normalizeTags(tags []string) []string {
 		}
 	}
 	return normalized
+}
+
+func normalizeParameters(definitions []ParameterDefinition) ([]ParameterDefinition, error) {
+	parameters := make([]ParameterDefinition, 0, len(definitions))
+	seen := make(map[string]bool, len(definitions))
+	for _, definition := range definitions {
+		definition.Name = strings.TrimSpace(definition.Name)
+		definition.Description = strings.TrimSpace(definition.Description)
+		if definition.Name == "" || seen[definition.Name] || strings.ContainsAny(definition.Name, "\x00\r\n") {
+			return nil, fmt.Errorf("%w：参数名不能为空、重复或包含换行", ErrInvalidParameters)
+		}
+		switch definition.Type {
+		case "string", "number", "boolean":
+		default:
+			return nil, fmt.Errorf("%w：%s 的类型必须为文本、数字或布尔值", ErrInvalidParameters, definition.Name)
+		}
+		seen[definition.Name] = true
+		parameters = append(parameters, definition)
+	}
+	return parameters, nil
 }
 
 func containsHan(value string) bool {

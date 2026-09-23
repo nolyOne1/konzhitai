@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 
 import { getDashboard, type DashboardData, type ServerView } from '../../api/client'
+import { RunStateBadge } from '../runs/RunsPage'
+import { useCanExecute } from '../auth/SessionContext'
 
 const emptyDashboard: DashboardData = {
   onlineServers: 0,
@@ -13,24 +15,40 @@ const emptyDashboard: DashboardData = {
 }
 
 export function DashboardPage() {
+  const canExecute = useCanExecute()
   const [dashboard, setDashboard] = useState<DashboardData>(emptyDashboard)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [revision, setRevision] = useState(0)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
 
   useEffect(() => {
     let active = true
-    getDashboard()
-      .then((data) => {
-        if (active) setDashboard(data)
-      })
-      .catch((reason: unknown) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    setLoading(true)
+    const refresh = async () => {
+      try {
+        const data = await getDashboard()
+        if (active) {
+          setDashboard(data)
+          setError('')
+          setLastUpdated(new Date())
+        }
+      } catch (reason: unknown) {
         if (active) setError(reason instanceof Error ? reason.message : '运行数据加载失败')
-      })
-      .finally(() => {
-        if (active) setLoading(false)
-      })
-    return () => { active = false }
-  }, [])
+      } finally {
+        if (active) {
+          setLoading(false)
+          timer = setTimeout(() => { void refresh() }, 5000)
+        }
+      }
+    }
+    void refresh()
+    return () => { active = false; clearTimeout(timer) }
+  }, [revision])
+
+  const activeRuns = dashboard.activeRuns ?? []
+  const sync = dashboard.scriptSync
 
   const metrics = [
     { label: '在线服务器', value: `${dashboard.onlineServers} / ${dashboard.totalServers}`, note: '可接收新任务的执行节点' },
@@ -47,16 +65,20 @@ export function DashboardPage() {
           <h1>运行总览</h1>
           <p>集中查看跨服务器资源、任务负载与脚本同步状态</p>
         </div>
-        <a className="primary-action button-link" href="/tasks/new">新建任务</a>
+        <div className="dashboard-actions">
+          <button className="secondary-action" type="button" disabled={loading} onClick={() => setRevision((value) => value + 1)} aria-label="刷新总览">{loading ? '刷新中…' : '刷新'}</button>
+          {canExecute && <a className="primary-action button-link" href="/tasks/new">新建任务</a>}
+        </div>
       </div>
 
-      {error && <div className="notice notice-error" role="alert">{error}。已显示安全的空状态。</div>}
+      {error && <div className="notice notice-error" role="alert">{error}。{lastUpdated ? '保留上次成功数据，稍后自动重试。' : '暂时无法获取运行数据，请刷新重试。'}</div>}
+      <p className="panel-hint">{lastUpdated ? `更新于 ${formatTime(lastUpdated.toISOString())} · 每 5 秒自动刷新` : '正在读取运行数据…'}</p>
 
       <section className="metric-grid" aria-label="运行指标" aria-busy={loading}>
         {metrics.map((metric) => (
           <article className="metric-card" key={metric.label}>
             <p>{metric.label}</p>
-            <strong>{loading ? '—' : metric.value}</strong>
+            <strong>{lastUpdated ? metric.value : '—'}</strong>
             <small>{metric.note}</small>
           </article>
         ))}
@@ -81,18 +103,35 @@ export function DashboardPage() {
           </div>
         </section>
 
-        <section className="panel" aria-labelledby="live-runs-title">
+        <section className="panel dashboard-summary-panel" aria-labelledby="live-runs-title">
           <PanelHeader title="实时任务" meta={`${dashboard.runningRuns} 个运行中`} />
-          <EmptyPanel message="当前没有运行中的任务" />
-          <p className="panel-hint">调度信息会显示“空闲内存最高”、“已缓存脚本版本”或资源不足原因。</p>
+          {activeRuns.length === 0 ? <EmptyPanel message={lastUpdated ? '当前没有活动任务' : '任务数据加载中'} /> : (
+            <ol className="dashboard-run-list">
+              {activeRuns.map((run) => <li key={run.id}>
+                <div className="dashboard-run-title"><a className="table-link" href={`/runs/${encodeURIComponent(run.id)}`}>{run.taskName}</a><RunStateBadge state={run.state} /></div>
+                <p>{run.scriptName} · {run.serverName || '等待分配服务器'}</p>
+                <p className="dashboard-run-reason">{run.resultSummary || (run.state === 'queued' ? '等待符合条件的节点与可用资源' : run.state === 'unknown' ? '等待代理恢复并确认执行状态' : '查看详情获取执行进度')}</p>
+              </li>)}
+            </ol>
+          )}
+          <a className="table-link dashboard-panel-link" href="/runs">查看全部执行记录</a>
         </section>
 
-        <section className="panel" aria-labelledby="sync-title">
+        <section className="panel dashboard-summary-panel" aria-labelledby="sync-title">
           <PanelHeader title="脚本同步" meta="全服务器" />
-          <div className="sync-overview">
-            <span className="sync-ring" aria-hidden="true">0</span>
-            <div><strong>尚无已发布脚本</strong><p>脚本发布后将自动展示同步进度、校验结果和版本漂移。</p></div>
-          </div>
+          {!sync ? <EmptyPanel message="同步摘要暂不可用" /> : sync.publishedScripts === 0 ? <EmptyPanel message="尚无已发布脚本" /> : (
+            <>
+              <div className="sync-overview">
+                <span className="sync-ring" aria-label="同步就绪比例">{sync.total ? `${Math.round(sync.ready * 100 / sync.total)}%` : '—'}</span>
+                <div><strong>{sync.ready} / {sync.total}</strong><p>{sync.publishedScripts} 个脚本的当前发布版本 · 就绪节点副本</p></div>
+              </div>
+              <ul className="dashboard-sync-counts" aria-label="当前版本同步状态">
+                <li>等待 {sync.pending}</li><li>下载中 {sync.downloading}</li><li>失败 {sync.failed}</li><li>漂移 {sync.drifted}</li>
+              </ul>
+              {sync.total === 0 && <p className="panel-hint">当前没有同步目标；按需分发将在任务分配后同步。</p>}
+            </>
+          )}
+          <a className="table-link dashboard-panel-link" href="/sync">查看脚本同步详情</a>
         </section>
 
         <section className="panel panel-wide" aria-labelledby="events-title">

@@ -22,12 +22,33 @@ type ExecutionTransport interface {
 }
 
 type ExecutionClient struct {
-	runner    ExecutionRunner
-	transport ExecutionTransport
+	runner         ExecutionRunner
+	transport      ExecutionTransport
+	artifacts      RunArtifactCollector
+	artifactOutput executor.OutputSink
 }
 
-func NewExecutionClient(runner ExecutionRunner, transport ExecutionTransport) *ExecutionClient {
-	return &ExecutionClient{runner: runner, transport: transport}
+type RunArtifactCollector interface {
+	CollectAndUpload(context.Context, agentprotocol.Assignment) error
+}
+
+type ExecutionClientOption func(*ExecutionClient)
+
+func WithRunArtifacts(collector RunArtifactCollector, output ...executor.OutputSink) ExecutionClientOption {
+	return func(client *ExecutionClient) {
+		client.artifacts = collector
+		if len(output) > 0 {
+			client.artifactOutput = output[0]
+		}
+	}
+}
+
+func NewExecutionClient(runner ExecutionRunner, transport ExecutionTransport, options ...ExecutionClientOption) *ExecutionClient {
+	client := &ExecutionClient{runner: runner, transport: transport}
+	for _, option := range options {
+		option(client)
+	}
+	return client
 }
 
 func (c *ExecutionClient) Run(ctx context.Context) error {
@@ -124,6 +145,7 @@ func (c *ExecutionClient) forwardEvents(
 			OccurredAt:     event.OccurredAt,
 			ExitCode:       event.ExitCode,
 			Message:        event.Message,
+			Usage:          event.Usage,
 		}
 		if err := c.transport.SendRunEvent(ctx, report); err != nil {
 			select {
@@ -131,6 +153,19 @@ func (c *ExecutionClient) forwardEvents(
 			case <-ctx.Done():
 			}
 			return
+		}
+		if event.Type != executor.EventStarted && assignment.Artifacts != nil && c.artifacts != nil {
+			// Release execution resources before uploading outputs. Collection
+			// failures go through the existing durable system-log spool.
+			artifactCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			if err := c.artifacts.CollectAndUpload(artifactCtx, assignment); err != nil {
+				message := "产物采集未完成：" + err.Error()
+				log.Printf("运行 %s：%s", assignment.RunID, message)
+				if c.artifactOutput != nil {
+					_, _ = fmt.Fprintln(c.artifactOutput.OutputWriter(assignment.RunID, assignment.ExecutionToken, "system"), message)
+				}
+			}
+			cancel()
 		}
 	}
 }

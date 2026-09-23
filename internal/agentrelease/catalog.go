@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 )
 
 var ErrArtifactNotFound = errors.New("代理安装包不存在")
@@ -24,8 +25,9 @@ var (
 const maxManifestBytes = 1 << 20
 
 type Manifest struct {
-	Version   string     `json:"version"`
-	Artifacts []Artifact `json:"artifacts"`
+	Version      string     `json:"version"`
+	Artifacts    []Artifact `json:"artifacts"`
+	Capabilities []string   `json:"capabilities,omitempty"`
 }
 
 func (c *Catalog) releaseManifest(context.Context) (Manifest, error) {
@@ -62,8 +64,9 @@ type storedArtifact struct {
 }
 
 type storedManifest struct {
-	Version   string           `json:"version"`
-	Artifacts []storedArtifact `json:"artifacts"`
+	Version      string           `json:"version"`
+	Artifacts    []storedArtifact `json:"artifacts"`
+	Capabilities []string         `json:"capabilities,omitempty"`
 }
 
 func Load(root string) (*Catalog, error) {
@@ -98,6 +101,9 @@ func Load(root string) (*Catalog, error) {
 	if !versionPattern.MatchString(stored.Version) {
 		return nil, errors.New("代理发布清单版本格式无效")
 	}
+	if err := ValidateCapabilities(stored.Capabilities); err != nil {
+		return nil, err
+	}
 	if len(stored.Artifacts) != 2 {
 		return nil, errors.New("代理发布清单必须同时包含 amd64 和 arm64")
 	}
@@ -130,6 +136,21 @@ func Load(root string) (*Catalog, error) {
 		if err := verifyArtifact(path, item); err != nil {
 			return nil, err
 		}
+		// Legacy directory releases keep their original validation contract.
+		// A new capability declaration also requires the complete upgrade
+		// package layout and matching in-package version.
+		if len(stored.Capabilities) > 0 {
+			if item.ByteSize > maxAgentArtifactBytes {
+				return nil, ErrReleaseInvalid
+			}
+			body, err := os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+			if err := validateAgentArchive(body, stored.Version); err != nil {
+				return nil, err
+			}
+		}
 		artifact := Artifact{
 			OS: item.OS, Arch: item.Arch, FileName: item.FileName,
 			ByteSize: item.ByteSize, SHA256: item.SHA256,
@@ -146,7 +167,7 @@ func Load(root string) (*Catalog, error) {
 	}
 
 	catalog := &Catalog{
-		manifest:      Manifest{Version: stored.Version},
+		manifest:      Manifest{Version: stored.Version, Capabilities: slices.Clone(stored.Capabilities)},
 		files:         make(map[string]string, 2),
 		artifactByKey: make(map[string]Artifact, 2),
 	}
@@ -166,6 +187,7 @@ func (c *Catalog) Manifest() Manifest {
 	}
 	manifest := c.manifest
 	manifest.Artifacts = append([]Artifact(nil), c.manifest.Artifacts...)
+	manifest.Capabilities = slices.Clone(c.manifest.Capabilities)
 	return manifest
 }
 

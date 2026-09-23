@@ -60,3 +60,34 @@ func TestMiddlewareClassifiesAgentReleaseAndUpgradeMutations(t *testing.T) {
 		})
 	}
 }
+
+func TestMiddlewareClassifiesServerGroupsAndTaskConfiguration(t *testing.T) {
+	for _, tc := range []struct{ method, path, action, target string }{
+		{http.MethodPost, "/api/server-groups", "server_group.create", "new"},
+		{http.MethodPatch, "/api/server-groups/group-1", "server_group.rename", "group-1"},
+		{http.MethodPatch, "/api/servers/node-1", "server.update", "node-1"},
+		{http.MethodPut, "/api/tasks/task-1", "task.update", "task-1"},
+		{http.MethodDelete, "/api/tasks/task-1", "task.delete", "task-1"},
+		{http.MethodPost, "/api/tasks/task-1/schedules", "task.schedule.create", "task-1"},
+		{http.MethodPut, "/api/tasks/task-1/schedules/schedule-1", "task.schedule.update", "schedule-1"},
+		{http.MethodDelete, "/api/tasks/task-1/schedules/schedule-1", "task.schedule.delete", "schedule-1"},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			repository := &memoryAuditRepository{}
+			handler := audit.Middleware(audit.NewService(repository, nil))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(tc.method, tc.path, nil))
+			if len(repository.events) != 1 || repository.events[0].Action != tc.action || repository.events[0].TargetID != tc.target {
+				t.Fatalf("incorrect audit: %+v", repository.events)
+			}
+		})
+	}
+}
+
+func TestMiddlewareDoesNotDuplicateTransactionalScriptRetryAudit(t *testing.T) {
+	repository := &memoryAuditRepository{}
+	handler := audit.Middleware(audit.NewService(repository, nil))(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/scripts/script-1/syncs/sync-1/retry", nil))
+	if len(repository.events) != 0 {
+		t.Fatalf("script retry already records its audit transactionally: %+v", repository.events)
+	}
+}

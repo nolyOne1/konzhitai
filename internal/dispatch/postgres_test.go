@@ -126,6 +126,7 @@ func dispatchDatabase(t *testing.T) *pgxpool.Pool {
 		"000001_initial.up.sql", "000002_agent_enrollment.up.sql", "000003_server_management.up.sql",
 		"000004_script_sync_states.up.sql", "000005_task_scheduling.up.sql", "000006_scheduler_resources.up.sql",
 		"000007_run_observability.up.sql", "000008_security_audit_alerts.up.sql", "000009_run_dispatch.up.sql",
+		"000010_password_change_security.up.sql", "000014_agent_upgrade_management.up.sql",
 	} {
 		testpostgres.ApplyMigration(t, db, migration)
 	}

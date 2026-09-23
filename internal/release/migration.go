@@ -74,6 +74,9 @@ func (rollout *MigrationRollout) Apply(ctx context.Context, request MigrationReq
 		!actorPattern.MatchString(request.Actor) || !filepath.IsAbs(request.MigrationsDir) {
 		return ErrInvalidMigrationRequest
 	}
+	if _, err := os.Lstat(filepath.Join(request.MigrationsDir, "000019_log_archive_progress.up.sql")); err == nil {
+		return rollout.applyPlatformMigration(ctx, request)
+	}
 	recoveryPointID, err := normalizeRecoveryPointID(request.RecoveryPointID)
 	if err != nil {
 		return err
@@ -280,7 +283,7 @@ func validateMemberLifecycleMigrationTree(root string, target ...int) (string, e
 	if len(target) > 0 {
 		maximum = target[0]
 	}
-	if maximum != 13 && maximum != 15 {
+	if maximum != 13 && maximum != 15 && maximum != platformFeatureMigration {
 		return "", ErrInvalidMigrationRequest
 	}
 	entries, err := os.ReadDir(root)
@@ -317,8 +320,14 @@ func validateMemberLifecycleMigrationTree(root string, target ...int) (string, e
 		versions[memberLifecycleMigration]["down"] != memberLifecycleRollbackFile {
 		return "", ErrInvalidMigrationRequest
 	}
-	if maximum == 15 {
-		for version, name := range map[int]string{14: "agent_upgrade_management", 15: "agent_upgrade_recovery"} {
+	if maximum >= 15 {
+		names := map[int]string{14: "agent_upgrade_management", 15: "agent_upgrade_recovery"}
+		if maximum == platformFeatureMigration {
+			for version, name := range platformMigrationNames {
+				names[version] = name
+			}
+		}
+		for version, name := range names {
 			for _, direction := range []string{"up", "down"} {
 				if versions[version][direction] != fmt.Sprintf("%06d_%s.%s.sql", version, name, direction) {
 					return "", ErrInvalidMigrationRequest
@@ -329,14 +338,18 @@ func validateMemberLifecycleMigrationTree(root string, target ...int) (string, e
 	return filepath.Join(root, memberLifecycleMigrationFile), nil
 }
 
-func historicalMigrationDigestMatches(root, expected string) (bool, error) {
-	digest, err := migrationTreeDigestThrough(root, 12)
+func historicalMigrationDigestMatches(root, expected string, previousVersion ...int) (bool, error) {
+	maximum := 12
+	if len(previousVersion) > 0 {
+		maximum = previousVersion[0]
+	}
+	digest, err := migrationTreeDigestThrough(root, maximum)
 	if err != nil || digest == expected {
 		return digest == expected, err
 	}
 	// Historical Windows uploads used CRLF. Reconstruct those exact bytes
 	// in memory; never alter the signed candidate or the stored baseline.
-	digest, err = migrationTreeDigestThrough(root, 12, true)
+	digest, err = migrationTreeDigestThrough(root, maximum, true)
 	return digest == expected, err
 }
 
@@ -590,7 +603,7 @@ func validateMigrationBaseline(baseline MigrationBaseline) error {
 	if baseline.SchemaVersion != migrationBaselineSchemaVersion || !validTargetID(baseline.CurrentTargetID) ||
 		!targetIDPattern.MatchString(baseline.TargetID) || !lowerHex40Pattern.MatchString(baseline.TargetSourceSHA) ||
 		!lowerHex64Pattern.MatchString(baseline.FromMigrationTreeSHA256) || !lowerHex64Pattern.MatchString(baseline.ToMigrationTreeSHA256) ||
-		baseline.FromMigrationTreeSHA256 == baseline.ToMigrationTreeSHA256 || (baseline.MigrationVersion != memberLifecycleMigration && baseline.MigrationVersion != 15) ||
+		baseline.FromMigrationTreeSHA256 == baseline.ToMigrationTreeSHA256 || (baseline.MigrationVersion != memberLifecycleMigration && baseline.MigrationVersion != 15 && baseline.MigrationVersion != platformFeatureMigration) ||
 		!lowerHex64Pattern.MatchString(baseline.MigrationFileSHA256) || !actorPattern.MatchString(baseline.Actor) ||
 		!isUTCNonZero(baseline.AppliedAt) {
 		return ErrInvalidMigrationRequest

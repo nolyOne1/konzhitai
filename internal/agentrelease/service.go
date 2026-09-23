@@ -36,7 +36,13 @@ func NewService(repository Repository, objects artifact.Store, now func() time.T
 }
 
 func (s *Service) Import(ctx context.Context, input ImportInput) (Release, error) {
-	return s.importRelease(ctx, input, []string{SelfUpgradeCapability}, true)
+	capabilities := input.Capabilities
+	if capabilities == nil {
+		// Older import manifests did not declare capabilities. Their fixed
+		// package layout still provides the original self-upgrade support.
+		capabilities = []string{SelfUpgradeCapability}
+	}
+	return s.importRelease(ctx, input, capabilities, true)
 }
 
 func (s *Service) importRelease(ctx context.Context, input ImportInput, capabilities []string, validatePackage bool) (Release, error) {
@@ -45,6 +51,12 @@ func (s *Service) importRelease(ctx context.Context, input ImportInput, capabili
 	}
 	if !versionPattern.MatchString(input.Version) || len(input.ReleaseNotes) > 4000 || len(input.Artifacts) != 2 {
 		return Release{}, ErrReleaseInvalid
+	}
+	if err := ValidateCapabilities(capabilities); err != nil {
+		return Release{}, err
+	}
+	if err := validateImportManifest(input); err != nil {
+		return Release{}, err
 	}
 	existing, err := s.repository.List(ctx)
 	if err != nil {
@@ -147,7 +159,7 @@ func (s *Service) BootstrapFromDirectory(ctx context.Context, root string) error
 		return fmt.Errorf("读取旧代理清单：%w", err)
 	}
 	manifestHash := sha256.Sum256(manifestBytes)
-	input := ImportInput{Version: manifest.Version, ManifestSHA256: hex.EncodeToString(manifestHash[:]), Recommend: true}
+	input := ImportInput{Version: manifest.Version, ManifestSHA256: hex.EncodeToString(manifestHash[:]), ManifestJSON: manifestBytes, Capabilities: manifest.Capabilities, Recommend: true}
 	var opened []*os.File
 	defer func() {
 		for _, file := range opened {
@@ -162,7 +174,7 @@ func (s *Service) BootstrapFromDirectory(ctx context.Context, root string) error
 		opened = append(opened, file)
 		input.Artifacts = append(input.Artifacts, ImportArtifact{OS: item.OS, Arch: item.Arch, FileName: item.FileName, ByteSize: item.ByteSize, SHA256: item.SHA256, Body: file})
 	}
-	_, err = s.importRelease(ctx, input, nil, false)
+	_, err = s.importRelease(ctx, input, manifest.Capabilities, len(manifest.Capabilities) > 0)
 	return err
 }
 
@@ -194,7 +206,7 @@ func (s *Service) releaseManifest(ctx context.Context) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
-	return Manifest{Version: release.Version, Artifacts: append([]Artifact(nil), release.Artifacts...)}, nil
+	return Manifest{Version: release.Version, Artifacts: append([]Artifact(nil), release.Artifacts...), Capabilities: append([]string(nil), release.Capabilities...)}, nil
 }
 
 func (s *Service) releaseArtifact(ctx context.Context, version, digest, fileName string) (Artifact, error) {
@@ -239,7 +251,7 @@ func publicRelease(release Release) Release {
 }
 
 func manifestDigest(release Release) (string, error) {
-	manifest := storedManifest{Version: release.Version}
+	manifest := storedManifest{Version: release.Version, Capabilities: release.Capabilities}
 	for _, item := range release.Artifacts {
 		manifest.Artifacts = append(manifest.Artifacts, storedArtifact{OS: item.OS, Arch: item.Arch, FileName: item.FileName, ByteSize: item.ByteSize, SHA256: item.SHA256})
 	}

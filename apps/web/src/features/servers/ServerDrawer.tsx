@@ -1,9 +1,13 @@
 import { useEffect, useState, type FormEvent } from 'react'
 
 import type { ServerView, UpdateServerInput } from '../../api/client'
+import type { ServerGroup } from '../../api/serverGroups'
 
 interface ServerDrawerProps {
   server: ServerView
+  groups: ServerGroup[]
+  groupsReady: boolean
+  canExecute: boolean
   saving: boolean
   securityBusy: boolean
   isAdmin: boolean
@@ -13,10 +17,11 @@ interface ServerDrawerProps {
   onRevoke: () => Promise<void>
 }
 
-export function ServerDrawer({ server, saving, securityBusy, isAdmin, onClose, onSave, onRotate, onRevoke }: ServerDrawerProps) {
+export function ServerDrawer({ server, groups, groupsReady, canExecute, saving, securityBusy, isAdmin, onClose, onSave, onRotate, onRevoke }: ServerDrawerProps) {
   const [name, setName] = useState(server.name)
   const [weight, setWeight] = useState(String(server.schedulingWeight))
   const [labels, setLabels] = useState(formatLabels(server.labels))
+  const [groupID, setGroupID] = useState(server.serverGroupId ?? '')
   const [credential, setCredential] = useState('')
   const [securityStatus, setSecurityStatus] = useState('')
   const [securityError, setSecurityError] = useState('')
@@ -26,6 +31,7 @@ export function ServerDrawer({ server, saving, securityBusy, isAdmin, onClose, o
     setName(server.name)
     setWeight(String(server.schedulingWeight))
     setLabels(formatLabels(server.labels))
+    setGroupID(server.serverGroupId ?? '')
   }, [server])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -34,6 +40,7 @@ export function ServerDrawer({ server, saving, securityBusy, isAdmin, onClose, o
       name: name.trim(),
       schedulingWeight: Number(weight),
       labels: parseLabels(labels),
+      ...(groupsReady ? { serverGroupId: groupID } : {}),
     })
   }
 
@@ -80,6 +87,7 @@ export function ServerDrawer({ server, saving, securityBusy, isAdmin, onClose, o
         </dl>
 
         <form className="drawer-form" onSubmit={handleSubmit}>
+          <fieldset disabled={!canExecute || saving} style={{ border: 0, margin: 0, padding: 0, display: 'contents' }}>
           <label className="form-field">
             服务器名称
             <input value={name} onChange={(event) => setName(event.target.value)} required />
@@ -94,7 +102,16 @@ export function ServerDrawer({ server, saving, securityBusy, isAdmin, onClose, o
             <input value={labels} onChange={(event) => setLabels(event.target.value)} placeholder="用途=批处理, 环境=生产" />
             <small>使用半角逗号分隔多个“名称=值”标签。</small>
           </label>
-          <button type="submit" className="primary-action" disabled={saving}>{saving ? '保存中…' : '保存更改'}</button>
+          <label className="form-field">所属服务器组
+            <select aria-label="所属服务器组" value={groupID} onChange={(event) => setGroupID(event.target.value)} disabled={!groupsReady}>
+              <option value="">未分组</option>
+              {groupID && !groups.some((group) => group.id === groupID) ? <option value={groupID}>当前分组（待加载）</option> : null}
+              {groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+            </select>
+            <small>{groupsReady ? '每台节点属于一个组；更名分组不会改变已有脚本发布规则。' : '请先重新加载分组，再修改节点归属。'}</small>
+          </label>
+          {canExecute ? <button type="submit" className="primary-action" disabled={saving}>{saving ? '保存中…' : '保存更改'}</button> : <p className="cell-muted">当前账号仅可查看服务器配置。</p>}
+          </fieldset>
         </form>
 
         {isAdmin ? <section className="credential-panel" aria-labelledby="credential-title"><div><p className="eyebrow">管理员安全操作</p><h3 id="credential-title">代理凭据</h3><p>轮换会等待新凭据确认连接；紧急吊销会立即断开该节点。</p></div>{securityError ? <div className="form-error" role="alert">{securityError}</div> : null}{securityStatus ? <div className="credential-status" role="status">{securityStatus}</div> : null}{credential ? <div className="one-time-credential"><strong>仅显示一次的新凭据</strong><code>{credential}</code><small>请立即写入代理的安全配置文件，不要通过聊天或工单传递。</small></div> : null}<div className="credential-actions"><button className="secondary-action" type="button" disabled={securityBusy} onClick={() => void rotate()}>轮换代理凭据</button><button className="danger-action" type="button" disabled={securityBusy} onClick={() => setConfirmRevoke(true)}>紧急吊销全部凭据</button></div>{confirmRevoke ? <div className="revoke-confirm" role="alertdialog" aria-labelledby="revoke-title" aria-describedby="revoke-description"><strong id="revoke-title">确认立即断开此节点？</strong><p id="revoke-description">全部现有凭据都会失效，恢复连接前必须重新签发并配置凭据。</p><div><button className="secondary-action" type="button" onClick={() => setConfirmRevoke(false)}>取消</button><button className="danger-action" type="button" disabled={securityBusy} onClick={() => void revoke()}>确认紧急吊销</button></div></div> : null}</section> : null}

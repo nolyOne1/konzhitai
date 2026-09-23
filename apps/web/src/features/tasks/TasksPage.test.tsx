@@ -1,3 +1,4 @@
+import { withSession } from '../../test/session'
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
@@ -28,12 +29,18 @@ describe('任务调度列表', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     const user = userEvent.setup()
-    render(<MemoryRouter><TasksPage /></MemoryRouter>)
+    render(withSession(<MemoryRouter><TasksPage /></MemoryRouter>))
 
     expect(await screen.findByRole('heading', { name: '任务调度' })).toBeVisible()
     expect(screen.getByText('资源不足时保持排队，服务器空闲后自动尝试分配。')).toBeVisible()
     await user.click(screen.getByRole('button', { name: '手动执行每日归档任务' }))
+    await user.clear(screen.getByLabelText('本次普通参数（JSON）'))
+    await user.click(screen.getByLabelText('本次普通参数（JSON）'))
+    await user.paste('{"保留天数":14}')
+    await user.click(screen.getByRole('button', { name: '确认执行' }))
     expect(await screen.findByRole('status')).toHaveTextContent('每日归档任务已进入排队队列')
+    const runCall = fetchMock.mock.calls.find((call) => call[0] === '/api/tasks/task-1/run')
+    expect(JSON.parse(runCall?.[1]?.body as string)).toEqual({ parameters: { 保留天数: 14 } })
 
     await user.click(screen.getByRole('button', { name: '停用每日归档任务' }))
     const cancelQueued = screen.getByLabelText('同时取消当前排队任务')
@@ -43,6 +50,15 @@ describe('任务调度列表', () => {
     const disableCall = fetchMock.mock.calls.find((call) => call[0] === '/api/tasks/task-1/enabled')
     expect(JSON.parse(disableCall?.[1]?.body as string)).toEqual({ enabled: false, cancelQueued: false })
     expect(await screen.findByText('每日归档任务已停用')).toBeVisible()
+  })
+
+  it('只读成员不能创建、执行或停用任务', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ tasks: [definition] })))
+    render(withSession(<MemoryRouter><TasksPage /></MemoryRouter>, ['viewer']))
+    expect(await screen.findByRole('button', { name: '手动执行每日归档任务' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '停用每日归档任务' })).toBeDisabled()
+    expect(screen.queryByRole('link', { name: '新建任务' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '查看' })).toHaveAttribute('href', '/tasks/task-1')
   })
 })
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -19,49 +20,52 @@ var (
 )
 
 type RunView struct {
-	ID                   string         `json:"id"`
-	DefinitionID         string         `json:"definitionId"`
-	TaskName             string         `json:"taskName"`
-	ScriptID             string         `json:"scriptId"`
-	ScriptName           string         `json:"scriptName"`
-	ScriptVersionID      string         `json:"scriptVersionId"`
-	VersionNumber        int            `json:"versionNumber"`
-	ServerID             string         `json:"serverId,omitempty"`
-	ServerName           string         `json:"serverName,omitempty"`
-	TriggerType          TriggerType    `json:"triggerType"`
-	State                RunState       `json:"state"`
-	Parameters           map[string]any `json:"parameters"`
-	Resources            Resources      `json:"resources"`
-	RequiredRuntime      string         `json:"requiredRuntime"`
-	Priority             int            `json:"priority"`
-	Attempt              int            `json:"attempt"`
-	MaxRetries           int            `json:"maxRetries"`
-	Idempotent           bool           `json:"idempotent"`
-	ProcessConfirmedGone bool           `json:"processConfirmedGone"`
-	QueuedAt             time.Time      `json:"queuedAt"`
-	AssignedAt           *time.Time     `json:"assignedAt,omitempty"`
-	StartedAt            *time.Time     `json:"startedAt,omitempty"`
-	FinishedAt           *time.Time     `json:"finishedAt,omitempty"`
-	ExitCode             *int           `json:"exitCode,omitempty"`
-	ResultSummary        string         `json:"resultSummary"`
-	CreatedAt            time.Time      `json:"createdAt"`
+	Usage                *agentprotocol.ResourceUsage `json:"usage,omitempty"`
+	ID                   string                       `json:"id"`
+	DefinitionID         string                       `json:"definitionId"`
+	TaskName             string                       `json:"taskName"`
+	ScriptID             string                       `json:"scriptId"`
+	ScriptName           string                       `json:"scriptName"`
+	ScriptVersionID      string                       `json:"scriptVersionId"`
+	VersionNumber        int                          `json:"versionNumber"`
+	ServerID             string                       `json:"serverId,omitempty"`
+	ServerName           string                       `json:"serverName,omitempty"`
+	TriggerType          TriggerType                  `json:"triggerType"`
+	State                RunState                     `json:"state"`
+	Parameters           map[string]any               `json:"parameters"`
+	Resources            Resources                    `json:"resources"`
+	RequiredRuntime      string                       `json:"requiredRuntime"`
+	Priority             int                          `json:"priority"`
+	Attempt              int                          `json:"attempt"`
+	MaxRetries           int                          `json:"maxRetries"`
+	Idempotent           bool                         `json:"idempotent"`
+	ProcessConfirmedGone bool                         `json:"processConfirmedGone"`
+	QueuedAt             time.Time                    `json:"queuedAt"`
+	AssignedAt           *time.Time                   `json:"assignedAt,omitempty"`
+	StartedAt            *time.Time                   `json:"startedAt,omitempty"`
+	FinishedAt           *time.Time                   `json:"finishedAt,omitempty"`
+	ExitCode             *int                         `json:"exitCode,omitempty"`
+	ResultSummary        string                       `json:"resultSummary"`
+	CreatedAt            time.Time                    `json:"createdAt"`
 }
 
 type RunStreamEvent struct {
-	ID         string    `json:"id"`
-	Kind       string    `json:"kind"`
-	State      RunState  `json:"state,omitempty"`
-	EventType  string    `json:"eventType,omitempty"`
-	Stream     string    `json:"stream,omitempty"`
-	Sequence   uint64    `json:"sequence"`
-	Message    string    `json:"message,omitempty"`
-	Content    string    `json:"content,omitempty"`
-	ExitCode   *int      `json:"exitCode,omitempty"`
-	OccurredAt time.Time `json:"occurredAt"`
+	Usage      *agentprotocol.ResourceUsage `json:"usage,omitempty"`
+	ID         string                       `json:"id"`
+	Kind       string                       `json:"kind"`
+	State      RunState                     `json:"state,omitempty"`
+	EventType  string                       `json:"eventType,omitempty"`
+	Stream     string                       `json:"stream,omitempty"`
+	Sequence   uint64                       `json:"sequence"`
+	Message    string                       `json:"message,omitempty"`
+	Content    string                       `json:"content,omitempty"`
+	ExitCode   *int                         `json:"exitCode,omitempty"`
+	OccurredAt time.Time                    `json:"occurredAt"`
 }
 
 type RunManager interface {
 	ListRuns(context.Context) ([]RunView, error)
+	QueryRuns(context.Context, RunFilter) (RunPage, error)
 	GetRun(context.Context, string) (RunView, error)
 	ListRunEvents(context.Context, string) ([]RunStreamEvent, error)
 	CancelRun(context.Context, string) error
@@ -94,20 +98,84 @@ func NewRunService(db *pgxpool.Pool, commands ExecutionCommandSender, reconciler
 }
 
 func (s *RunService) ListRuns(ctx context.Context) ([]RunView, error) {
-	rows, err := s.db.Query(ctx, runViewSelect+` ORDER BY run.created_at DESC LIMIT 200`)
+	page, err := s.QueryRuns(ctx, RunFilter{Limit: 200})
+	return page.Runs, err
+}
+
+type RunFilter struct {
+	Query, DefinitionID, ScriptID, ServerID string
+	State                                   RunState
+	From, Until                             *time.Time
+	Limit, Offset                           int
+}
+
+type RunPage struct {
+	Runs    []RunView `json:"runs"`
+	HasMore bool      `json:"hasMore"`
+	Limit   int       `json:"limit"`
+	Offset  int       `json:"offset"`
+}
+
+func runFilterQuery(filter RunFilter) (string, []any) {
+	clauses := []string{"TRUE"}
+	args := []any{}
+	add := func(expression string, value any) {
+		args = append(args, value)
+		clauses = append(clauses, fmt.Sprintf(expression, len(args)))
+	}
+	if filter.Query != "" {
+		// Literal substring search: user wildcards must not change the query.
+		value := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(filter.Query)
+		add(`concat_ws(' ', definition.name, script.name, server.name, run.id::text) ILIKE $%d`, "%"+value+"%")
+	}
+	if filter.State != "" {
+		add("run.state=$%d", filter.State)
+	}
+	if filter.DefinitionID != "" {
+		add("run.task_definition_id=$%d", filter.DefinitionID)
+	}
+	if filter.ScriptID != "" {
+		add("script.id=$%d", filter.ScriptID)
+	}
+	if filter.ServerID != "" {
+		add("run.assigned_server_id=$%d", filter.ServerID)
+	}
+	if filter.From != nil {
+		add("run.created_at >= $%d", *filter.From)
+	}
+	if filter.Until != nil {
+		add("run.created_at < $%d", *filter.Until)
+	}
+	args = append(args, filter.Limit+1, filter.Offset)
+	return runViewSelect + " WHERE " + strings.Join(clauses, " AND ") + fmt.Sprintf(" ORDER BY run.created_at DESC, run.id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args
+}
+
+func (s *RunService) QueryRuns(ctx context.Context, filter RunFilter) (RunPage, error) {
+	if filter.Limit <= 0 || filter.Limit > 200 {
+		filter.Limit = 50
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+	query, args := runFilterQuery(filter)
+	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("读取执行记录：%w", err)
+		return RunPage{}, fmt.Errorf("读取执行记录：%w", err)
 	}
 	defer rows.Close()
 	runs := []RunView{}
 	for rows.Next() {
 		run, err := scanRunView(rows)
 		if err != nil {
-			return nil, err
+			return RunPage{}, err
 		}
 		runs = append(runs, run)
 	}
-	return runs, rows.Err()
+	page := RunPage{Runs: runs, Limit: filter.Limit, Offset: filter.Offset, HasMore: len(runs) > filter.Limit}
+	if page.HasMore {
+		page.Runs = runs[:filter.Limit]
+	}
+	return page, rows.Err()
 }
 
 func (s *RunService) GetRun(ctx context.Context, id string) (RunView, error) {
@@ -117,6 +185,10 @@ func (s *RunService) GetRun(ctx context.Context, id string) (RunView, error) {
 	}
 	if err != nil {
 		return RunView{}, fmt.Errorf("读取执行详情：%w", err)
+	}
+	run.Usage, err = s.loadUsage(ctx, id)
+	if err != nil {
+		return RunView{}, fmt.Errorf("读取执行资源用量：%w", err)
 	}
 	return run, nil
 }
@@ -145,14 +217,16 @@ func (s *RunService) ListRunEvents(ctx context.Context, id string) ([]RunStreamE
 			return nil, err
 		}
 		var detail struct {
-			Message  string `json:"message"`
-			ExitCode *int   `json:"exitCode"`
+			Message  string                       `json:"message"`
+			ExitCode *int                         `json:"exitCode"`
+			Usage    *agentprotocol.ResourceUsage `json:"usage"`
 		}
 		_ = json.Unmarshal(payload, &detail)
 		event.ID = fmt.Sprintf("state:%020d", event.Sequence)
 		event.Kind = "state"
 		event.Message = detail.Message
 		event.ExitCode = detail.ExitCode
+		event.Usage = detail.Usage
 		events = append(events, event)
 	}
 	if err := rows.Err(); err != nil {

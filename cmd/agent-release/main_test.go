@@ -25,7 +25,7 @@ func TestParseImportCommand(t *testing.T) {
 
 func TestLoadImportInputOpensBothArchitecturesAndVerifiesManifest(t *testing.T) {
 	root := t.TempDir()
-	manifest := commandManifest{Version: "0.2.0"}
+	manifest := commandManifest{Version: "0.2.0", Capabilities: []string{"self_upgrade_v1", "run_artifacts_v1"}}
 	for _, arch := range []string{"amd64", "arm64"} {
 		body := testArchive("0.2.0")
 		fileName := "yunling-agent-0.2.0-linux-" + arch + ".tar.gz"
@@ -47,6 +47,13 @@ func TestLoadImportInputOpensBothArchitecturesAndVerifiesManifest(t *testing.T) 
 	input := importer.input
 	if input.Version != "0.2.0" || len(input.Artifacts) != 2 || !input.Recommend || input.ManifestSHA256 == "" || input.CreatedBy == "" {
 		t.Fatalf("导入内容：%+v", input)
+	}
+	if len(input.Capabilities) != 2 || input.Capabilities[1] != "run_artifacts_v1" || !bytes.Equal(input.ManifestJSON, encoded) {
+		t.Fatalf("能力声明和原始清单未传递：%+v", input)
+	}
+	digest := sha256.Sum256(encoded)
+	if input.ManifestSHA256 != hex.EncodeToString(digest[:]) {
+		t.Fatal("清单摘要未绑定能力声明")
 	}
 	for _, item := range input.Artifacts {
 		if item.Body == nil {

@@ -20,7 +20,8 @@ func TestPublishEndpointUsesAuthenticatedDeveloperAsAuthor(t *testing.T) {
 		"runtime":"bash",
 		"entrypoint":"main.sh",
 		"releaseNotes":"首次发布脚本",
-		"distribution":{"mode":"all_compatible"}
+		"distribution":{"mode":"all_compatible"},
+		"artifacts":{"allowedGlobs":["*.csv"],"maxFileBytes":1024,"maxTotalBytes":2048}
 	}`))
 	request = request.WithContext(auth.WithPrincipal(request.Context(), auth.Principal{
 		UserID: "123e4567-e89b-42d3-a456-426614174800",
@@ -36,6 +37,9 @@ func TestPublishEndpointUsesAuthenticatedDeveloperAsAuthor(t *testing.T) {
 	if manager.publishInput.ScriptID != "script-1" || manager.publishInput.AuthorID != "123e4567-e89b-42d3-a456-426614174800" ||
 		manager.publishInput.ReleaseNotes != "首次发布脚本" || manager.publishInput.Runtime != "bash" {
 		t.Fatalf("发布接口必须使用路径脚本和当前用户：%+v", manager.publishInput)
+	}
+	if manager.publishInput.Artifacts == nil || manager.publishInput.Artifacts.MaxTotalBytes != 2048 {
+		t.Fatalf("发布接口丢失产物策略：%+v", manager.publishInput.Artifacts)
 	}
 	var version Version
 	if err := json.NewDecoder(recorder.Body).Decode(&version); err != nil || version.Number != 1 {

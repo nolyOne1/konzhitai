@@ -103,7 +103,7 @@ func main() {
 	backupPaths := backup.NewRunPaths(configuration.Backup.Root)
 	resticRepository := backup.NewResticRepository(configuration.Backup, backupRunner)
 	backupExporter := backup.NewExporter(configuration.Backup, backupRunner, backupPaths, backup.DeploymentMetadata{
-		GitRevision: os.Getenv("YUNLING_GIT_REVISION"), MigrationVersion: "12", ImageDigests: map[string]string{},
+		GitRevision: os.Getenv("YUNLING_GIT_REVISION"), ImageDigests: map[string]string{},
 	}, time.Now)
 	backupVerifier := backup.NewVerifier(configuration.Backup, resticRepository, backupRunner, backupPaths)
 	backupService := backup.NewService(backupRepository, backupExporter, resticRepository, time.Now).

@@ -114,13 +114,13 @@ func TestDetectedCapabilitiesRequiresLinuxUpgradeUnit(t *testing.T) {
 	stat := func(string) (os.FileInfo, error) { return os.Stat(unitPath) }
 
 	capabilities := detectedCapabilities("linux", stat)
-	if len(capabilities) != 1 || capabilities[0] != "self_upgrade_v1" {
+	if len(capabilities) != 2 || capabilities[0] != "run_artifacts_v1" || capabilities[1] != "self_upgrade_v1" {
 		t.Fatalf("完整安装的 Linux 代理必须声明自升级能力：%v", capabilities)
 	}
-	if capabilities := detectedCapabilities("windows", stat); len(capabilities) != 0 {
+	if capabilities := detectedCapabilities("windows", stat); len(capabilities) != 1 || capabilities[0] != "run_artifacts_v1" {
 		t.Fatalf("非 Linux 代理不得声明自升级能力：%v", capabilities)
 	}
-	if capabilities := detectedCapabilities("linux", func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }); len(capabilities) != 0 {
+	if capabilities := detectedCapabilities("linux", func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }); len(capabilities) != 1 || capabilities[0] != "run_artifacts_v1" {
 		t.Fatalf("缺少升级单元时不得声明自升级能力：%v", capabilities)
 	}
 }

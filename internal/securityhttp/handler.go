@@ -333,7 +333,7 @@ func listAudit(manager AuditManager) http.HandlerFunc {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		events, err := manager.List(r.Context(), audit.Filter{
 			ActorID: r.URL.Query().Get("actorId"), Action: r.URL.Query().Get("action"),
-			TargetType: r.URL.Query().Get("targetType"), Limit: limit,
+			TargetType: r.URL.Query().Get("targetType"), TargetID: r.URL.Query().Get("targetId"), Limit: limit,
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "读取审计日志失败")

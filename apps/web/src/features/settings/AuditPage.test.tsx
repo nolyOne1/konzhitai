@@ -1,11 +1,12 @@
-import { render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AuditPage } from './AuditPage'
 
 describe('系统设置与审计', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
   it('展示合并告警和只追加审计，并可确认告警', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -16,13 +17,26 @@ describe('系统设置与审计', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     const user = userEvent.setup()
-    render(<AuditPage />)
+    render(<MemoryRouter><AuditPage /></MemoryRouter>)
 
     expect(await screen.findByText('服务器离线')).toBeVisible()
     expect(screen.getByText('合并 3 次')).toBeVisible()
     expect((await screen.findAllByText('创建敏感参数')).length).toBeGreaterThan(0)
     await user.click(screen.getByRole('button', { name: '确认服务器离线告警' }))
     expect(await screen.findByText('已确认')).toBeVisible()
+  })
+
+  it('关联运行链接在服务端限定目标而不是过滤最近一页', async () => {
+    const fetchMock = vi.fn(async (path: string) => {
+      if (path === '/api/alerts') return response({ alerts: [] })
+      if (path === '/api/audit?targetType=run&targetId=run-42') return response({ events: [] })
+      throw new Error(path)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<MemoryRouter initialEntries={['/settings?targetType=run&targetId=run-42']}><AuditPage /></MemoryRouter>)
+    expect(await screen.findByText('暂无审计记录')).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent('run / run-42')
+    expect(screen.getByRole('link', { name: '查看全部审计' })).toHaveAttribute('href', '/settings')
   })
 })
 

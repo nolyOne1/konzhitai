@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import {
   createTask,
@@ -14,6 +14,8 @@ import {
   type TaskInput,
   type TaskVersionPolicy,
 } from '../../api/client'
+import { TaskSchedulesEditor } from './TaskSchedulesEditor'
+import { useCanExecute } from '../auth/SessionContext'
 
 type EditorState = {
   name: string
@@ -44,15 +46,18 @@ type EditorState = {
 const emptyEditor: EditorState = {
   name: '', description: '', scriptId: '', versionPolicy: 'latest', pinnedVersionId: '', requiredRuntime: 'bash',
   parameters: '{}', secretRefs: '', requiredLabels: '', cpuMillicores: 100, memoryMB: 128, diskMB: 128,
-  priority: 50, maxConcurrency: 1, timeoutSeconds: 3600, maxWaitSeconds: 86400,
+  priority: 50, maxConcurrency: 1, timeoutSeconds: 3600, maxWaitSeconds: 0,
   maxRetries: 0, backoffSeconds: 30, idempotent: false, enabled: true,
   scheduleEnabled: false, cronExpression: '0 2 * * *', timezone: 'Asia/Shanghai',
 }
 
 export function TaskEditorPage() {
+  const canExecute = useCanExecute()
   const { id = '' } = useParams()
   const editing = Boolean(id)
   const navigate = useNavigate()
+  const location = useLocation()
+  const scheduleError = (location.state as { scheduleError?: string } | null)?.scheduleError || ''
   const [scripts, setScripts] = useState<ScriptView[]>([])
   const [versions, setVersions] = useState<ScriptVersion[]>([])
   const [editor, setEditor] = useState<EditorState>(emptyEditor)
@@ -64,6 +69,8 @@ export function TaskEditorPage() {
 
   useEffect(() => {
     let active = true
+    setLoading(true)
+    setError(scheduleError)
     Promise.all([getScripts(), editing ? getTask(id) : Promise.resolve(null)])
       .then(([scriptList, definition]) => {
         if (!active) return
@@ -73,7 +80,7 @@ export function TaskEditorPage() {
       .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : '任务编辑器加载失败') })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [editing, id])
+  }, [editing, id, scheduleError])
 
   useEffect(() => {
     if (!editor.scriptId || editor.versionPolicy !== 'pinned') return
@@ -98,6 +105,7 @@ export function TaskEditorPage() {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
+    if (!canExecute) return
     setError('')
     setParameterError('')
     if (!editor.name.trim() || !editor.scriptId) {
@@ -125,16 +133,22 @@ export function TaskEditorPage() {
       idempotent: editor.idempotent, enabled: editor.enabled,
     }
     setSaving(true)
+    let createdId = ''
     try {
       if (editor.scheduleEnabled) {
         await validateTaskCron({ cronExpression: editor.cronExpression, timezone: editor.timezone })
       }
       const saved = editing ? await updateTask(id, input) : await createTask(input)
+      if (!editing) createdId = saved.id
       if (!editing && editor.scheduleEnabled) {
         await createTaskSchedule(saved.id, { cronExpression: editor.cronExpression, timezone: editor.timezone, enabled: true })
       }
       navigate('/tasks', { state: { message: editing ? '任务已更新' : '任务已创建' } })
     } catch (reason) {
+      if (createdId) {
+        navigate(`/tasks/${encodeURIComponent(createdId)}`, { replace: true, state: { scheduleError: `任务已创建，定时计划保存失败：${reason instanceof Error ? reason.message : '服务暂不可用'}。请在下方添加计划，无需重复创建任务。` } })
+        return
+      }
       setError(reason instanceof Error ? reason.message : '保存任务失败')
       queueMicrotask(() => errorRef.current?.focus())
     } finally {
@@ -143,16 +157,19 @@ export function TaskEditorPage() {
   }
 
   if (loading) return <div className="page-loading" aria-live="polite">正在加载任务编辑器…</div>
+  if (!editing && !canExecute) return <div className="notice" role="status">当前角色没有创建任务的权限。<Link to="/tasks">返回任务调度</Link></div>
 
   return (
     <>
       <div className="editor-page-heading task-editor-heading">
-        <div><Link className="back-link" to="/tasks">← 返回任务调度</Link><p className="eyebrow">运行规则配置</p><h1>{editing ? `编辑${editor.name}` : '新建任务'}</h1><p>选择中央脚本并定义资源、优先级和排队规则；没有合适服务器时会继续等待。</p></div>
+        <div><Link className="back-link" to="/tasks">← 返回任务调度</Link><p className="eyebrow">运行规则配置</p><h1>{editing ? `${canExecute ? '编辑' : '查看'}${editor.name}` : '新建任务'}</h1><p>选择中央脚本并定义资源、优先级和排队规则；没有合适服务器时会继续等待。</p></div>
       </div>
 
       {error && <div ref={errorRef} className="notice notice-error" role="alert" tabIndex={-1}>{error}</div>}
+      {!canExecute && <div className="notice" role="status">当前角色仅可查看任务配置。</div>}
 
       <form id="task-editor-form" className="task-editor-form" onSubmit={(event) => void submit(event)}>
+        <fieldset className="task-editor-fields" disabled={!canExecute}>
         <section className="panel task-form-section" aria-labelledby="task-basic-title">
           <header className="panel-header"><div><h2 id="task-basic-title">基础信息</h2><p>定义团队可识别的任务名称和唯一执行脚本。</p></div></header>
           <div className="task-form-grid">
@@ -182,20 +199,22 @@ export function TaskEditorPage() {
             <NumberField label="优先级（0–100）" min={0} max={100} value={editor.priority} onChange={(value) => setEditor({ ...editor, priority: value })} />
             <NumberField label="最大并发" min={1} value={editor.maxConcurrency} onChange={(value) => setEditor({ ...editor, maxConcurrency: value })} />
             <NumberField label="执行超时（秒）" min={1} value={editor.timeoutSeconds} onChange={(value) => setEditor({ ...editor, timeoutSeconds: value })} />
-            <NumberField label="最大等待（秒）" min={1} value={editor.maxWaitSeconds} onChange={(value) => setEditor({ ...editor, maxWaitSeconds: value })} />
+            <NumberField label="最大等待（秒）" min={0} value={editor.maxWaitSeconds} onChange={(value) => setEditor({ ...editor, maxWaitSeconds: value })} />
             <NumberField label="失败重试次数" min={0} value={editor.maxRetries} onChange={(value) => setEditor({ ...editor, maxRetries: value })} />
             <NumberField label="重试间隔（秒）" min={0} value={editor.backoffSeconds} onChange={(value) => setEditor({ ...editor, backoffSeconds: value })} />
           </div>
+          <p className="cell-note">最大等待为 0 表示无限等待，直到有合适服务器或人工取消。</p>
           <div className="task-switches"><CheckField label="幂等任务" hint="声明后，调度器可在明确失败时安全重试。" checked={editor.idempotent} onChange={(value) => setEditor({ ...editor, idempotent: value })} /><CheckField label="创建后立即启用" hint="停用后不会产生新的手动或定时运行实例。" checked={editor.enabled} onChange={(value) => setEditor({ ...editor, enabled: value })} /></div>
         </section>
 
-        <section className="panel task-form-section" aria-labelledby="task-schedule-title">
+        {editing ? <TaskSchedulesEditor taskId={id} /> : <section className="panel task-form-section" aria-labelledby="task-schedule-title">
           <header className="panel-header"><div><h2 id="task-schedule-title">定时计划</h2><p>采用五段 Cron 表达式和 IANA 时区；默认按中国标准时间执行。</p></div></header>
           <CheckField label="启用定时执行" hint="关闭时仍可在任务列表中手动执行。" checked={editor.scheduleEnabled} onChange={(value) => setEditor({ ...editor, scheduleEnabled: value })} />
           {editor.scheduleEnabled && <div className="task-form-grid schedule-fields"><label className="form-field">Cron 表达式<input value={editor.cronExpression} onChange={(event) => setEditor({ ...editor, cronExpression: event.target.value })} placeholder="0 2 * * *" /><small>示例：每天凌晨 2 点为 0 2 * * *</small></label><label className="form-field">时区<select value={editor.timezone} onChange={(event) => setEditor({ ...editor, timezone: event.target.value })}><option value="Asia/Shanghai">Asia/Shanghai（中国标准时间）</option><option value="UTC">UTC（协调世界时）</option></select></label></div>}
-        </section>
+        </section>}
 
-        <footer className="task-form-actions"><Link className="secondary-action button-link" to="/tasks">取消</Link><button type="submit" className="primary-action" disabled={saving}>{saving ? '正在保存…' : editing ? '保存任务' : '创建任务'}</button></footer>
+        </fieldset>
+        <footer className="task-form-actions"><Link className="secondary-action button-link" to="/tasks">返回任务调度</Link>{canExecute && <button type="submit" className="primary-action" disabled={saving}>{saving ? '正在保存…' : editing ? '保存任务' : '创建任务'}</button>}</footer>
       </form>
     </>
   )

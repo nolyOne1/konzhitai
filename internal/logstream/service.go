@@ -29,6 +29,7 @@ var (
 )
 
 type LogChunk struct {
+	ArchiveCursor  int64     `json:"-"`
 	RunID          string    `json:"runId"`
 	ExecutionToken string    `json:"executionToken"`
 	Sequence       uint64    `json:"sequence"`

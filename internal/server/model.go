@@ -38,6 +38,7 @@ type ResourceSnapshot struct {
 
 // Snapshot 是调度器做一次确定性决策所需的服务器状态快照。
 type Snapshot struct {
+	AgentCapabilities      []string
 	ID                     string
 	Status                 Status
 	Enabled                bool

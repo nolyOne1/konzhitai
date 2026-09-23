@@ -107,12 +107,13 @@ func TestFeishuTestMessageAndDeliveryStatusAPI(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/operations/notifications/feishu/test", strings.NewReader(`{}`))
 	request.Header.Set("Origin", "https://aiwise.top")
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "33333333-3333-4333-8333-333333333333")
 	request = request.WithContext(auth.WithPrincipal(request.Context(), adminPrincipal()))
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, request)
 
-	if recorder.Code != http.StatusAccepted || deliveries.actorID != "admin-1" {
+	if recorder.Code != http.StatusAccepted || deliveries.actorID != "admin-1" || deliveries.requestID != "33333333-3333-4333-8333-333333333333" {
 		t.Fatalf("测试消息入队失败：status=%d actor=%q body=%s", recorder.Code, deliveries.actorID, recorder.Body.String())
 	}
 	request = httptest.NewRequest(http.MethodGet, "/api/operations/notifications/delivery-1", nil)
@@ -121,6 +122,26 @@ func TestFeishuTestMessageAndDeliveryStatusAPI(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"status":"pending"`) {
 		t.Fatalf("读取测试消息状态失败：status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestFeishuTestRequiresStableRequestKeyAndExactBody(t *testing.T) {
+	for _, tc := range []struct{ key, body string }{
+		{"", `{}`}, {"bad", `{}`}, {"00000000-0000-0000-0000-000000000000", `{}`},
+		{"33333333-3333-4333-8333-333333333333", `{"message":"different action"}`},
+	} {
+		deliveries := &deliveryManager{}
+		handler := operationshttp.NewHandler(operationshttp.Services{Deliveries: deliveries}, "https://aiwise.top")
+		req := httptest.NewRequest(http.MethodPost, "/api/operations/notifications/feishu/test", strings.NewReader(tc.body))
+		req.Header.Set("Origin", "https://aiwise.top")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", tc.key)
+		req = req.WithContext(auth.WithPrincipal(req.Context(), adminPrincipal()))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		if response.Code != http.StatusBadRequest || deliveries.actorID != "" {
+			t.Fatalf("invalid request enqueued: status=%d body=%s", response.Code, response.Body.String())
+		}
 	}
 }
 
@@ -213,8 +234,9 @@ type notificationManager struct {
 }
 
 type deliveryManager struct {
-	delivery notification.Delivery
-	actorID  string
+	delivery  notification.Delivery
+	actorID   string
+	requestID string
 }
 
 type backupManager struct {
@@ -245,8 +267,9 @@ func (m *backupManager) RequestVerification(_ context.Context, _ string, backupI
 
 func ptrTime(value time.Time) *time.Time { return &value }
 
-func (m *deliveryManager) EnqueueTest(_ context.Context, actorID string) (notification.Delivery, error) {
+func (m *deliveryManager) EnqueueTest(_ context.Context, actorID, requestID string) (notification.Delivery, error) {
 	m.actorID = actorID
+	m.requestID = requestID
 	return m.delivery, nil
 }
 

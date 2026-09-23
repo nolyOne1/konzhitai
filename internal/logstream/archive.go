@@ -26,13 +26,15 @@ var (
 )
 
 type ArchiveRecord struct {
-	RunID      task.RunID
-	ObjectKey  string
-	ByteSize   int64
-	SHA256     string
-	FirstLogAt time.Time
-	LastLogAt  time.Time
-	ArchivedAt time.Time
+	RunID         task.RunID
+	ObjectKey     string
+	ByteSize      int64
+	SHA256        string
+	FirstLogAt    time.Time
+	LastLogAt     time.Time
+	ArchivedAt    time.Time
+	LastLogCursor int64
+	ChunkCount    int64
 }
 
 type archiveLogEntry struct {
@@ -71,8 +73,10 @@ func (a *Archiver) Archive(ctx context.Context, runID task.RunID) (string, error
 		return "", err
 	}
 	var uncompressed int64
+	var lastCursor int64
 	for _, chunk := range chunks {
 		uncompressed += int64(len(chunk.Content))
+		lastCursor = max(lastCursor, chunk.ArchiveCursor)
 	}
 	if !completed || len(chunks) == 0 || uncompressed < a.threshold {
 		return "", ErrRunNotArchivable
@@ -98,14 +102,15 @@ func (a *Archiver) Archive(ctx context.Context, runID task.RunID) (string, error
 	}
 	sum := sha256.Sum256(compressed.Bytes())
 	checksum := hex.EncodeToString(sum[:])
-	key := "runs/" + string(runID) + "/logs.ndjson.gz"
+	key := "runs/" + string(runID) + "/logs/" + checksum + ".ndjson.gz"
 	if err := a.objects.Put(ctx, key, bytes.NewReader(compressed.Bytes()), int64(compressed.Len()), checksum); err != nil {
 		return "", fmt.Errorf("保存归档日志：%w", err)
 	}
 	record := ArchiveRecord{
 		RunID: runID, ObjectKey: key, ByteSize: int64(compressed.Len()), SHA256: checksum,
 		FirstLogAt: chunks[0].CreatedAt, LastLogAt: chunks[len(chunks)-1].CreatedAt,
-		ArchivedAt: a.now().UTC(),
+		ArchivedAt:    a.now().UTC(),
+		LastLogCursor: lastCursor, ChunkCount: int64(len(chunks)),
 	}
 	if err := a.repository.SaveArchive(ctx, record); err != nil {
 		return "", err
@@ -193,8 +198,8 @@ func (r *PostgresArchiveRepository) LoadForArchive(ctx context.Context, runID ta
 		return nil, false, fmt.Errorf("读取归档任务状态：%w", err)
 	}
 	rows, err := r.db.Query(ctx, `
-		SELECT task_run_id::text, execution_token, sequence, stream, content, created_at
-		FROM log_chunks WHERE task_run_id=$1 ORDER BY created_at, stream, sequence
+		SELECT task_run_id::text, execution_token, sequence, stream, content, created_at, archive_cursor
+		FROM log_chunks WHERE task_run_id=$1 ORDER BY created_at, stream, sequence, archive_cursor
 	`, runID)
 	if err != nil {
 		return nil, false, fmt.Errorf("读取待归档日志：%w", err)
@@ -203,7 +208,7 @@ func (r *PostgresArchiveRepository) LoadForArchive(ctx context.Context, runID ta
 	chunks := []LogChunk{}
 	for rows.Next() {
 		var chunk LogChunk
-		if err := rows.Scan(&chunk.RunID, &chunk.ExecutionToken, &chunk.Sequence, &chunk.Stream, &chunk.Content, &chunk.CreatedAt); err != nil {
+		if err := rows.Scan(&chunk.RunID, &chunk.ExecutionToken, &chunk.Sequence, &chunk.Stream, &chunk.Content, &chunk.CreatedAt, &chunk.ArchiveCursor); err != nil {
 			return nil, false, err
 		}
 		chunks = append(chunks, chunk)
@@ -214,11 +219,16 @@ func (r *PostgresArchiveRepository) LoadForArchive(ctx context.Context, runID ta
 func (r *PostgresArchiveRepository) SaveArchive(ctx context.Context, record ArchiveRecord) error {
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO run_log_archives (
-			task_run_id, object_key, byte_size, sha256, first_log_at, last_log_at, archived_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7)
-		ON CONFLICT (task_run_id) DO NOTHING
+			task_run_id, object_key, byte_size, sha256, first_log_at, last_log_at, archived_at, last_log_cursor, chunk_count
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT (task_run_id) DO UPDATE SET
+			object_key=EXCLUDED.object_key, byte_size=EXCLUDED.byte_size, sha256=EXCLUDED.sha256,
+			first_log_at=EXCLUDED.first_log_at, last_log_at=EXCLUDED.last_log_at, archived_at=EXCLUDED.archived_at,
+			last_log_cursor=EXCLUDED.last_log_cursor, chunk_count=EXCLUDED.chunk_count
+		WHERE EXCLUDED.chunk_count > run_log_archives.chunk_count
+			OR (EXCLUDED.chunk_count = run_log_archives.chunk_count AND EXCLUDED.last_log_cursor >= run_log_archives.last_log_cursor)
 	`, record.RunID, record.ObjectKey, record.ByteSize, record.SHA256,
-		record.FirstLogAt, record.LastLogAt, record.ArchivedAt)
+		record.FirstLogAt, record.LastLogAt, record.ArchivedAt, record.LastLogCursor, record.ChunkCount)
 	if err != nil {
 		return fmt.Errorf("保存日志归档索引：%w", err)
 	}

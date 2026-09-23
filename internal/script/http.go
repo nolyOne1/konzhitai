@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"yunling.local/platform/internal/agentprotocol"
 	"yunling.local/platform/internal/auth"
 )
 
@@ -29,7 +30,7 @@ type Manager interface {
 type SyncManager interface {
 	PrepareVersion(context.Context, string) (int64, error)
 	List(context.Context, string) ([]SyncView, error)
-	Retry(context.Context, string) error
+	RetryScript(context.Context, string, string, string) error
 }
 
 type HandlerOption func(*handlerOptions)
@@ -177,7 +178,8 @@ func draftHandler(manager Manager) http.Handler {
 		}
 		principal, _ := auth.PrincipalFromContext(r.Context())
 		draft, err := manager.SaveDraft(r.Context(), DraftInput{
-			ScriptID: r.PathValue("id"), Content: []byte(request.Content), Runtime: request.Runtime,
+			Artifacts: request.Artifacts,
+			ScriptID:  r.PathValue("id"), Content: []byte(request.Content), Runtime: request.Runtime,
 			Entrypoint: request.Entrypoint, Distribution: request.Distribution,
 			Category: request.Category, Tags: request.Tags,
 			ParameterDefinitions: request.ParameterDefinitions, Resources: request.Resources, AuthorID: principal.UserID,
@@ -202,7 +204,8 @@ func publishHandler(manager Manager, sync SyncManager) http.Handler {
 		}
 		principal, _ := auth.PrincipalFromContext(r.Context())
 		version, err := manager.Publish(r.Context(), PublishInput{
-			ScriptID: r.PathValue("id"), Content: []byte(request.Content), Runtime: request.Runtime,
+			Artifacts: request.Artifacts,
+			ScriptID:  r.PathValue("id"), Content: []byte(request.Content), Runtime: request.Runtime,
 			Entrypoint: request.Entrypoint, ReleaseNotes: request.ReleaseNotes,
 			Category: request.Category, Tags: request.Tags,
 			Distribution: request.Distribution, ParameterDefinitions: request.ParameterDefinitions,
@@ -299,7 +302,8 @@ func syncListHandler(sync SyncManager) http.Handler {
 
 func syncRetryHandler(sync SyncManager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := sync.Retry(r.Context(), r.PathValue("syncID")); err != nil {
+		principal, _ := auth.PrincipalFromContext(r.Context())
+		if err := sync.RetryScript(r.Context(), r.PathValue("id"), r.PathValue("syncID"), principal.UserID); err != nil {
 			if errors.Is(err, ErrSyncNotFound) {
 				writeScriptError(w, http.StatusNotFound, err.Error())
 				return
@@ -312,14 +316,15 @@ func syncRetryHandler(sync SyncManager) http.Handler {
 }
 
 type editorRequest struct {
-	Content              string                `json:"content"`
-	Runtime              string                `json:"runtime"`
-	Entrypoint           string                `json:"entrypoint"`
-	Category             string                `json:"category"`
-	Tags                 []string              `json:"tags"`
-	Distribution         DistributionRule      `json:"distribution"`
-	ParameterDefinitions []ParameterDefinition `json:"parameterDefinitions"`
-	Resources            ResourceRequirements  `json:"resources"`
+	Artifacts            *agentprotocol.ArtifactPolicy `json:"artifacts"`
+	Content              string                        `json:"content"`
+	Runtime              string                        `json:"runtime"`
+	Entrypoint           string                        `json:"entrypoint"`
+	Category             string                        `json:"category"`
+	Tags                 []string                      `json:"tags"`
+	Distribution         DistributionRule              `json:"distribution"`
+	ParameterDefinitions []ParameterDefinition         `json:"parameterDefinitions"`
+	Resources            ResourceRequirements          `json:"resources"`
 }
 
 type publishRequest struct {
@@ -385,7 +390,7 @@ func writeKnownScriptError(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, ErrScriptNotFound), errors.Is(err, ErrVersionNotFound):
 		writeScriptError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrInvalidScript), errors.Is(err, ErrInvalidDraft), errors.Is(err, ErrInvalidPublish),
-		errors.Is(err, ErrInvalidReleaseNotes), errors.Is(err, ErrInvalidDistribution), errors.Is(err, ErrScriptContentTooLarge):
+		errors.Is(err, ErrInvalidReleaseNotes), errors.Is(err, ErrInvalidDistribution), errors.Is(err, ErrScriptContentTooLarge), errors.Is(err, ErrInvalidParameters), errors.Is(err, ErrInvalidArtifacts):
 		writeScriptError(w, http.StatusBadRequest, err.Error())
 	default:
 		return false

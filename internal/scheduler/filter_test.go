@@ -51,6 +51,21 @@ func TestFilterKeepsCompatibleServerAndMarksCachedScript(t *testing.T) {
 	}
 }
 
+func TestArtifactPolicyRequiresCapableAgentOnlyForArtifactRuns(t *testing.T) {
+	run := schedulableRun("artifact-run", 1000, 2<<30, 4<<30)
+	legacy := schedulableServer("legacy")
+	capable := schedulableServer("capable")
+	capable.AgentCapabilities = []string{"run_artifacts_v1"}
+	if got := scheduler.Filter(run, []server.Snapshot{legacy, capable}); len(got) != 2 {
+		t.Fatalf("无产物策略应兼容旧节点：%+v", got)
+	}
+	run.RequiresArtifacts = true
+	got := scheduler.Filter(run, []server.Snapshot{legacy, capable})
+	if len(got) != 1 || got[0].ServerID != "capable" {
+		t.Fatalf("产物任务只允许支持采集的节点：%+v", got)
+	}
+}
+
 func schedulableRun(id string, cpu int, memory, disk int64) task.Run {
 	return task.Run{
 		ID: id, DefinitionID: "definition-a", ScriptVersionID: "version-a", State: task.Queued,

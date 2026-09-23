@@ -5,6 +5,7 @@ import { BrowserRouter, Link, Navigate, NavLink, Outlet, Route, Routes, useLocat
 import { getSession, logout, type SessionUser } from '../api/client'
 import { LoginPage } from '../features/auth/LoginPage'
 import { RequiredPasswordPage } from '../features/auth/RequiredPasswordPage'
+import { SessionContext } from '../features/auth/SessionContext'
 import { DashboardPage } from '../features/dashboard/DashboardPage'
 import { ServersPage } from '../features/servers/ServersPage'
 import { AgentUpgradesPage } from '../features/servers/AgentUpgradesPage'
@@ -100,7 +101,7 @@ function ConsoleAccessGate() {
     return <RequiredPasswordPage onChanged={() => void finishRequiredPasswordChange()} />
   }
   if (location.pathname === '/password-required') return <Navigate to="/" replace />
-  return <Outlet />
+  return <SessionContext.Provider value={session}><Outlet /></SessionContext.Provider>
 }
 
 function ConsoleShell() {

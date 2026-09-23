@@ -78,5 +78,5 @@ package_arch() {
 
 amd64_artifact=$(package_arch amd64 "$amd64_binary")
 arm64_artifact=$(package_arch arm64 "$arm64_binary")
-printf '{"version":"%s","artifacts":[%s,%s]}\n' \
+printf '{"version":"%s","capabilities":["self_upgrade_v1","run_artifacts_v1"],"artifacts":[%s,%s]}\n' \
   "$version" "$amd64_artifact" "$arm64_artifact" >"$output_dir/manifest.json"

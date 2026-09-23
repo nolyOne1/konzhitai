@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"slices"
 	"strings"
 
 	"yunling.local/platform/internal/server"
@@ -17,6 +18,9 @@ func Filter(run task.Run, servers []server.Snapshot) []Candidate {
 			continue
 		}
 		if !runtimeAvailable(run.RequiredRuntime, item.Runtimes) {
+			continue
+		}
+		if run.RequiresArtifacts && !slices.Contains(item.AgentCapabilities, "run_artifacts_v1") {
 			continue
 		}
 		if item.MaxConcurrency <= 0 || item.RunningTasks >= item.MaxConcurrency {

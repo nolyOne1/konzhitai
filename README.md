@@ -16,7 +16,7 @@
 
 ## 持续集成
 
-GitHub Actions 会并行运行五项完整质量门禁，但不会部署或连接生产环境。检查名称、失败诊断和 `main` 分支保护要求见 [docs/CI.md](docs/CI.md)。
+GitHub Actions 会并行运行六项完整质量门禁，但不会部署或连接生产环境。检查名称、失败诊断和 `main` 分支保护要求见 [docs/CI.md](docs/CI.md)。
 
 ## 本地验证
 

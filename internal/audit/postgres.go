@@ -44,9 +44,10 @@ func (r *PostgresRepository) List(ctx context.Context, filter Filter) ([]Event, 
 		WHERE ($1='' OR actor_id::text=$1)
 		  AND ($2='' OR action=$2)
 		  AND ($3='' OR target_type=$3)
+		  AND ($4='' OR target_id=$4)
 		ORDER BY created_at DESC, id DESC
-		LIMIT $4
-	`, filter.ActorID, filter.Action, filter.TargetType, filter.Limit)
+		LIMIT $5
+	`, filter.ActorID, filter.Action, filter.TargetType, filter.TargetID, filter.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("读取审计日志：%w", err)
 	}

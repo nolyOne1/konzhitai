@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -195,6 +194,10 @@ func (s *Service) SetEnabled(ctx context.Context, id string, enabled, cancelQueu
 }
 
 func (s *Service) Trigger(ctx context.Context, definitionID string, trigger Trigger) (Run, error) {
+	return s.trigger(ctx, definitionID, trigger, nil)
+}
+
+func (s *Service) trigger(ctx context.Context, definitionID string, trigger Trigger, schedule *dueSchedule) (Run, error) {
 	if trigger.Type == "" {
 		trigger.Type = TriggerManual
 	}
@@ -211,7 +214,7 @@ func (s *Service) Trigger(ctx context.Context, definitionID string, trigger Trig
 	var pinnedVersionID *string
 	var scriptID string
 	var enabled, idempotent bool
-	var parametersJSON, labelsJSON []byte
+	var parametersJSON, labelsJSON, secretRefsJSON []byte
 	var requiredRuntime string
 	var priority, cpu, timeout, maxWait, maxRetries, backoff, maxConcurrency int
 	var memory, disk int64
@@ -220,14 +223,14 @@ func (s *Service) Trigger(ctx context.Context, definitionID string, trigger Trig
 		       required_labels, required_runtime,
 		       priority, cpu_millicores, memory_bytes, disk_bytes, max_concurrency,
 		       timeout_seconds, max_wait_seconds, max_retries, retry_backoff_seconds,
-		       idempotent
+		       idempotent, secret_bindings
 		FROM task_definitions
 		WHERE id=$1
 		FOR SHARE
 	`, definitionID).Scan(&scriptID, &policy, &pinnedVersionID, &enabled, &parametersJSON,
 		&labelsJSON, &requiredRuntime,
 		&priority, &cpu, &memory, &disk, &maxConcurrency, &timeout, &maxWait,
-		&maxRetries, &backoff, &idempotent)
+		&maxRetries, &backoff, &idempotent, &secretRefsJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Run{}, ErrDefinitionNotFound
 	}
@@ -236,6 +239,10 @@ func (s *Service) Trigger(ctx context.Context, definitionID string, trigger Trig
 	}
 	if !enabled {
 		return Run{}, ErrDefinitionDisabled
+	}
+	nextScheduled, err := lockDueSchedule(ctx, tx, schedule)
+	if err != nil {
+		return Run{}, err
 	}
 	var versionID string
 	if policy == VersionPinned && pinnedVersionID != nil {
@@ -256,11 +263,17 @@ func (s *Service) Trigger(ctx context.Context, definitionID string, trigger Trig
 	for key, value := range trigger.Parameters {
 		parameters[key] = value
 	}
+	if err := validateVersionParameters(ctx, tx, scriptID, versionID, parameters, secretRefsJSON); err != nil {
+		return Run{}, err
+	}
 	requiredLabels := map[string]string{}
 	if err := json.Unmarshal(labelsJSON, &requiredLabels); err != nil {
 		return Run{}, fmt.Errorf("解析任务标签：%w", err)
 	}
-	parametersJSON, _ = json.Marshal(parameters)
+	parametersJSON, err = json.Marshal(parameters)
+	if err != nil {
+		return Run{}, ErrInvalidParameters
+	}
 	now := s.now()
 	run := Run{
 		DefinitionID: definitionID, ScriptVersionID: versionID, TriggerType: trigger.Type,
@@ -281,22 +294,33 @@ func (s *Service) Trigger(ctx context.Context, definitionID string, trigger Trig
 			created_at, updated_at
 		)
 		VALUES ($1,$2,$3,$4,'queued',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$9,$9)
+		ON CONFLICT (task_definition_id, scheduled_for) WHERE scheduled_for IS NOT NULL DO NOTHING
 		RETURNING id
 	`, definitionID, versionID, nullableUUID(trigger.RequestedBy), trigger.Type,
 		parametersJSON, labelsJSON, requiredRuntime, trigger.ScheduledFor, now, priority, cpu, memory, disk,
 		maxConcurrency, timeout, maxWait, maxRetries, backoff, idempotent).Scan(&run.ID)
-	if err != nil {
-		var pgError *pgconn.PgError
-		if errors.As(err, &pgError) && pgError.Code == "23505" && trigger.ScheduledFor != nil {
-			return Run{}, ErrDuplicateRun
+	if errors.Is(err, pgx.ErrNoRows) && trigger.ScheduledFor != nil {
+		// Multiple plans for the same task can share a fire time. Advance every
+		// locked plan even though the unique index permits only one run.
+		if err := advanceDueSchedule(ctx, tx, schedule, nextScheduled, now); err != nil {
+			return Run{}, err
 		}
+		if err := tx.Commit(ctx); err != nil {
+			return Run{}, fmt.Errorf("提交计划去重：%w", err)
+		}
+		return Run{}, ErrDuplicateRun
+	}
+	if err != nil {
 		return Run{}, fmt.Errorf("创建运行实例：%w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO run_events (task_run_id, sequence, event_type, state, payload, occurred_at)
-		VALUES ($1, 0, 'run.queued', 'queued', '{"message":"任务已进入排队队列"}'::jsonb, $2)
-	`, run.ID, now); err != nil {
+		VALUES ($1, 0, 'run.queued', 'queued', jsonb_build_object('message','任务已进入排队队列','secretRefs',$3::jsonb), $2)
+	`, run.ID, now, secretRefsJSON); err != nil {
 		return Run{}, fmt.Errorf("写入排队事件：%w", err)
+	}
+	if err := advanceDueSchedule(ctx, tx, schedule, nextScheduled, now); err != nil {
+		return Run{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Run{}, fmt.Errorf("提交运行实例：%w", err)
@@ -375,9 +399,6 @@ func normalizeInput(input CreateInput) CreateInput {
 	if input.TimeoutSeconds == 0 {
 		input.TimeoutSeconds = 3600
 	}
-	if input.MaxWaitSeconds == 0 {
-		input.MaxWaitSeconds = 86400
-	}
 	return input
 }
 
@@ -385,7 +406,7 @@ func validateInput(input CreateInput) error {
 	if input.Name == "" || input.ScriptID == "" || input.RequiredRuntime == "" ||
 		input.Resources.CPUMillicores <= 0 || input.Resources.MemoryBytes <= 0 ||
 		input.Resources.DiskBytes <= 0 || input.Priority < 0 || input.Priority > 100 ||
-		input.MaxConcurrency <= 0 || input.TimeoutSeconds <= 0 || input.MaxWaitSeconds <= 0 ||
+		input.MaxConcurrency <= 0 || input.TimeoutSeconds <= 0 || input.MaxWaitSeconds < 0 ||
 		input.RetryPolicy.MaxRetries < 0 || input.RetryPolicy.BackoffSeconds < 0 {
 		return ErrInvalidDefinition
 	}

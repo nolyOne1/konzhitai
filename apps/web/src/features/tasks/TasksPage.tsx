@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 
-import { getTasks, runTask, setTaskEnabled, type TaskDefinition } from '../../api/client'
+import { getTasks, setTaskEnabled, type TaskDefinition } from '../../api/client'
+import { useCanExecute } from '../auth/SessionContext'
+import { ManualRunDialog } from './ManualRunDialog'
 
 export function TasksPage() {
   const location = useLocation()
+  const canExecute = useCanExecute()
+  const [manualTask, setManualTask] = useState<TaskDefinition | null>(null)
+  const [lastRunID, setLastRunID] = useState('')
   const [tasks, setTasks] = useState<TaskDefinition[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -27,27 +32,14 @@ export function TasksPage() {
     if (disableTask) confirmRef.current?.focus()
   }, [disableTask])
 
-  async function trigger(task: TaskDefinition) {
-    setBusyID(task.id)
-    setError('')
-    setStatus('')
-    try {
-      await runTask(task.id)
-      setStatus(`${task.name}已进入排队队列`)
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '手动执行失败')
-    } finally {
-      setBusyID('')
-    }
-  }
-
   function openDisable(task: TaskDefinition) {
     setCancelQueued(false)
     setDisableTask(task)
   }
 
   async function confirmDisable() {
-    if (!disableTask) return
+    if (!disableTask || !canExecute) return
+    setLastRunID('')
     setBusyID(disableTask.id)
     setError('')
     try {
@@ -63,6 +55,8 @@ export function TasksPage() {
   }
 
   async function enable(task: TaskDefinition) {
+    if (!canExecute) return
+    setLastRunID('')
     setBusyID(task.id)
     setError('')
     try {
@@ -83,11 +77,12 @@ export function TasksPage() {
     <>
       <div className="page-heading">
         <div><p className="eyebrow">脚本运行规则</p><h1>任务调度</h1><p>集中管理脚本参数、执行计划和资源约束</p></div>
-        <Link className="primary-action button-link" to="/tasks/new">新建任务</Link>
+        {canExecute && <Link className="primary-action button-link" to="/tasks/new">新建任务</Link>}
       </div>
 
       {error && <div className="notice notice-error" role="alert">{error}</div>}
-      {status && <div className="notice notice-success" role="status">{status}</div>}
+      {status && <div className="notice notice-success" role="status">{status}{lastRunID && <Link to={`/runs/${encodeURIComponent(lastRunID)}`}> 查看本次执行</Link>}</div>}
+      {!canExecute && <div className="notice" role="status">当前角色仅可查看任务与执行记录。</div>}
 
       <section className="task-rule-banner" aria-labelledby="queue-rule-title">
         <span className="queue-rule-mark" aria-hidden="true" />
@@ -105,7 +100,7 @@ export function TasksPage() {
       <section className="panel task-list-panel" aria-labelledby="task-list-title">
         <header className="panel-header"><div><h2 id="task-list-title">任务定义</h2><p>每次执行都会锁定脚本版本并保存参数与资源快照。</p></div><span>{tasks.length} 个任务</span></header>
         {loading ? <div className="compact-empty" aria-live="polite"><span aria-hidden="true" />正在读取任务…</div> : tasks.length === 0 ? (
-          <div className="large-empty"><span className="empty-script-mark" aria-hidden="true">⌁</span><h3>还没有任务</h3><p>先选择已发布脚本，再配置资源和运行计划。</p><Link className="primary-action button-link" to="/tasks/new">新建第一个任务</Link></div>
+          <div className="large-empty"><span className="empty-script-mark" aria-hidden="true">⌁</span><h3>还没有任务</h3><p>先选择已发布脚本，再配置资源和运行计划。</p>{canExecute && <Link className="primary-action button-link" to="/tasks/new">新建第一个任务</Link>}</div>
         ) : (
           <div className="table-scroll"><table className="data-table task-table"><thead><tr><th>任务</th><th>执行脚本</th><th>状态</th><th>资源与并发</th><th>排队与重试</th><th>操作</th></tr></thead><tbody>{tasks.map((task) => (
             <tr key={task.id}>
@@ -114,12 +109,13 @@ export function TasksPage() {
               <td data-label="状态"><span className={`task-state ${task.enabled ? 'is-enabled' : 'is-disabled'}`}>{task.enabled ? '已启用' : '已停用'}</span></td>
               <td data-label="资源与并发"><strong>{task.resources.cpuMillicores}m · {formatBytes(task.resources.memoryBytes)}</strong><span className="cell-note">最大并发 {task.maxConcurrency}</span></td>
               <td data-label="排队与重试"><strong>最长等待 {formatDuration(task.maxWaitSeconds)}</strong><span className="cell-note">重试 {task.retryPolicy.maxRetries} 次 · 优先级 {task.priority}</span></td>
-              <td data-label="操作"><div className="row-actions task-row-actions"><button type="button" disabled={!task.enabled || busyID === task.id} aria-label={`手动执行${task.name}`} onClick={() => void trigger(task)}>{busyID === task.id ? '处理中' : '手动执行'}</button><Link to={`/tasks/${task.id}`}>编辑</Link>{task.enabled ? <button type="button" aria-label={`停用${task.name}`} onClick={() => openDisable(task)}>停用</button> : <button type="button" disabled={busyID === task.id} aria-label={`启用${task.name}`} onClick={() => void enable(task)}>启用</button>}</div></td>
+              <td data-label="操作"><div className="row-actions task-row-actions"><button type="button" disabled={!canExecute || !task.enabled || busyID === task.id} aria-label={`手动执行${task.name}`} onClick={() => { setLastRunID(''); setStatus(''); setManualTask(task) }}>{busyID === task.id ? '处理中' : '手动执行'}</button><Link to={`/tasks/${task.id}`}>{canExecute ? '编辑' : '查看'}</Link>{task.enabled ? <button type="button" disabled={!canExecute || busyID === task.id} aria-label={`停用${task.name}`} onClick={() => openDisable(task)}>停用</button> : <button type="button" disabled={!canExecute || busyID === task.id} aria-label={`启用${task.name}`} onClick={() => void enable(task)}>启用</button>}</div></td>
             </tr>
           ))}</tbody></table></div>
         )}
       </section>
 
+      {manualTask && <ManualRunDialog task={manualTask} onClose={() => setManualTask(null)} onStarted={(run) => { setLastRunID(run.id); setStatus(`${manualTask.name}已进入排队队列`); setManualTask(null) }} />}
       {disableTask && <div className="drawer-backdrop centered-dialog"><section className="console-dialog" role="dialog" aria-modal="true" aria-labelledby="disable-task-title"><header className="drawer-header"><div><p className="eyebrow">停止新的运行实例</p><h2 id="disable-task-title">停用{disableTask.name}</h2><p>停用后不会再接受手动执行，也不会由 Cron 创建新实例。</p></div><button type="button" className="icon-button" aria-label="关闭停用任务窗口" onClick={() => setDisableTask(null)}>×</button></header><div className="plain-checkbox"><input id="cancel-queued-runs" type="checkbox" aria-describedby="cancel-queued-help" checked={cancelQueued} onChange={(event) => setCancelQueued(event.target.checked)} /><span><label htmlFor="cancel-queued-runs"><strong>同时取消当前排队任务</strong></label><small id="cancel-queued-help">默认保留已排队实例，让它们在服务器空闲后继续执行。</small></span></div><footer className="dialog-actions"><button type="button" className="secondary-action" onClick={() => setDisableTask(null)}>取消</button><button ref={confirmRef} type="button" className="danger-action" disabled={busyID === disableTask.id} onClick={() => void confirmDisable()}>确认停用</button></footer></section></div>}
     </>
   )
@@ -134,6 +130,7 @@ function formatBytes(value: number) {
 }
 
 function formatDuration(seconds: number) {
+  if (seconds === 0) return '不限时'
   if (seconds >= 86400) return `${Math.round(seconds / 86400)} 天`
   if (seconds >= 3600) return `${Math.round(seconds / 3600)} 小时`
   return `${seconds} 秒`

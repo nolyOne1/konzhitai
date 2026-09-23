@@ -23,6 +23,7 @@ import (
 	"yunling.local/platform/internal/logstream"
 	"yunling.local/platform/internal/notification"
 	"yunling.local/platform/internal/operationshttp"
+	"yunling.local/platform/internal/runartifact"
 	"yunling.local/platform/internal/script"
 	"yunling.local/platform/internal/secret"
 	"yunling.local/platform/internal/securityhttp"
@@ -54,9 +55,13 @@ func main() {
 	var serverHandler http.Handler = unavailableHandler
 	var protectedServerHandler http.Handler = unavailableHandler
 	var managementHandler http.Handler = unavailableHandler
+	var serverGroupsHandler http.Handler = unavailableHandler
 	var scriptHandler http.Handler = unavailableHandler
 	var taskHandler http.Handler = unavailableHandler
 	var runHandler http.Handler = unavailableHandler
+	var archiveHandler http.Handler = unavailableHandler
+	var runArtifactHandler http.Handler = unavailableHandler
+	var runArtifactUploadHandler http.Handler = unavailableHandler
 	var securityHandler http.Handler = unavailableHandler
 	var passwordHandler http.Handler = unavailableHandler
 	var operationsHandler http.Handler = unavailableHandler
@@ -144,6 +149,7 @@ func main() {
 		serverHandler = server.Handler(registry, enrollment, agentOptions...)
 		management := server.NewManagementService(serverRepository, connections)
 		managementHandler = protect(server.ManagementHandler(management))
+		serverGroupsHandler = protect(server.GroupsHandler(serverRepository))
 		runService := task.NewRunService(pool, connections, reconciler, time.Now)
 		runHandler = protect(task.RunHandler(runService))
 		securityHandler = protect(securityhttp.NewHandler(securityhttp.Services{
@@ -163,6 +169,16 @@ func main() {
 		if err != nil {
 			log.Printf("脚本对象存储尚未配置，脚本接口将返回暂不可用：%v", err)
 		} else {
+			archiveRepository := logstream.NewPostgresArchiveRepository(pool)
+			archiveHandler = protect(logstream.ArchiveHandler(archiveRepository, objectStore))
+			runArtifactService := runartifact.NewService(pool, objectStore)
+			runArtifactHandler = protect(runartifact.ReadHandler(runArtifactService))
+			runArtifactUploadHandler = runartifact.UploadHandler(runArtifactService, enrollment)
+			archiveWorker := logstream.NewArchiveWorker(archiveRepository,
+				logstream.NewArchiver(archiveRepository, objectStore, logstream.DefaultArchiveThreshold, time.Now), time.Now)
+			go logstream.RunArchiveLoop(context.Background(), archiveWorker, time.Minute, func(err error) {
+				log.Printf("日志归档扫描失败：%v", err)
+			})
 			releaseService := agentrelease.NewService(agentrelease.NewPostgresRepository(pool), objectStore, time.Now)
 			if err := releaseService.BootstrapFromDirectory(context.Background(), releaseRoot); err != nil {
 				log.Printf("代理版本引导失败，版本与升级接口将返回暂不可用：%v", err)
@@ -232,12 +248,19 @@ func main() {
 	router.Handle("/api/dashboard", managementHandler)
 	router.Handle("/api/servers", managementHandler)
 	router.Handle("/api/servers/{id}", managementHandler)
+	router.Handle("/api/server-groups", serverGroupsHandler)
+	router.Handle("/api/server-groups/{id}", serverGroupsHandler)
 	router.Handle("/api/scripts", scriptHandler)
 	router.Handle("/api/scripts/", scriptHandler)
 	router.Handle("/api/tasks", taskHandler)
 	router.Handle("/api/tasks/", taskHandler)
 	router.Handle("/api/runs", runHandler)
 	router.Handle("/api/runs/", runHandler)
+	router.Handle("GET /api/runs/{id}/logs/archive", archiveHandler)
+	router.Handle("GET /api/runs/{id}/logs/archive/info", archiveHandler)
+	router.Handle("GET /api/runs/{id}/artifacts", runArtifactHandler)
+	router.Handle("GET /api/runs/{id}/artifacts/{artifactID}", runArtifactHandler)
+	router.Handle("POST /api/agent/runs/{id}/artifacts/{name}", runArtifactUploadHandler)
 	router.Handle("/api/secrets", securityHandler)
 	router.Handle("/api/members", securityHandler)
 	router.Handle("/api/members/", securityHandler)

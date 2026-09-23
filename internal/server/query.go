@@ -13,13 +13,35 @@ var (
 )
 
 type Dashboard struct {
-	OnlineServers    int           `json:"onlineServers"`
-	TotalServers     int           `json:"totalServers"`
-	RunningRuns      int           `json:"runningRuns"`
-	QueuedRuns       int           `json:"queuedRuns"`
-	TodaySuccessRate float64       `json:"todaySuccessRate"`
-	Servers          []ServerView  `json:"servers"`
-	RecentEvents     []RecentEvent `json:"recentEvents"`
+	OnlineServers    int                 `json:"onlineServers"`
+	TotalServers     int                 `json:"totalServers"`
+	RunningRuns      int                 `json:"runningRuns"`
+	QueuedRuns       int                 `json:"queuedRuns"`
+	TodaySuccessRate float64             `json:"todaySuccessRate"`
+	Servers          []ServerView        `json:"servers"`
+	RecentEvents     []RecentEvent       `json:"recentEvents"`
+	ActiveRuns       []DashboardRun      `json:"activeRuns"`
+	ScriptSync       DashboardScriptSync `json:"scriptSync"`
+}
+
+type DashboardRun struct {
+	ID            string    `json:"id"`
+	TaskName      string    `json:"taskName"`
+	ScriptName    string    `json:"scriptName"`
+	ServerName    string    `json:"serverName"`
+	State         string    `json:"state"`
+	ResultSummary string    `json:"resultSummary"`
+	QueuedAt      time.Time `json:"queuedAt"`
+}
+
+type DashboardScriptSync struct {
+	PublishedScripts int `json:"publishedScripts"`
+	Total            int `json:"total"`
+	Ready            int `json:"ready"`
+	Pending          int `json:"pending"`
+	Downloading      int `json:"downloading"`
+	Failed           int `json:"failed"`
+	Drifted          int `json:"drifted"`
 }
 
 type RecentEvent struct {
@@ -38,6 +60,7 @@ type ServerView struct {
 	Enabled              bool              `json:"enabled"`
 	Draining             bool              `json:"draining"`
 	Labels               map[string]string `json:"labels"`
+	ServerGroupID        string            `json:"serverGroupId"`
 	Runtimes             []string          `json:"runtimes"`
 	AgentVersion         string            `json:"agentVersion"`
 	AgentOS              string            `json:"agentOS"`
@@ -57,6 +80,7 @@ type ServerView struct {
 type UpdateServerInput struct {
 	Name             *string            `json:"name"`
 	Labels           *map[string]string `json:"labels"`
+	ServerGroupID    *string            `json:"serverGroupId"`
 	SchedulingWeight *int               `json:"schedulingWeight"`
 	Enabled          *bool              `json:"enabled"`
 	Draining         *bool              `json:"draining"`
@@ -119,7 +143,7 @@ func (s *ManagementService) UpdateServer(
 }
 
 func validServerUpdate(input UpdateServerInput) bool {
-	if input.Name == nil && input.Labels == nil && input.SchedulingWeight == nil && input.Enabled == nil && input.Draining == nil {
+	if input.Name == nil && input.Labels == nil && input.ServerGroupID == nil && input.SchedulingWeight == nil && input.Enabled == nil && input.Draining == nil {
 		return false
 	}
 	if input.Name != nil && strings.TrimSpace(*input.Name) == "" {

@@ -82,13 +82,17 @@ func (s *Service) ScheduleOne(ctx context.Context, runID string) (Outcome, error
 	}
 	if run.MaxConcurrency > 0 && active >= run.MaxConcurrency {
 		s.queue.Push(run)
+		if err := s.setQueueReason(ctx, run.ID, "等待任务并发名额释放"); err != nil {
+			return OutcomeQueued, err
+		}
 		return OutcomeQueued, nil
 	}
 	snapshots, err := s.servers.Snapshots(ctx, run)
 	if err != nil {
 		return OutcomeQueued, err
 	}
-	for _, candidate := range RankCandidates(run, Filter(run, snapshots)) {
+	candidates := Filter(run, snapshots)
+	for _, candidate := range RankCandidates(run, candidates) {
 		lease, reserved, err := s.leases.TryReserve(ctx, LeaseRequest{
 			RunID: run.ID, ServerID: candidate.ServerID,
 			Available: candidate.Available, Required: run.Resources,
@@ -118,7 +122,27 @@ func (s *Service) ScheduleOne(ctx context.Context, runID string) (Outcome, error
 		return OutcomeAssigned, nil
 	}
 	s.queue.Push(run)
+	reason := "等待满足运行环境、标签、资源和并发要求的在线服务器"
+	if run.RequiresArtifacts && len(candidates) == 0 {
+		withoutArtifacts := run
+		withoutArtifacts.RequiresArtifacts = false
+		if len(Filter(withoutArtifacts, snapshots)) > 0 {
+			reason = "等待支持产物采集的执行代理，请将兼容节点升级至具备 run_artifacts_v1 能力的版本"
+		}
+	}
+	if err := s.setQueueReason(ctx, run.ID, reason); err != nil {
+		return OutcomeQueued, err
+	}
 	return OutcomeQueued, nil
+}
+
+func (s *Service) setQueueReason(ctx context.Context, runID, reason string) error {
+	if store, ok := s.runs.(interface {
+		SetQueueReason(context.Context, string, string) error
+	}); ok {
+		return store.SetQueueReason(ctx, runID, reason)
+	}
+	return nil
 }
 
 func (s *Service) HandleEvent(ctx context.Context, event Event) error {

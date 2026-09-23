@@ -27,6 +27,8 @@ export function NotificationSettingsPanel({ pollIntervalMs = 1000 }: Notificatio
   const [status, setStatus] = useState('')
   const activeRef = useRef(true)
   const errorRef = useRef<HTMLDivElement>(null)
+  const testRequestRef = useRef<string | null>(null)
+  const testDeliveryRef = useRef<NotificationDelivery | null>(null)
 
   useEffect(() => {
     activeRef.current = true
@@ -77,14 +79,18 @@ export function NotificationSettingsPanel({ pollIntervalMs = 1000 }: Notificatio
     setStatus('正在发送飞书测试消息…')
     setTesting(true)
     try {
-      let delivery = await testFeishuNotification()
+      testRequestRef.current ??= crypto.randomUUID()
+      let delivery = testDeliveryRef.current ?? await testFeishuNotification(testRequestRef.current)
+      testDeliveryRef.current = delivery
       const deadline = Date.now() + 30_000
       while (activeRef.current && !finished(delivery) && Date.now() < deadline) {
         await delay(pollIntervalMs)
         if (!activeRef.current) return
         delivery = await getNotificationDelivery(delivery.id)
+        testDeliveryRef.current = delivery
       }
       if (!activeRef.current) return
+      if (finished(delivery)) { testRequestRef.current = null; testDeliveryRef.current = null }
       if (delivery.status === 'sent') {
         setStatus('飞书测试消息已发送')
       } else if (delivery.status === 'failed') {
@@ -92,7 +98,7 @@ export function NotificationSettingsPanel({ pollIntervalMs = 1000 }: Notificatio
         setError(boundedError(delivery.lastError))
       } else {
         setStatus('')
-        setError('测试消息仍在发送队列中，请稍后重试。')
+        setError('测试消息仍在发送队列中，可继续查询同一条消息。')
       }
     } catch (reason) {
       if (activeRef.current) {
@@ -158,7 +164,7 @@ export function NotificationSettingsPanel({ pollIntervalMs = 1000 }: Notificatio
             </div>
             <div className="notification-actions">
               <button className="secondary-action" type="button" onClick={sendTest} disabled={!config.configured || !config.enabled || testing || saving}>
-                {testing ? '正在测试…' : '发送测试消息'}
+                {testing ? '正在测试…' : testDeliveryRef.current ? '继续查询测试消息' : '发送测试消息'}
               </button>
               <button className="primary-action" type="submit" disabled={saving || testing}>
                 {saving ? '正在保存…' : '保存通知设置'}

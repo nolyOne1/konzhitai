@@ -4,6 +4,7 @@ import {
   getScripts, getScriptSyncs, retryScriptSync,
   type ScriptSyncState, type ScriptSyncView, type ScriptView,
 } from '../../api/client'
+import { syncRetryDescription } from './syncStatus'
 
 const stateLabels: Record<ScriptSyncState, string> = {
   pending: '等待下载', downloading: '下载中', ready: '已就绪', failed: '同步失败', drifted: '发现漂移',
@@ -54,13 +55,10 @@ export function SyncPage({ pollIntervalMs = 5000 }: { pollIntervalMs?: number })
   }, [load])
 
   const syncs = useMemo(() => groups.flatMap((group) => group.syncs), [groups])
-  const hasActiveSync = syncs.some((item) => item.state === 'pending' || item.state === 'downloading')
-
   useEffect(() => {
-    if (!hasActiveSync) return
     const timer = window.setInterval(() => { void load() }, pollIntervalMs)
     return () => window.clearInterval(timer)
-  }, [hasActiveSync, load, pollIntervalMs])
+  }, [load, pollIntervalMs])
 
   useEffect(() => { if (error) errorRef.current?.focus() }, [error])
 
@@ -108,7 +106,7 @@ export function SyncPage({ pollIntervalMs = 5000 }: { pollIntervalMs?: number })
               <td data-label="脚本与版本"><a className="script-name-link" href={`/scripts/${group.script.id}`}><strong>{group.script.name}</strong><span>版本 {group.script.currentVersion} · {runtimeLabel(group.script.runtime)}</span></a></td>
               <td data-label="执行服务器"><strong>{item.serverName}</strong><code className="block-code">{shortID(item.serverId)}</code></td>
               <td data-label="同步状态"><span className={`sync-state sync-state-${item.state}`}><i aria-hidden="true" />{stateLabels[item.state]}</span></td>
-              <td data-label="校验与说明"><span>{item.errorMessage || syncDescription(item.state)}</span><code className="block-code">{shortHash(item.artifactSha256)}</code></td>
+              <td data-label="校验与说明"><span>{item.errorMessage || syncDescription(item.state)}</span>{syncRetryDescription(item) && <small className="block-code">{syncRetryDescription(item)}</small>}<code className="block-code">{shortHash(item.artifactSha256)}</code></td>
               <td data-label="更新时间"><time>{formatDate(item.updatedAt)}</time></td>
               <td data-label="操作">{item.state === 'failed' || item.state === 'drifted' ? <button className="secondary-action sync-retry-button" type="button" disabled={retrying === item.id} aria-label={`重试${group.script.name}在${item.serverName}的同步`} onClick={() => void retry(group, item)}>{retrying === item.id ? '重试中…' : '立即重试'}</button> : <span className="sync-no-action">无需操作</span>}</td>
             </tr>

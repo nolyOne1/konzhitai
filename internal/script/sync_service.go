@@ -19,6 +19,10 @@ var (
 	ErrInvalidSyncResult = errors.New("脚本同步结果无效")
 )
 
+// Three consecutive failures require an operator to restart the transfer.
+// A successful verification or explicit retry starts a fresh retry budget.
+const SyncFailureLimit = 3
+
 type SyncService struct {
 	db              *pgxpool.Pool
 	artifactBaseURL string
@@ -109,6 +113,9 @@ func (s *SyncService) NextCommand(ctx context.Context, serverID string) (agentpr
 	if err := s.prepareServer(ctx, serverID); err != nil {
 		return agentprotocol.SyncCommand{}, false, err
 	}
+	if err := s.expireTransfers(ctx, serverID); err != nil {
+		return agentprotocol.SyncCommand{}, false, err
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return agentprotocol.SyncCommand{}, false, err
@@ -122,12 +129,12 @@ func (s *SyncService) NextCommand(ctx context.Context, serverID string) (agentpr
 		JOIN script_versions AS version ON version.id = sync.script_version_id
 		WHERE sync.server_id = $1 AND (
 			sync.status IN ('pending', 'drifted')
-			OR (sync.status = 'downloading' AND sync.updated_at < $2::timestamptz - interval '2 minutes')
+			OR (sync.status = 'failed' AND sync.failure_count < $3 AND sync.next_retry_at <= $2)
 		)
 		ORDER BY CASE sync.status WHEN 'drifted' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, sync.updated_at, sync.created_at
 		FOR UPDATE OF sync SKIP LOCKED
 		LIMIT 1
-	`, serverID, s.now()).Scan(&syncID, &command.ScriptID, &command.VersionID, &command.SHA256)
+	`, serverID, s.now(), SyncFailureLimit).Scan(&syncID, &command.ScriptID, &command.VersionID, &command.SHA256)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return agentprotocol.SyncCommand{}, false, nil
 	}
@@ -137,7 +144,7 @@ func (s *SyncService) NextCommand(ctx context.Context, serverID string) (agentpr
 	command.ArtifactURL = s.artifactBaseURL + "/api/agent/scripts/" + command.VersionID + "/artifact"
 	if _, err := tx.Exec(ctx, `
 		UPDATE script_syncs
-		SET status = 'downloading', error_code = '', error_message = '', updated_at = $2
+		SET status = 'downloading', next_retry_at = NULL, updated_at = $2
 		WHERE id = $1
 	`, syncID, s.now()); err != nil {
 		return agentprotocol.SyncCommand{}, false, fmt.Errorf("更新脚本同步状态：%w", err)
@@ -146,6 +153,51 @@ func (s *SyncService) NextCommand(ctx context.Context, serverID string) (agentpr
 		return agentprotocol.SyncCommand{}, false, err
 	}
 	return command, true, nil
+}
+
+// A lost result consumes the same budget as an explicit failure. Persist the
+// timeout independently of claiming new work, including when no retry is due.
+func (s *SyncService) expireTransfers(ctx context.Context, serverID string) error {
+	rows, err := s.db.Query(ctx, `WITH expired AS (
+		SELECT id FROM script_syncs WHERE server_id=$1 AND status='downloading'
+		AND updated_at < $2::timestamptz - interval '2 minutes'
+		FOR UPDATE SKIP LOCKED
+	)
+	UPDATE script_syncs AS sync SET status='failed', artifact_sha256=NULL, synced_at=NULL,
+		error_code='sync_timeout', error_message='同步命令超过 2 分钟未收到结果，请检查代理连接或下载状态',
+		failure_count=LEAST(sync.failure_count+1,$3),
+		next_retry_at=CASE WHEN sync.failure_count+1 < $3
+			THEN $2::timestamptz + (30 * power(2,sync.failure_count)) * interval '1 second' ELSE NULL END,
+		updated_at=$2
+	FROM expired WHERE sync.id=expired.id
+	RETURNING sync.script_version_id, sync.failure_count, sync.error_message`, serverID, s.now(), SyncFailureLimit)
+	if err != nil {
+		return fmt.Errorf("记录脚本同步超时：%w", err)
+	}
+	type timedOut struct {
+		versionID, message string
+		failures           int
+	}
+	var expired []timedOut
+	for rows.Next() {
+		var item timedOut
+		if err := rows.Scan(&item.versionID, &item.failures, &item.message); err != nil {
+			rows.Close()
+			return err
+		}
+		expired = append(expired, item)
+	}
+	rowErr := rows.Err()
+	rows.Close()
+	if rowErr != nil {
+		return rowErr
+	}
+	for _, item := range expired {
+		if err := s.raiseSyncAlert(ctx, serverID, item.versionID, agentprotocol.SyncFailed, "sync_timeout", item.message, item.failures); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SyncService) prepareServer(ctx context.Context, serverID string) error {
@@ -187,13 +239,22 @@ func (s *SyncService) RecordResult(ctx context.Context, serverID string, result 
 	if result.ScriptID == "" || result.VersionID == "" || !validResultState(result.State) {
 		return ErrInvalidSyncResult
 	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	var expectedSHA string
-	err := s.db.QueryRow(ctx, `
-		SELECT version.artifact_sha256
+	var previousState agentprotocol.SyncState
+	var failureCount int
+	var nextRetryAt *time.Time
+	err = tx.QueryRow(ctx, `
+		SELECT version.artifact_sha256, sync.status, sync.failure_count, sync.next_retry_at
 		FROM script_syncs AS sync
 		JOIN script_versions AS version ON version.id = sync.script_version_id
 		WHERE sync.server_id = $1 AND version.id = $2 AND version.script_id = $3
-	`, serverID, result.VersionID, result.ScriptID).Scan(&expectedSHA)
+		FOR UPDATE OF sync
+	`, serverID, result.VersionID, result.ScriptID).Scan(&expectedSHA, &previousState, &failureCount, &nextRetryAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrSyncNotFound
 	}
@@ -213,22 +274,44 @@ func (s *SyncService) RecordResult(ctx context.Context, serverID string, result 
 		} else {
 			artifactSHA = strings.ToLower(expectedSHA)
 			syncedAt = s.now()
+			failureCount = 0
+			nextRetryAt = nil
 		}
 	}
-	command, err := s.db.Exec(ctx, `
+	// Replayed failure reports and periodic drift scans must not consume an
+	// extra attempt or bypass a failed transfer's backoff and retry limit.
+	if state == agentprotocol.SyncDrifted && previousState == agentprotocol.SyncFailed {
+		return tx.Commit(ctx)
+	}
+	if state == agentprotocol.SyncFailed && previousState != agentprotocol.SyncFailed {
+		failureCount++
+		nextRetryAt = nil
+		if failureCount < SyncFailureLimit {
+			next := s.now().Add(time.Duration(30*(1<<(failureCount-1))) * time.Second)
+			nextRetryAt = &next
+		}
+	}
+	command, err := tx.Exec(ctx, `
 		UPDATE script_syncs AS sync
 		SET status = $4, artifact_sha256 = NULLIF($5, ''), error_code = $6,
-			error_message = $7, synced_at = $8, updated_at = $9
+			error_message = $7, synced_at = $8, updated_at = $9, failure_count = $10, next_retry_at = $11
 		FROM script_versions AS version
 		WHERE sync.server_id = $1 AND sync.script_version_id = version.id
 			AND version.id = $2 AND version.script_id = $3
-	`, serverID, result.VersionID, result.ScriptID, state, artifactSHA, errorCode, errorMessage, syncedAt, s.now())
+	`, serverID, result.VersionID, result.ScriptID, state, artifactSHA, errorCode, errorMessage, syncedAt, s.now(), failureCount, nextRetryAt)
 	if err != nil {
 		return fmt.Errorf("记录脚本同步结果：%w", err)
 	}
 	if command.RowsAffected() == 0 {
 		return ErrSyncNotFound
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	return s.raiseSyncAlert(ctx, serverID, result.VersionID, state, errorCode, errorMessage, failureCount)
+}
+
+func (s *SyncService) raiseSyncAlert(ctx context.Context, serverID, versionID string, state agentprotocol.SyncState, errorCode, errorMessage string, failureCount int) error {
 	if s.alerts != nil && (state == agentprotocol.SyncFailed || state == agentprotocol.SyncDrifted) {
 		code := errorCode
 		title := "脚本同步失败"
@@ -244,8 +327,12 @@ func (s *SyncService) RecordResult(ctx context.Context, serverID string, result 
 		if message == "" {
 			message = "执行服务器未能同步中央脚本版本"
 		}
+		if state == agentprotocol.SyncFailed && failureCount >= SyncFailureLimit {
+			title = "脚本同步连续失败"
+			message += "；已达到自动重试上限，请排查后手动重试。该版本保持不可调度。"
+		}
 		if err := s.alerts.Raise(ctx, alert.Event{
-			ResourceType: "script_sync", ResourceID: serverID + "/" + result.VersionID,
+			ResourceType: "script_sync", ResourceID: serverID + "/" + versionID,
 			Code: code, Severity: alert.SeverityWarning, Title: title, Message: message,
 		}); err != nil {
 			return fmt.Errorf("生成脚本同步告警：%w", err)
@@ -258,7 +345,7 @@ func (s *SyncService) List(ctx context.Context, scriptID string) ([]SyncView, er
 	rows, err := s.db.Query(ctx, `
 		SELECT sync.id, server.id, server.name, version.script_id, version.id, version.version,
 			sync.status, version.artifact_sha256, sync.error_code, sync.error_message,
-			sync.synced_at, sync.updated_at
+			sync.synced_at, sync.updated_at, sync.failure_count, sync.next_retry_at
 		FROM script_syncs AS sync
 		JOIN script_versions AS version ON version.id = sync.script_version_id
 		JOIN servers AS server ON server.id = sync.server_id
@@ -274,28 +361,46 @@ func (s *SyncService) List(ctx context.Context, scriptID string) ([]SyncView, er
 		var item SyncView
 		if err := rows.Scan(&item.ID, &item.ServerID, &item.ServerName, &item.ScriptID, &item.VersionID,
 			&item.VersionNumber, &item.State, &item.ArtifactSHA256, &item.ErrorCode, &item.ErrorMessage,
-			&item.SyncedAt, &item.UpdatedAt); err != nil {
+			&item.SyncedAt, &item.UpdatedAt, &item.FailureCount, &item.NextRetryAt); err != nil {
 			return nil, fmt.Errorf("解析脚本同步状态：%w", err)
 		}
 		item.Blocked = item.State != agentprotocol.SyncReady
+		item.RetryLimit = SyncFailureLimit
 		items = append(items, item)
 	}
 	return items, rows.Err()
 }
 
 func (s *SyncService) Retry(ctx context.Context, syncID string) error {
-	command, err := s.db.Exec(ctx, `
-		UPDATE script_syncs
-		SET status = 'pending', error_code = '', error_message = '', synced_at = NULL, updated_at = $2
-		WHERE id = $1 AND status IN ('failed', 'drifted')
-	`, syncID, s.now())
+	return s.RetryScript(ctx, "", syncID, "")
+}
+
+func (s *SyncService) RetryScript(ctx context.Context, scriptID, syncID, actorID string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var targetScriptID string
+	err = tx.QueryRow(ctx, `
+		UPDATE script_syncs AS sync
+		SET status = 'pending', error_code = '', error_message = '', synced_at = NULL,
+			failure_count = 0, next_retry_at = NULL, updated_at = $2
+		FROM script_versions AS version
+		WHERE sync.id = $1 AND sync.status IN ('failed', 'drifted')
+			AND version.id = sync.script_version_id AND ($3 = '' OR version.script_id::text = $3)
+		RETURNING version.script_id
+	`, syncID, s.now(), scriptID).Scan(&targetScriptID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrSyncNotFound
+	}
 	if err != nil {
 		return fmt.Errorf("重试脚本同步：%w", err)
 	}
-	if command.RowsAffected() == 0 {
-		return ErrSyncNotFound
+	if err := insertAudit(ctx, tx, actorID, "script.sync_retry", targetScriptID, map[string]any{"syncId": syncID}); err != nil {
+		return err
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func validResultState(state agentprotocol.SyncState) bool {

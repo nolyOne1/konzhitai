@@ -29,6 +29,9 @@ func TestV15TransactionRollsBackAndVerifiesRealDatabase(t *testing.T) {
 			testpostgres.ApplyMigration(t, db, filepath.Base(path))
 			continue
 		}
+		if version > 15 {
+			continue
+		}
 		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)

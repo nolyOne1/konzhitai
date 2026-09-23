@@ -57,10 +57,11 @@ func (s *PostgresRunEventStore) ApplyRunEvent(ctx context.Context, event agentpr
 	`, event.RunID, event.ExecutionToken, event.Sequence).Scan(&existingType, &existingPayload)
 	if err == nil {
 		var payload struct {
-			ExitCode int    `json:"exitCode"`
-			Message  string `json:"message"`
+			ExitCode int                          `json:"exitCode"`
+			Message  string                       `json:"message"`
+			Usage    *agentprotocol.ResourceUsage `json:"usage"`
 		}
-		if json.Unmarshal(existingPayload, &payload) != nil || existingType != "run."+event.Type || payload.ExitCode != event.ExitCode || payload.Message != event.Message {
+		if json.Unmarshal(existingPayload, &payload) != nil || existingType != "run."+event.Type || payload.ExitCode != event.ExitCode || payload.Message != event.Message || !payload.Usage.Equal(event.Usage) {
 			return false, ErrRunEventConflict
 		}
 		return false, nil
@@ -84,7 +85,7 @@ func (s *PostgresRunEventStore) ApplyRunEvent(ctx context.Context, event agentpr
 	}
 	// Server-owned durable retry intent, committed atomically with the terminal
 	// state. Duplicate/historical terminal replays must not opt old failures in.
-	payload, _ := json.Marshal(map[string]any{"message": event.Message, "exitCode": event.ExitCode,
+	payload, _ := json.Marshal(map[string]any{"message": event.Message, "exitCode": event.ExitCode, "usage": event.Usage,
 		"automaticRetry": !currentState.Terminal() && (state == Failed || state == TimedOut)})
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO run_events (
@@ -142,7 +143,7 @@ func NewEventService(store RunEventStore) *EventService { return &EventService{s
 func (s *EventService) Apply(ctx context.Context, event agentprotocol.RunEvent) error {
 	state, ok := stateForAgentEvent(event.Type)
 	if s == nil || s.store == nil || strings.TrimSpace(event.RunID) == "" ||
-		strings.TrimSpace(event.ExecutionToken) == "" || event.Sequence == 0 || !ok {
+		strings.TrimSpace(event.ExecutionToken) == "" || event.Sequence == 0 || !ok || (event.Usage != nil && !event.Usage.Valid()) {
 		return ErrInvalidRunEvent
 	}
 	if event.OccurredAt.IsZero() {

@@ -31,7 +31,9 @@ func (s *RunValueSource) ValuesForRun(ctx context.Context, runID, executionToken
 	}
 	var raw []byte
 	err := s.db.QueryRow(ctx, `
-		SELECT definition.secret_bindings
+		SELECT COALESCE((SELECT event.payload->'secretRefs' FROM run_events AS event
+		  WHERE event.task_run_id=run.id AND event.event_type='run.queued'
+		  ORDER BY event.sequence LIMIT 1), definition.secret_bindings)
 		FROM task_runs AS run
 		JOIN task_definitions AS definition ON definition.id=run.task_definition_id
 		WHERE run.id=$1 AND run.execution_token=$2

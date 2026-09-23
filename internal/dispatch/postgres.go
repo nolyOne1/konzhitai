@@ -59,17 +59,22 @@ func (s *PostgresStore) Claim(ctx context.Context, cutoff, now time.Time, limit 
 		       claimed.required_runtime,
 		       version.entrypoint,
 		       claimed.parameters_snapshot,
-		       definition.secret_bindings,
+		       COALESCE((SELECT event.payload->'secretRefs' FROM run_events AS event
+		         WHERE event.task_run_id=claimed.id AND event.event_type='run.queued'
+		         ORDER BY event.sequence LIMIT 1), definition.secret_bindings),
 		       claimed.cpu_millicores,
 		       claimed.memory_bytes,
 		       claimed.disk_bytes,
 		       claimed.timeout_seconds,
 		       claimed.dispatch_attempts,
 		       COALESCE(sync.status, ''),
-		       COALESCE(sync.status = 'ready' AND sync.artifact_sha256 = version.artifact_sha256, false)
+		       COALESCE(sync.status = 'ready' AND sync.artifact_sha256 = version.artifact_sha256, false),
+		       COALESCE(version.manifest->'artifacts', 'null'::jsonb),
+		       COALESCE(server.agent_capabilities ? 'run_artifacts_v1', false)
 		FROM claimed
 		JOIN task_definitions AS definition ON definition.id=claimed.task_definition_id
 		JOIN script_versions AS version ON version.id=claimed.script_version_id
+		JOIN servers AS server ON server.id=claimed.assigned_server_id
 		LEFT JOIN script_syncs AS sync ON sync.server_id=claimed.assigned_server_id AND sync.script_version_id=claimed.script_version_id
 		ORDER BY claimed.assigned_at NULLS FIRST, claimed.created_at, claimed.id
 	`, cutoff, limit, now)
@@ -80,7 +85,7 @@ func (s *PostgresStore) Claim(ctx context.Context, cutoff, now time.Time, limit 
 	runs := make([]Run, 0)
 	for rows.Next() {
 		var run Run
-		var parametersJSON, secretsJSON []byte
+		var parametersJSON, secretsJSON, artifactsJSON []byte
 		var timeoutSeconds int
 		if err := rows.Scan(
 			&run.ID,
@@ -99,6 +104,8 @@ func (s *PostgresStore) Claim(ctx context.Context, cutoff, now time.Time, limit 
 			&run.Attempt,
 			&run.SyncState,
 			&run.ScriptVerified,
+			&artifactsJSON,
+			&run.ArtifactsSupported,
 		); err != nil {
 			return nil, fmt.Errorf("解析待派发运行：%w", err)
 		}
@@ -107,6 +114,9 @@ func (s *PostgresStore) Claim(ctx context.Context, cutoff, now time.Time, limit 
 		}
 		if err := json.Unmarshal(secretsJSON, &run.SecretBindings); err != nil {
 			return nil, fmt.Errorf("解析敏感参数绑定：%w", err)
+		}
+		if err := json.Unmarshal(artifactsJSON, &run.Artifacts); err != nil {
+			return nil, fmt.Errorf("解析运行产物策略：%w", err)
 		}
 		if run.Parameters == nil {
 			run.Parameters = map[string]any{}
