@@ -30,6 +30,7 @@ import {
   setMemberEnabled,
   testFeishuNotification,
   updateFeishuNotificationConfig,
+  validateTaskCron,
   withdrawAgentRelease,
 } from './client'
 
@@ -45,6 +46,21 @@ describe('API 客户端', () => {
     }))
 
     await expect(getDashboard()).rejects.toThrow('服务返回的数据格式不正确')
+  })
+
+  it.each([true, false])('校验 Cron 时不发送计划启用字段 enabled=%s', async (enabled) => {
+    const fetchMock = vi.fn().mockResolvedValue(response({ valid: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    const draft = { cronExpression: '3 19 24 9 *', timezone: 'Asia/Shanghai', enabled }
+
+    await validateTaskCron(draft)
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/tasks/cron/validate', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cronExpression: draft.cronExpression, timezone: draft.timezone }),
+    })
   })
 
   it('显式映射代理发布清单字段', async () => {
