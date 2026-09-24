@@ -9,6 +9,7 @@ export interface ServerView {
   enabled: boolean
   draining: boolean
   labels: Record<string, string>
+  serverGroupId?: string
   runtimes: string[]
   agentVersion: string
   agentOS: string
@@ -40,10 +41,33 @@ export interface DashboardData {
   todaySuccessRate: number
   servers: ServerView[]
   recentEvents: RecentEvent[]
+  activeRuns?: DashboardRun[]
+  scriptSync?: DashboardScriptSync
+}
+
+export interface DashboardRun {
+  id: string
+  taskName: string
+  scriptName: string
+  serverName: string
+  state: RunState
+  resultSummary: string
+  queuedAt: string
+}
+
+export interface DashboardScriptSync {
+  publishedScripts: number
+  total: number
+  ready: number
+  pending: number
+  downloading: number
+  failed: number
+  drifted: number
 }
 
 export interface UpdateServerInput {
   name?: string
+  serverGroupId?: string
   labels?: Record<string, string>
   schedulingWeight?: number
   enabled?: boolean
@@ -152,6 +176,7 @@ export interface ResourceRequirements {
 }
 
 export interface ScriptManifest {
+	artifacts?: RunArtifactPolicy
   runtime: string
   entrypoint: string
   category: string
@@ -216,6 +241,9 @@ export interface ScriptSyncView {
   errorCode: string
   errorMessage: string
   blocked: boolean
+  failureCount?: number
+  nextRetryAt?: string | null
+  retryLimit?: number
   syncedAt: string | null
   updatedAt: string
 }
@@ -231,6 +259,7 @@ export interface CreateScriptInput {
 }
 
 export interface ScriptEditorInput {
+	artifacts?: RunArtifactPolicy
   content: string
   runtime: string
   entrypoint: string
@@ -297,7 +326,22 @@ export interface TaskRun {
 
 export type RunState = 'queued' | 'scheduling' | 'assigned' | 'syncing' | 'running' | 'succeeded' | 'failed' | 'timed_out' | 'cancelled' | 'expired' | 'unknown'
 
+export interface RunResourceUsage {
+  cpuTimeMillis?: number
+  memoryBytes?: number
+  peakMemoryBytes?: number
+  processes?: number
+  sampledAt: string
+}
+
+export interface RunArtifactPolicy {
+  allowedGlobs: string[]
+  maxFileBytes: number
+  maxTotalBytes: number
+}
+
 export interface RunView {
+  usage?: RunResourceUsage
   id: string
   definitionId: string
   taskName: string
@@ -691,6 +735,77 @@ export async function getRuns(): Promise<RunView[]> {
   return response.runs
 }
 
+export interface RunFilter {
+  query?: string
+  state?: RunState
+  taskId?: string
+  scriptId?: string
+  serverId?: string
+  from?: string
+  until?: string
+  limit?: number
+  offset?: number
+}
+
+export interface RunPage {
+  runs: RunView[]
+  hasMore: boolean
+  limit: number
+  offset: number
+}
+
+export async function getRunPage(filter: RunFilter): Promise<RunPage> {
+  const params = new URLSearchParams()
+  Object.entries(filter).forEach(([key, value]) => {
+    if (value !== undefined && value !== '') params.set(key, String(value))
+  })
+  return request<RunPage>(`/api/runs?${params.toString()}`)
+}
+
+export interface RunLogArchiveInfo {
+  available: boolean
+  current: boolean
+  byteSize?: number
+  sha256?: string
+  archivedAt?: string
+  chunkCount?: number
+}
+
+export interface RunArtifact {
+  id: string
+  name: string
+  byteSize: number
+  sha256: string
+  createdAt: string
+}
+
+export async function getRunArtifacts(id: string): Promise<RunArtifact[]> {
+  const response = await request<{ artifacts: RunArtifact[] }>(`/api/runs/${encodeURIComponent(id)}/artifacts`)
+  return response.artifacts
+}
+
+export async function downloadRunArtifact(id: string, artifactId: string): Promise<Blob> {
+  const response = await fetch(`/api/runs/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(artifactId)}`, { credentials: 'same-origin' })
+  if (!response.ok) {
+    const failure = await response.json().catch(() => ({ message: '下载运行产物失败' })) as { message?: string }
+    throw new Error(failure.message || '下载运行产物失败')
+  }
+  return response.blob()
+}
+
+export async function getRunLogArchiveInfo(id: string): Promise<RunLogArchiveInfo> {
+  return request<RunLogArchiveInfo>(`/api/runs/${encodeURIComponent(id)}/logs/archive/info`)
+}
+
+export async function downloadRunLogs(id: string, archive = false): Promise<Blob> {
+  const response = await fetch(`/api/runs/${encodeURIComponent(id)}/logs${archive ? '/archive' : ''}`, { credentials: 'same-origin' })
+  if (!response.ok) {
+    const failure = await response.json().catch(() => ({ message: '下载日志失败' })) as { message?: string }
+    throw new Error(failure.message || '下载日志失败')
+  }
+  return response.blob()
+}
+
 export async function getRun(id: string): Promise<RunView> {
   return request<RunView>(`/api/runs/${encodeURIComponent(id)}`)
 }
@@ -715,6 +830,16 @@ export async function createTaskSchedule(id: string, input: TaskScheduleInput): 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
+}
+
+export async function updateTaskSchedule(id: string, scheduleId: string, input: TaskScheduleInput): Promise<TaskSchedule> {
+  return request<TaskSchedule>(`/api/tasks/${encodeURIComponent(id)}/schedules/${encodeURIComponent(scheduleId)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+  })
+}
+
+export async function deleteTaskSchedule(id: string, scheduleId: string): Promise<void> {
+  await request<void>(`/api/tasks/${encodeURIComponent(id)}/schedules/${encodeURIComponent(scheduleId)}`, { method: 'DELETE' })
 }
 
 export async function validateTaskCron(input: Pick<TaskScheduleInput, 'cronExpression' | 'timezone'>): Promise<void> {
@@ -820,9 +945,9 @@ export async function updateFeishuNotificationConfig(input: FeishuNotificationIn
   })
 }
 
-export async function testFeishuNotification(): Promise<NotificationDelivery> {
+export async function testFeishuNotification(requestId: string = crypto.randomUUID()): Promise<NotificationDelivery> {
   return request<NotificationDelivery>('/api/operations/notifications/feishu/test', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': requestId }, body: '{}',
   })
 }
 
@@ -901,8 +1026,10 @@ export async function updateMemberRoles(id: string, roles: RoleName[]): Promise<
   })
 }
 
-export async function getAuditEvents(): Promise<AuditEvent[]> {
-  const response = await request<{ events: AuditEvent[] }>('/api/audit')
+export async function getAuditEvents(filter: { targetType?: string; targetId?: string; action?: string } = {}): Promise<AuditEvent[]> {
+  const params = new URLSearchParams()
+  Object.entries(filter).forEach(([key, value]) => { if (value) params.set(key, value) })
+  const response = await request<{ events: AuditEvent[] }>(`/api/audit${params.size ? `?${params.toString()}` : ''}`)
   return response.events
 }
 
@@ -923,7 +1050,7 @@ export async function revokeServerCredentials(id: string): Promise<void> {
   await request<void>(`/api/servers/${encodeURIComponent(id)}/credentials/revoke`, { method: 'POST' })
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
     credentials: 'same-origin',

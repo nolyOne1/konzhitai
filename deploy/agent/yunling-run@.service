@@ -31,6 +31,9 @@ RestrictNamespaces=true
 
 # 调度器按任务声明值做资源分配；此处是执行节点的第二道硬上限。
 CPUQuota=1600%
+CPUAccounting=true
+MemoryAccounting=true
+TasksAccounting=true
 MemoryMax=64G
 TasksMax=1024
 RuntimeMaxSec=7d

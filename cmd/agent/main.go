@@ -152,10 +152,15 @@ func main() {
 		sender,
 		agent.WithPlatform(runtime.GOOS, runtime.GOARCH, detectedCapabilities(runtime.GOOS, os.Stat)),
 		agent.WithInitialHeartbeatSequence(uint64(heartbeatSequenceFloor)),
+		agent.WithRunningProcesses(runner.RunningProcesses),
 	)
 	cache := executor.NewCache(cacheRoot, agent.NewCredentialDownloader(credentials.Credential, nil))
 	syncClient := agent.NewSyncClient(cache, executor.NewDriftScanner(cacheRoot), sender)
-	executionClient := agent.NewExecutionClient(runner, sender)
+	artifactCollector, err := agent.NewArtifactCollector(filepath.Join(diskPath, "runs"), credentials.ControlURL, credentials.Credential, nil)
+	if err != nil {
+		log.Fatalf("初始化运行产物采集失败：%v", err)
+	}
+	executionClient := agent.NewExecutionClient(runner, sender, agent.WithRunArtifacts(artifactCollector, logClient))
 	upgradeManager := agentupdate.NewManager(
 		agentupdate.DefaultRoot,
 		agentupdate.HTTPDownloader{},
@@ -236,14 +241,15 @@ func runApplyUpgradeCommand(args []string, root string, system agentupdate.Syste
 }
 
 func detectedCapabilities(goos string, stat func(string) (os.FileInfo, error)) []string {
+	capabilities := []string{"run_artifacts_v1"}
 	if goos != "linux" {
-		return nil
+		return capabilities
 	}
 	info, err := stat("/etc/systemd/system/yunling-agent-upgrade@.service")
 	if err != nil || !info.Mode().IsRegular() {
-		return nil
+		return capabilities
 	}
-	return []string{"self_upgrade_v1"}
+	return append(capabilities, "self_upgrade_v1")
 }
 
 func writeVersionCommand(args []string, output io.Writer) bool {

@@ -35,11 +35,12 @@ var (
 )
 
 type Event struct {
-	Sequence   uint64    `json:"sequence"`
-	Type       EventType `json:"type"`
-	OccurredAt time.Time `json:"occurred_at"`
-	ExitCode   int       `json:"exit_code,omitempty"`
-	Message    string    `json:"message,omitempty"`
+	Usage      *agentprotocol.ResourceUsage `json:"usage,omitempty"`
+	Sequence   uint64                       `json:"sequence"`
+	Type       EventType                    `json:"type"`
+	OccurredAt time.Time                    `json:"occurred_at"`
+	ExitCode   int                          `json:"exit_code,omitempty"`
+	Message    string                       `json:"message,omitempty"`
 }
 
 type LaunchSpec struct {
@@ -114,9 +115,10 @@ type Runner struct {
 }
 
 type activeRun struct {
-	token string
-	stop  chan stopRequest
-	done  chan struct{}
+	process Process
+	token   string
+	stop    chan stopRequest
+	done    chan struct{}
 }
 
 type stopRequest struct {
@@ -219,9 +221,10 @@ func (r *Runner) Start(ctx context.Context, assignment agentprotocol.Assignment)
 		return recordedEvents([]Event{failed}), nil
 	}
 	active := &activeRun{
-		token: assignment.ExecutionToken,
-		stop:  make(chan stopRequest),
-		done:  make(chan struct{}),
+		process: process,
+		token:   assignment.ExecutionToken,
+		stop:    make(chan stopRequest),
+		done:    make(chan struct{}),
 	}
 	r.active[assignment.RunID] = active
 	r.mu.Unlock()
@@ -273,7 +276,7 @@ func (r *Runner) RunningProcesses() []agentprotocol.RunningProcess {
 	defer r.mu.Unlock()
 	processes := make([]agentprotocol.RunningProcess, 0, len(r.active))
 	for runID, active := range r.active {
-		processes = append(processes, agentprotocol.RunningProcess{RunID: runID, ExecutionToken: active.token})
+		processes = append(processes, agentprotocol.RunningProcess{RunID: runID, ExecutionToken: active.token, Usage: processUsage(active.process)})
 	}
 	return processes
 }
@@ -297,6 +300,7 @@ func (r *Runner) supervise(ctx context.Context, assignment agentprotocol.Assignm
 	timer := time.NewTimer(assignment.Timeout)
 	defer timer.Stop()
 	complete := func(event Event) {
+		event.Usage = processUsage(process)
 		if err := r.saveExecution(assignment, started, event); err != nil {
 			// The durable claim is retained, so even a failed result write cannot
 			// permit a second launch. Report the real event to the live transport.
@@ -361,6 +365,9 @@ func (r *Runner) exitEvent(sequence uint64, result processResult) Event {
 }
 
 func (r *Runner) validateAssignment(assignment agentprotocol.Assignment) error {
+	if assignment.Artifacts.Validate() != nil {
+		return ErrInvalidAssignment
+	}
 	if r.launcher == nil || !validPathID(assignment.RunID) || strings.TrimSpace(assignment.ExecutionToken) == "" ||
 		strings.TrimSpace(assignment.ScriptVersionID) == "" || !r.allowedRuntimes[assignment.Runtime] ||
 		assignment.Timeout <= 0 || assignment.Resources.CPUMillicores <= 0 ||

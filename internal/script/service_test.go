@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"yunling.local/platform/internal/agentprotocol"
 	"yunling.local/platform/internal/script"
 	"yunling.local/platform/internal/testpostgres"
 )
@@ -96,6 +97,7 @@ func TestPublishingIdenticalContentReusesArtifactAndRollbackAppendsVersion(t *te
 	objects := newMemoryStore()
 	service := script.NewService(db, objects, fixedClock)
 	input := script.PublishInput{
+		Artifacts:    &agentprotocol.ArtifactPolicy{AllowedGlobs: []string{"*.csv"}, MaxFileBytes: 1024, MaxTotalBytes: 2048},
 		ScriptID:     scriptID,
 		Content:      []byte("print('云令')\n"),
 		Runtime:      "python3",
@@ -130,6 +132,9 @@ func TestPublishingIdenticalContentReusesArtifactAndRollbackAppendsVersion(t *te
 	}
 	if v3.ArtifactURI != v1.ArtifactURI {
 		t.Fatalf("回滚相同内容应复用对象：v1=%s v3=%s", v1.ArtifactURI, v3.ArtifactURI)
+	}
+	if v3.Manifest.Artifacts == nil || v3.Manifest.Artifacts.MaxTotalBytes != 2048 {
+		t.Fatalf("回滚必须保留历史产物策略：%+v", v3.Manifest.Artifacts)
 	}
 
 	versions, err := service.ListVersions(ctx, scriptID)

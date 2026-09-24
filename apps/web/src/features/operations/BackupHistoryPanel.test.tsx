@@ -1,4 +1,5 @@
 import { render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getBackups, getRestoreVerifications } from '../../api/client'
@@ -37,5 +38,16 @@ describe('备份与恢复历史', () => {
     const manualRow = screen.getByRole('row', { name: /手动.*正在上传 COS/ })
     expect(within(manualRow).getByText('创建时间')).toBeVisible()
     expect(manualRow).toHaveTextContent('2026/9/2')
+  })
+
+  it('历史详情展示校验值、耗时和失败原因', async () => {
+    vi.mocked(getBackups).mockResolvedValue([{ id: 'failed-backup', triggerType: 'manual', status: 'failed', byteSize: 1024, objectCount: 1, attempts: 2, manifestSha256: 'a'.repeat(64), errorMessage: 'COS 上传暂时不可用', startedAt: '2026-09-23T10:00:00Z', finishedAt: '2026-09-23T10:02:05Z', nextAttemptAt: '2026-09-23T10:00:00Z', createdAt: '2026-09-23T10:00:00Z', updatedAt: '2026-09-23T10:02:05Z' }])
+    const user = userEvent.setup()
+    render(<BackupHistoryPanel />)
+    const row = await within(screen.getByRole('region', { name: '备份历史' })).findByRole('row', { name: /手动.*失败/ })
+    await user.click(within(row).getByText('查看详情'))
+    expect(within(row).getByText('a'.repeat(64))).toBeVisible()
+    expect(within(row).getByText('2 分 5 秒')).toBeVisible()
+    expect(within(row).getByText('COS 上传暂时不可用')).toBeVisible()
   })
 })

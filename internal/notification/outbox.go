@@ -70,15 +70,19 @@ func NewOutboxService(repository OutboxRepository, secrets SecretResolver, sende
 	return &OutboxService{repository: repository, secrets: secrets, sender: sender, now: now}
 }
 
-func (s *OutboxService) EnqueueTest(ctx context.Context, actorID string) (Delivery, error) {
+func (s *OutboxService) EnqueueTest(ctx context.Context, actorID, requestID string) (Delivery, error) {
 	if s == nil || s.repository == nil || strings.TrimSpace(actorID) == "" {
 		return Delivery{}, ErrUnavailable
+	}
+	requestUUID, err := uuid.Parse(requestID)
+	if err != nil || requestUUID == uuid.Nil {
+		return Delivery{}, ErrInvalidRequest
 	}
 	now := s.now().UTC()
 	return s.repository.EnqueueTest(ctx, actorID, FrozenMessage{
 		Code: "notification_test", Severity: "info", Title: "云令飞书测试消息",
 		SourceType: "system", SourceID: "yunling", OccurrenceCount: 1, OccurredAt: now,
-	}, "notification:test:"+uuid.NewString(), now)
+	}, "notification:test:"+actorID+":"+requestUUID.String(), now)
 }
 
 func (s *OutboxService) GetDelivery(ctx context.Context, id string) (Delivery, error) {

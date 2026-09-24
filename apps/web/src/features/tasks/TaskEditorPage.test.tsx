@@ -1,3 +1,4 @@
+import { withSession } from '../../test/session'
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -66,7 +67,7 @@ describe('任务编辑器', () => {
       requiredLabels: { 用途: '批处理' },
       idempotent: true,
       maxConcurrency: 1,
-      maxWaitSeconds: 86400,
+      maxWaitSeconds: 0,
     })
     const scheduleCall = fetchMock.mock.calls.find((call) => call[0] === '/api/tasks/task-1/schedules')
     expect(JSON.parse(scheduleCall?.[1]?.body as string)).toMatchObject({
@@ -100,12 +101,12 @@ describe('任务编辑器', () => {
 
 function renderEditor() {
   return render(
-    <MemoryRouter initialEntries={['/tasks/new']}>
+    withSession(<MemoryRouter initialEntries={['/tasks/new']}>
       <Routes>
         <Route path="/tasks/new" element={<TaskEditorPage />} />
         <Route path="/tasks" element={<div>任务已创建</div>} />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>),
   )
 }
 

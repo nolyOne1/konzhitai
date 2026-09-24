@@ -1,6 +1,7 @@
-import type { RunState } from './client'
+import type { RunResourceUsage, RunState } from './client'
 
 export interface RunStreamEvent {
+  usage?: RunResourceUsage
   id: string
   kind: 'state' | 'log'
   state?: RunState

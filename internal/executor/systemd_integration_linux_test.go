@@ -66,6 +66,7 @@ func TestSystemdIsolatedAcceptance(t *testing.T) {
 	}{
 		{"exit_zero", 0, executor.EventSucceeded, false},
 		{"exit_seven", 7, executor.EventFailed, false},
+		{"resource_usage", 0, executor.EventSucceeded, false},
 		{"cancel_tree", -1, executor.EventCancelled, true},
 		{"timeout_tree", -1, executor.EventTimedOut, false},
 	} {
@@ -88,6 +89,9 @@ func TestSystemdIsolatedAcceptance(t *testing.T) {
 			body := "#!/bin/bash\nset -eu\necho start >> launches\nid -un > identity\n" +
 				"test ! -r ../.execution-records/" + id + ".claim.json\ntouch ready\n"
 			if tc.code >= 0 {
+				if tc.name == "resource_usage" {
+					body += "sleep 7\n"
+				}
 				body += "exit " + strconv.Itoa(tc.code) + "\n"
 			} else {
 				body += "sleep 300 &\necho $! > child.pid\nwait\n"
@@ -115,6 +119,12 @@ func TestSystemdIsolatedAcceptance(t *testing.T) {
 			original := collectCIEvents(t, ctx, events)
 			if len(original) != 2 || original[0].Type != executor.EventStarted || original[1].Type != tc.terminal || original[1].ExitCode != tc.code {
 				t.Fatalf("unexpected terminal events: %+v", original)
+			}
+			if tc.name == "resource_usage" {
+				usage := original[1].Usage
+				if !usage.Valid() || usage.CPUTimeMillis == nil || usage.PeakMemoryBytes == nil || *usage.PeakMemoryBytes <= 0 {
+					t.Fatalf("systemd resource sampling unavailable: %+v", usage)
+				}
 			}
 			identity, err := os.ReadFile(filepath.Join(work, "identity"))
 			if err != nil || strings.TrimSpace(string(identity)) != "yunling-runner" {

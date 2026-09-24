@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -67,11 +68,23 @@ func (e *Exporter) Export(ctx context.Context, run BackupRun) (ExportResult, err
 	if err != nil {
 		return ExportResult{}, errors.New("数据库备份凭据不可用")
 	}
+	defer clearString(&databasePassword)
+	migrationVersion, err := e.readMigrationVersion(ctx, databasePassword)
+	if err != nil {
+		return ExportResult{}, err
+	}
 	dumpPath := filepath.Join(databaseDirectory, "yunling.dump")
 	if _, err := e.runner.Run(ctx, "/usr/bin/pg_dump", []string{
 		"--format=custom", "--file=" + dumpPath, e.configuration.BackupDatabaseURL,
 	}, map[string]string{"PGPASSWORD": databasePassword}); err != nil {
 		return ExportResult{}, errors.New("数据库导出失败")
+	}
+	afterVersion, err := e.readMigrationVersion(ctx, databasePassword)
+	if err != nil {
+		return ExportResult{}, err
+	}
+	if afterVersion != migrationVersion {
+		return ExportResult{}, errors.New("数据库导出期间迁移版本发生变化，请在迁移结束后重试备份")
 	}
 	clearString(&databasePassword)
 
@@ -103,6 +116,7 @@ func (e *Exporter) Export(ctx context.Context, run BackupRun) (ExportResult, err
 	}
 
 	metadata := e.metadata
+	metadata.MigrationVersion = migrationVersion
 	metadata.GeneratedAt = e.now().UTC()
 	metadata.ObjectBucket = e.configuration.MinIOBucket
 	if metadata.ImageDigests == nil {
@@ -127,6 +141,19 @@ func (e *Exporter) Export(ctx context.Context, run BackupRun) (ExportResult, err
 		Root: directories.Staging, Manifest: manifest, ManifestSHA256: manifestSHA256,
 		ByteSize: manifest.TotalBytes, ObjectCount: manifest.ObjectCount,
 	}, nil
+}
+
+func (e *Exporter) readMigrationVersion(ctx context.Context, password string) (string, error) {
+	result, err := e.runner.Run(ctx, "/usr/bin/psql", []string{"--no-psqlrc", "--tuples-only", "--no-align", "--set=ON_ERROR_STOP=1", "--command=SELECT COALESCE(max(version),0) FROM schema_migrations", e.configuration.BackupDatabaseURL}, map[string]string{"PGPASSWORD": password})
+	if err != nil {
+		return "", errors.New("读取备份数据库迁移版本失败")
+	}
+	value := strings.TrimSpace(result.Stdout)
+	version, err := strconv.Atoi(value)
+	if err != nil || version < 1 {
+		return "", errors.New("备份数据库迁移版本无效")
+	}
+	return strconv.Itoa(version), nil
 }
 
 func readSecretFile(path string) (string, error) {

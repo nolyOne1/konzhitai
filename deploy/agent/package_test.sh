@@ -27,6 +27,7 @@ for arch in amd64 arm64; do
     "$test_dir/out/manifest.json"
 done
 grep -Fq '"version":"0.1.0"' "$test_dir/out/manifest.json"
+grep -Fq '"capabilities":["self_upgrade_v1","run_artifacts_v1"]' "$test_dir/out/manifest.json"
 
 if sh "$root_dir/deploy/agent/package.sh" \
   'bad/version' "$test_dir/amd64" "$test_dir/arm64" "$test_dir/bad-version"; then

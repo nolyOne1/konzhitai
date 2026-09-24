@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,7 +18,10 @@ type exportCommandCall struct {
 	env  map[string]string
 }
 
-type exportFakeRunner struct{ calls []exportCommandCall }
+type exportFakeRunner struct {
+	calls    []exportCommandCall
+	versions []string
+}
 
 func (f *exportFakeRunner) Run(_ context.Context, name string, args []string, environment map[string]string) (CommandResult, error) {
 	environmentCopy := make(map[string]string, len(environment))
@@ -26,6 +30,13 @@ func (f *exportFakeRunner) Run(_ context.Context, name string, args []string, en
 	}
 	f.calls = append(f.calls, exportCommandCall{name: name, args: append([]string(nil), args...), env: environmentCopy})
 	switch name {
+	case "/usr/bin/psql":
+		version := "19"
+		if len(f.versions) > 0 {
+			version = f.versions[0]
+			f.versions = f.versions[1:]
+		}
+		return CommandResult{Stdout: version + "\n", ExitCode: 0}, nil
 	case "/usr/bin/pg_dump":
 		for _, argument := range args {
 			if strings.HasPrefix(argument, "--file=") {
@@ -63,25 +74,49 @@ func TestExporterDumpsDatabaseBeforeMirroringObjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.calls) != 2 || runner.calls[0].name != "/usr/bin/pg_dump" || runner.calls[1].name != "/usr/bin/mc" {
+	if len(runner.calls) != 4 || runner.calls[0].name != "/usr/bin/psql" || runner.calls[1].name != "/usr/bin/pg_dump" || runner.calls[2].name != "/usr/bin/psql" || runner.calls[3].name != "/usr/bin/mc" {
 		t.Fatalf("导出顺序错误：%+v", runner.calls)
 	}
 	dumpPath := filepath.Join(result.Root, "database", "yunling.dump")
-	if strings.Join(runner.calls[0].args, " ") != "--format=custom --file="+dumpPath+" "+configuration.BackupDatabaseURL {
-		t.Fatalf("pg_dump 参数错误：%v", runner.calls[0].args)
+	if strings.Join(runner.calls[1].args, " ") != "--format=custom --file="+dumpPath+" "+configuration.BackupDatabaseURL {
+		t.Fatalf("pg_dump 参数错误：%v", runner.calls[1].args)
 	}
 	objectsPath := filepath.Join(result.Root, "objects")
-	if strings.Join(runner.calls[1].args, " ") != "mirror --overwrite --remove local/yunling "+objectsPath {
-		t.Fatalf("mc mirror 参数错误：%v", runner.calls[1].args)
+	if strings.Join(runner.calls[3].args, " ") != "mirror --overwrite --remove local/yunling "+objectsPath {
+		t.Fatalf("mc mirror 参数错误：%v", runner.calls[3].args)
 	}
 	if runner.calls[0].env["PGPASSWORD"] != "database-password" {
 		t.Fatal("数据库密码必须只通过子进程环境提供")
 	}
-	if !strings.HasPrefix(runner.calls[1].env["MC_HOST_local"], "http://") || strings.Contains(strings.Join(runner.calls[1].args, " "), "minio-secret") {
+	if !strings.HasPrefix(runner.calls[3].env["MC_HOST_local"], "http://") || strings.Contains(strings.Join(runner.calls[3].args, " "), "minio-secret") {
 		t.Fatal("MinIO 凭据必须只通过子进程环境提供")
 	}
 	if result.Manifest.Database.Path != "database/yunling.dump" || result.ObjectCount != 1 || result.ManifestSHA256 == "" {
 		t.Fatalf("导出结果不完整：%+v", result)
+	}
+	body, err := os.ReadFile(filepath.Join(result.Root, "metadata", "deployment.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metadata DeploymentMetadata
+	if err := json.Unmarshal(body, &metadata); err != nil || metadata.MigrationVersion != "19" {
+		t.Fatalf("metadata must record actual database version instead of configured 12: %+v %v", metadata, err)
+	}
+}
+
+func TestExporterRejectsChangingOrInvalidMigrationVersion(t *testing.T) {
+	for _, versions := range [][]string{{"15", "19"}, {"unknown"}, {"0"}} {
+		root := t.TempDir()
+		runner := &exportFakeRunner{versions: versions}
+		exporter := NewExporter(exportTestConfig(t, root), runner, NewRunPaths(root), DeploymentMetadata{}, time.Now)
+		if _, err := exporter.Export(context.Background(), BackupRun{ID: uuid.NewString()}); err == nil {
+			t.Fatalf("accepted unsafe metadata: %v", versions)
+		}
+		for _, call := range runner.calls {
+			if call.name == "/usr/bin/mc" {
+				t.Fatal("object export started despite unverifiable database version")
+			}
+		}
 	}
 }
 

@@ -18,6 +18,7 @@ type Manager interface {
 	SetEnabled(context.Context, string, bool, bool) error
 	Trigger(context.Context, string, Trigger) (Run, error)
 	CreateSchedule(context.Context, ScheduleInput) (Schedule, error)
+	UpdateSchedule(context.Context, string, ScheduleInput) (Schedule, error)
 	ListSchedules(context.Context, string) ([]Schedule, error)
 	DeleteSchedule(context.Context, string, string) error
 }
@@ -34,6 +35,7 @@ func Handler(manager Manager) http.Handler {
 	router.Handle("POST /api/tasks/{id}/run", auth.Require(auth.PermissionExecute)(runTaskHandler(manager)))
 	router.Handle("GET /api/tasks/{id}/schedules", auth.Require(auth.PermissionRead)(listSchedulesHandler(manager)))
 	router.Handle("POST /api/tasks/{id}/schedules", auth.Require(auth.PermissionExecute)(createScheduleHandler(manager)))
+	router.Handle("PUT /api/tasks/{id}/schedules/{scheduleID}", auth.Require(auth.PermissionExecute)(updateScheduleHandler(manager)))
 	router.Handle("DELETE /api/tasks/{id}/schedules/{scheduleID}", auth.Require(auth.PermissionExecute)(deleteScheduleHandler(manager)))
 	return router
 }
@@ -175,6 +177,21 @@ func deleteScheduleHandler(manager Manager) http.Handler {
 	})
 }
 
+func updateScheduleHandler(manager Manager) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input ScheduleInput
+		if !decodeTaskJSON(w, r, &input) {
+			return
+		}
+		input.DefinitionID = r.PathValue("id")
+		schedule, err := manager.UpdateSchedule(r.Context(), r.PathValue("scheduleID"), input)
+		if writeTaskServiceError(w, err, "更新定时计划失败") {
+			return
+		}
+		writeTaskJSON(w, http.StatusOK, schedule)
+	})
+}
+
 func validateCronHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
@@ -211,7 +228,7 @@ func writeTaskServiceError(w http.ResponseWriter, err error, fallback string) bo
 		writeTaskError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrDefinitionDisabled), errors.Is(err, ErrVersionUnavailable), errors.Is(err, ErrDuplicateRun):
 		writeTaskError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, ErrInvalidDefinition), errors.Is(err, ErrInvalidCron):
+	case errors.Is(err, ErrInvalidDefinition), errors.Is(err, ErrInvalidCron), errors.Is(err, ErrInvalidParameters):
 		writeTaskError(w, http.StatusBadRequest, err.Error())
 	default:
 		writeTaskError(w, http.StatusInternalServerError, fallback)

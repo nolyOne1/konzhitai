@@ -13,6 +13,7 @@ var (
 	ErrUnavailable      = errors.New("飞书通知服务尚未配置")
 	ErrNotConfigured    = errors.New("飞书通知尚未启用")
 	ErrDeliveryNotFound = errors.New("通知发送记录不存在")
+	ErrInvalidRequest   = errors.New("测试通知请求标识无效")
 )
 
 type FeishuConfigInput struct {

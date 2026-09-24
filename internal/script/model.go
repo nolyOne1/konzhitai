@@ -72,13 +72,14 @@ type ResourceRequirements struct {
 }
 
 type Manifest struct {
-	Runtime              string                `json:"runtime"`
-	Entrypoint           string                `json:"entrypoint"`
-	Category             string                `json:"category"`
-	Tags                 []string              `json:"tags"`
-	Distribution         DistributionRule      `json:"distribution"`
-	ParameterDefinitions []ParameterDefinition `json:"parameterDefinitions,omitempty"`
-	Resources            ResourceRequirements  `json:"resources"`
+	Artifacts            *agentprotocol.ArtifactPolicy `json:"artifacts,omitempty"`
+	Runtime              string                        `json:"runtime"`
+	Entrypoint           string                        `json:"entrypoint"`
+	Category             string                        `json:"category"`
+	Tags                 []string                      `json:"tags"`
+	Distribution         DistributionRule              `json:"distribution"`
+	ParameterDefinitions []ParameterDefinition         `json:"parameterDefinitions,omitempty"`
+	Resources            ResourceRequirements          `json:"resources"`
 }
 
 type Draft struct {
@@ -101,6 +102,9 @@ type SyncView struct {
 	ErrorCode      string                  `json:"errorCode"`
 	ErrorMessage   string                  `json:"errorMessage"`
 	Blocked        bool                    `json:"blocked"`
+	FailureCount   int                     `json:"failureCount"`
+	NextRetryAt    *time.Time              `json:"nextRetryAt"`
+	RetryLimit     int                     `json:"retryLimit"`
 	SyncedAt       *time.Time              `json:"syncedAt"`
 	UpdatedAt      time.Time               `json:"updatedAt"`
 }

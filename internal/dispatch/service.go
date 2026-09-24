@@ -146,6 +146,12 @@ func (s *Service) Dispatch(ctx context.Context) error {
 }
 
 func (s *Service) executionCommand(ctx context.Context, run Run) (agentprotocol.ExecutionCommand, string, bool) {
+	if run.Artifacts != nil && !run.ArtifactsSupported {
+		return agentprotocol.ExecutionCommand{}, "执行服务器代理不支持运行产物采集，请升级代理后重新执行", false
+	}
+	if run.Artifacts.Validate() != nil {
+		return agentprotocol.ExecutionCommand{}, "运行产物策略无效，请检查脚本发布版本", false
+	}
 	entrypoint := run.Entrypoint
 	cleaned := path.Clean(entrypoint)
 	if strings.TrimSpace(entrypoint) == "" || cleaned != entrypoint || path.IsAbs(entrypoint) || cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") || strings.Contains(entrypoint, `\`) {
@@ -172,6 +178,7 @@ func (s *Service) executionCommand(ctx context.Context, run Run) (agentprotocol.
 		resources.TasksMax = DefaultTasksMax
 	}
 	assignment := &agentprotocol.Assignment{
+		Artifacts:       run.Artifacts,
 		RunID:           run.ID,
 		ExecutionToken:  run.ExecutionToken,
 		ScriptVersionID: run.ScriptVersionID,

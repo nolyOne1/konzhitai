@@ -17,6 +17,8 @@ func TestSyncServiceSelectsCompatibleServersAndRecoversDrift(t *testing.T) {
 	testpostgres.ApplyInitialMigration(t, db)
 	testpostgres.ApplyMigration(t, db, "000003_server_management.up.sql")
 	testpostgres.ApplyMigration(t, db, "000004_script_sync_states.up.sql")
+	testpostgres.ApplyMigration(t, db, "000010_password_change_security.up.sql")
+	testpostgres.ApplyMigration(t, db, "000017_script_sync_retries.up.sql")
 	ctx := context.Background()
 	userID := insertUser(t, db)
 	scriptID := insertScript(t, db, userID)
@@ -57,9 +59,14 @@ func TestSyncServiceSelectsCompatibleServersAndRecoversDrift(t *testing.T) {
 	if err != nil || len(items) != 1 || items[0].State != agentprotocol.SyncDownloading {
 		t.Fatalf("领取命令后状态必须为下载中：items=%+v err=%v", items, err)
 	}
-	staleService := script.NewSyncService(db, "https://control.example", func() time.Time { return fixedClock().Add(3 * time.Minute) })
+	staleNow := fixedClock().Add(3 * time.Minute)
+	staleService := script.NewSyncService(db, "https://control.example", func() time.Time { return staleNow })
+	if _, ok, err = staleService.NextCommand(ctx, compatibleID); err != nil || ok {
+		t.Fatalf("超时下载必须先进入失败退避：ok=%v err=%v", ok, err)
+	}
+	staleNow = staleNow.Add(30 * time.Second)
 	if _, ok, err = staleService.NextCommand(ctx, compatibleID); err != nil || !ok {
-		t.Fatalf("连接中断留下的超时下载必须可重新领取：ok=%v err=%v", ok, err)
+		t.Fatalf("连接中断留下的超时下载必须在退避后可重新领取：ok=%v err=%v", ok, err)
 	}
 
 	if err := service.RecordResult(ctx, compatibleID, agentprotocol.SyncResult{
@@ -109,6 +116,8 @@ func TestSyncServiceAppliesLabelDistribution(t *testing.T) {
 	testpostgres.ApplyInitialMigration(t, db)
 	testpostgres.ApplyMigration(t, db, "000003_server_management.up.sql")
 	testpostgres.ApplyMigration(t, db, "000004_script_sync_states.up.sql")
+	testpostgres.ApplyMigration(t, db, "000010_password_change_security.up.sql")
+	testpostgres.ApplyMigration(t, db, "000017_script_sync_retries.up.sql")
 	ctx := context.Background()
 	userID := insertUser(t, db)
 	scriptID := insertScript(t, db, userID)

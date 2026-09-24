@@ -8,20 +8,22 @@ import (
 )
 
 type Run struct {
-	ID              string
-	ExecutionToken  string
-	ServerID        string
-	ScriptID        string
-	ScriptVersionID string
-	Runtime         string
-	Entrypoint      string
-	Parameters      map[string]any
-	SecretBindings  map[string]string
-	Resources       agentprotocol.ResourceLimits
-	Timeout         time.Duration
-	Attempt         int
-	SyncState       agentprotocol.SyncState
-	ScriptVerified  bool
+	Artifacts          *agentprotocol.ArtifactPolicy
+	ArtifactsSupported bool
+	ID                 string
+	ExecutionToken     string
+	ServerID           string
+	ScriptID           string
+	ScriptVersionID    string
+	Runtime            string
+	Entrypoint         string
+	Parameters         map[string]any
+	SecretBindings     map[string]string
+	Resources          agentprotocol.ResourceLimits
+	Timeout            time.Duration
+	Attempt            int
+	SyncState          agentprotocol.SyncState
+	ScriptVerified     bool
 }
 
 type Store interface {

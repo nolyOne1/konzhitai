@@ -165,7 +165,7 @@ describe('API 客户端', () => {
       body: JSON.stringify({ enabled: true, webhook: 'https://open.feishu.cn/hook/test', signingSecret: 'secret' }),
     })
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/operations/notifications/feishu/test', {
-      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i) }, body: '{}',
     })
     expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/operations/notifications/delivery-1', { credentials: 'same-origin' })
   })

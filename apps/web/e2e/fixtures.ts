@@ -66,12 +66,15 @@ export async function mockTaskRun(page: Page) {
 export async function mockQueueWakeup(page: Page) {
   let released = false
   await mockAdminSession(page)
-  await page.route('**/api/runs', async (route) => {
+  await page.route(/\/api\/runs(?:\?.*)?$/, async (route) => {
     const run = released
       ? { ...queuedRunFixture, state: 'assigned', serverId: 'server-a', serverName: '京东云执行节点' }
       : queuedRunFixture
-    await json(route, { runs: [run] })
+    await json(route, { runs: [run], hasMore: false, limit: 50, offset: 0 })
   })
+  await page.route('**/api/tasks', (route) => json(route, { tasks: [taskFixture] }))
+  await page.route('**/api/scripts', (route) => json(route, { scripts: [] }))
+  await page.route('**/api/servers', (route) => json(route, { servers: [] }))
   return { releaseResources: () => { released = true } }
 }
 

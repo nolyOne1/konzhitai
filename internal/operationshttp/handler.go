@@ -26,7 +26,7 @@ type NotificationManager interface {
 }
 
 type DeliveryManager interface {
-	EnqueueTest(context.Context, string) (notification.Delivery, error)
+	EnqueueTest(context.Context, string, string) (notification.Delivery, error)
 	GetDelivery(context.Context, string) (notification.Delivery, error)
 }
 
@@ -326,7 +326,16 @@ func enqueueFeishuTest(manager DeliveryManager, origin string, originValid bool)
 			return
 		}
 		principal, _ := auth.PrincipalFromContext(r.Context())
-		delivery, err := manager.EnqueueTest(r.Context(), principal.UserID)
+		requestID := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		if id, err := uuid.Parse(requestID); err != nil || id == uuid.Nil {
+			writeError(w, http.StatusBadRequest, "Idempotency-Key 必须是非空 UUID")
+			return
+		}
+		delivery, err := manager.EnqueueTest(r.Context(), principal.UserID, requestID)
+		if errors.Is(err, notification.ErrInvalidRequest) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if errors.Is(err, notification.ErrNotConfigured) {
 			writeError(w, http.StatusConflict, err.Error())
 			return

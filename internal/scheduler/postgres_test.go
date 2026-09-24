@@ -95,6 +95,24 @@ func TestPostgresStoreExpiresQueuedRunWithEvent(t *testing.T) {
 	}
 }
 
+func TestPostgresSnapshotBlocksFailedScriptSync(t *testing.T) {
+	db := schedulerDatabase(t)
+	ctx := context.Background()
+	ids := seedSchedulingFixture(t, db, time.Now())
+	if _, err := db.Exec(ctx, `UPDATE script_syncs SET status='failed' WHERE server_id=$1 AND script_version_id=$2`, ids.serverID, ids.versionID); err != nil {
+		t.Fatal(err)
+	}
+	store := scheduler.NewPostgresStore(db)
+	run, err := store.Get(ctx, ids.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.Snapshots(ctx, run)
+	if err != nil || len(items) != 1 || !items[0].BlockedScriptVersions[ids.versionID] || items[0].ReadyScriptVersions[ids.versionID] {
+		t.Fatalf("同步失败必须阻止调度：%+v %v", items, err)
+	}
+}
+
 func TestPostgresStoreAtomicallyEnforcesDefinitionConcurrency(t *testing.T) {
 	db := schedulerDatabase(t)
 	ctx := context.Background()
@@ -172,8 +190,12 @@ func schedulerDatabase(t *testing.T) *pgxpool.Pool {
 	return db
 }
 
-func seedSchedulingFixture(t *testing.T, db *pgxpool.Pool, now time.Time) schedulingIDs {
+func seedSchedulingFixture(t *testing.T, db *pgxpool.Pool, now time.Time, manifests ...string) schedulingIDs {
 	t.Helper()
+	manifest := "{}"
+	if len(manifests) > 0 {
+		manifest = manifests[0]
+	}
 	ids := schedulingIDs{
 		runID: "11111111-1111-4111-8111-111111111111", definitionID: "22222222-2222-4222-8222-222222222222",
 		versionID: "33333333-3333-4333-8333-333333333333", serverID: "44444444-4444-4444-8444-444444444444",
@@ -185,7 +207,7 @@ func seedSchedulingFixture(t *testing.T, db *pgxpool.Pool, now time.Time) schedu
 		args  []any
 	}{
 		{`INSERT INTO scripts (id,name,runtime) VALUES ($1,'调度测试脚本','bash')`, []any{scriptID}},
-		{`INSERT INTO script_versions (id,script_id,version,artifact_uri,artifact_sha256,entrypoint) VALUES ($1,$2,1,'s3://test/script',repeat('a',64),'main.sh')`, []any{ids.versionID, scriptID}},
+		{`INSERT INTO script_versions (id,script_id,version,artifact_uri,artifact_sha256,entrypoint,manifest) VALUES ($1,$2,1,'s3://test/script',repeat('a',64),'main.sh',$3)`, []any{ids.versionID, scriptID, manifest}},
 		{`INSERT INTO task_definitions (id,name,script_id,required_runtime,required_labels,cpu_millicores,memory_bytes,disk_bytes,max_concurrency,max_wait_seconds) VALUES ($1,'调度测试任务',$2,'bash','{"用途":"批处理"}',2000,$3,$4,2,3600)`, []any{ids.definitionID, scriptID, int64(2 << 30), int64(4 << 30)}},
 		{`INSERT INTO task_runs (id,task_definition_id,script_version_id,trigger_type,state,queued_at,priority,cpu_millicores,memory_bytes,disk_bytes,max_concurrency,timeout_seconds,max_wait_seconds,required_labels,required_runtime) VALUES ($1,$2,$3,'manual','queued',$4,80,2000,$5,$6,2,1800,3600,'{"用途":"批处理"}','bash')`, []any{ids.runID, ids.definitionID, ids.versionID, now.Add(-time.Minute), int64(2 << 30), int64(4 << 30)}},
 		{`INSERT INTO run_events (task_run_id,sequence,event_type,state,payload,occurred_at) VALUES ($1,0,'run.queued','queued','{}',$2)`, []any{ids.runID, now.Add(-time.Minute)}},

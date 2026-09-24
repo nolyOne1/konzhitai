@@ -2,6 +2,7 @@ package task_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -47,6 +48,41 @@ func TestScheduleDueDoesNotDuplicateSameFireTime(t *testing.T) {
 	}
 }
 
+func TestScheduleCanBeEditedDisabledAndReenabled(t *testing.T) {
+	db := taskDatabase(t)
+	ctx := context.Background()
+	userID := insertTaskUser(t, db)
+	scriptID := insertTaskScript(t, db, userID)
+	_ = insertTaskVersion(t, db, scriptID, userID, 1)
+	service := task.NewService(db, taskClock)
+	definition, err := service.Create(ctx, validTaskInput(scriptID, userID, "编辑计划"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schedule, err := service.CreateSchedule(ctx, task.ScheduleInput{DefinitionID: definition.ID, CronExpression: "0 2 * * *", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := task.ScheduleInput{DefinitionID: definition.ID, CronExpression: "0 3 * * *", Timezone: "UTC", Enabled: false}
+	updated, err := service.UpdateSchedule(ctx, schedule.ID, input)
+	if err != nil || updated.Enabled || updated.CronExpression != input.CronExpression || updated.Timezone != "UTC" {
+		t.Fatalf("更新计划失败：%+v %v", updated, err)
+	}
+	runs, err := service.ScheduleDue(ctx, taskClock().Add(24*time.Hour))
+	if err != nil || len(runs) != 0 {
+		t.Fatalf("停用计划不得触发：%v %v", runs, err)
+	}
+	input.Enabled = true
+	updated, err = service.UpdateSchedule(ctx, schedule.ID, input)
+	if err != nil || !updated.Enabled || updated.NextRunAt == nil {
+		t.Fatalf("重新启用失败：%+v %v", updated, err)
+	}
+	input.DefinitionID = "11111111-1111-4111-8111-111111111111"
+	if _, err := service.UpdateSchedule(ctx, schedule.ID, input); !errors.Is(err, task.ErrDefinitionNotFound) {
+		t.Fatalf("不得跨任务修改计划：%v", err)
+	}
+}
+
 func TestValidateCronRejectsInvalidExpressionAndTimezone(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -56,6 +92,7 @@ func TestValidateCronRejectsInvalidExpressionAndTimezone(t *testing.T) {
 		{name: "字段数量错误", expression: "0 2 * *", timezone: "Asia/Shanghai"},
 		{name: "分钟超出范围", expression: "60 2 * * *", timezone: "Asia/Shanghai"},
 		{name: "时区不存在", expression: "0 2 * * *", timezone: "Mars/Base"},
+		{name: "服务器本地时区不明确", expression: "0 2 * * *", timezone: "Local"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

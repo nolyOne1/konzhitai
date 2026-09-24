@@ -10,6 +10,7 @@ type ResourceLimits struct {
 }
 
 type Assignment struct {
+	Artifacts       *ArtifactPolicy   `json:"artifacts,omitempty"`
 	RunID           string            `json:"run_id"`
 	ExecutionToken  string            `json:"execution_token"`
 	ScriptVersionID string            `json:"script_version_id"`
@@ -40,18 +41,20 @@ type ExecutionCommand struct {
 }
 
 type RunEvent struct {
-	RunID          string    `json:"run_id"`
-	ExecutionToken string    `json:"execution_token"`
-	Sequence       uint64    `json:"sequence"`
-	Type           string    `json:"type"`
-	OccurredAt     time.Time `json:"occurred_at"`
-	ExitCode       int       `json:"exit_code,omitempty"`
-	Message        string    `json:"message,omitempty"`
+	Usage          *ResourceUsage `json:"usage,omitempty"`
+	RunID          string         `json:"run_id"`
+	ExecutionToken string         `json:"execution_token"`
+	Sequence       uint64         `json:"sequence"`
+	Type           string         `json:"type"`
+	OccurredAt     time.Time      `json:"occurred_at"`
+	ExitCode       int            `json:"exit_code,omitempty"`
+	Message        string         `json:"message,omitempty"`
 }
 
 type RunningProcess struct {
-	RunID          string `json:"run_id"`
-	ExecutionToken string `json:"execution_token"`
+	Usage          *ResourceUsage `json:"usage,omitempty"`
+	RunID          string         `json:"run_id"`
+	ExecutionToken string         `json:"execution_token"`
 }
 
 type RunningReport struct {

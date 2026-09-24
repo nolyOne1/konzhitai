@@ -27,7 +27,7 @@ func TestArchiverWritesCompletedLargeLogAsNDJSONGzip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if key != "runs/run-1/logs.ndjson.gz" || repository.record.ObjectKey != key {
+	if key != "runs/run-1/logs/"+repository.record.SHA256+".ndjson.gz" || repository.record.ObjectKey != key {
 		t.Fatalf("归档对象键不正确：key=%s record=%+v", key, repository.record)
 	}
 	reader, err := gzip.NewReader(bytes.NewReader(objects.items[key]))

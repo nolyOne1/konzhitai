@@ -11,6 +11,7 @@ const (
 	ReleaseStatusAvailable = "available"
 	ReleaseStatusWithdrawn = "withdrawn"
 	SelfUpgradeCapability  = "self_upgrade_v1"
+	RunArtifactsCapability = "run_artifacts_v1"
 )
 
 var (
@@ -59,9 +60,11 @@ type ImportInput struct {
 	Version        string
 	ReleaseNotes   string
 	ManifestSHA256 string
+	ManifestJSON   []byte
 	CreatedBy      string
 	Recommend      bool
 	Artifacts      []ImportArtifact
+	Capabilities   []string
 }
 
 type Repository interface {

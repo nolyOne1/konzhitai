@@ -71,8 +71,10 @@ func (s *PostgresReconcileStore) ReconcileRunning(ctx context.Context, report ag
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	active := make(map[string]string, len(report.Processes))
+	usages := make(map[string]*agentprotocol.ResourceUsage, len(report.Processes))
 	for _, process := range report.Processes {
 		active[process.RunID] = process.ExecutionToken
+		usages[process.RunID] = process.Usage
 	}
 	rows, err := tx.Query(ctx, `
 		SELECT id::text, COALESCE(execution_token,''), state, process_confirmed_gone
@@ -105,6 +107,9 @@ func (s *PostgresReconcileStore) ReconcileRunning(ctx context.Context, report ag
 	for _, item := range candidates {
 		reportedToken, running := active[item.id]
 		if running && reportedToken == item.token {
+			if err := saveRunUsage(ctx, tx, item.id, usages[item.id]); err != nil {
+				return err
+			}
 			if _, err := tx.Exec(ctx, `UPDATE task_runs SET state='running', process_confirmed_gone=false, updated_at=$2 WHERE id=$1`, item.id, at); err != nil {
 				return fmt.Errorf("恢复运行任务状态：%w", err)
 			}
@@ -161,18 +166,16 @@ func (s *PostgresReconcileStore) retryRun(ctx context.Context, runID RunID, at t
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "task-retry:"+rootID); err != nil {
 		return "", fmt.Errorf("锁定任务重试链：%w", err)
 	}
-	if automatic {
-		// Match SetEnabled's lock order: definition before run. A concurrent
-		// disable-and-cancel then either blocks creation or cancels this child.
-		var enabled bool
-		if err := tx.QueryRow(ctx, `SELECT enabled FROM task_definitions
-			WHERE id=(SELECT task_definition_id FROM task_runs WHERE id=$1)
-			FOR SHARE`, runID).Scan(&enabled); err != nil {
-			return "", err
-		}
-		if !enabled {
-			return "", ErrRunNotRetryable
-		}
+	// All new attempts honor task disablement. Match SetEnabled's lock order:
+	// definition before run, so disable-and-cancel serializes with creation.
+	var enabled bool
+	if err := tx.QueryRow(ctx, `SELECT enabled FROM task_definitions
+		WHERE id=(SELECT task_definition_id FROM task_runs WHERE id=$1)
+		FOR SHARE`, runID).Scan(&enabled); err != nil {
+		return "", err
+	}
+	if !enabled {
+		return "", ErrRunNotRetryable
 	}
 	var state RunState
 	var idempotent, processGone bool
@@ -240,7 +243,17 @@ func (s *PostgresReconcileStore) retryRun(ctx context.Context, runID RunID, at t
 	if err != nil {
 		return "", fmt.Errorf("创建重试运行实例：%w", err)
 	}
-	if err := appendSystemRunEvent(ctx, tx, string(retryID), "run.queued", Queued, map[string]any{"message": "重试任务已进入排队队列", "retryOf": runID}, at); err != nil {
+	// Retry the same secret references that were validated for the parent run.
+	// Legacy runs have no snapshot, so capture their current bindings once.
+	var secretRefs json.RawMessage
+	if err := tx.QueryRow(ctx, `SELECT COALESCE((SELECT event.payload->'secretRefs'
+		FROM run_events AS event WHERE event.task_run_id=run.id AND event.event_type='run.queued'
+		ORDER BY event.sequence LIMIT 1), definition.secret_bindings)
+		FROM task_runs AS run JOIN task_definitions AS definition ON definition.id=run.task_definition_id
+		WHERE run.id=$1`, runID).Scan(&secretRefs); err != nil {
+		return "", fmt.Errorf("读取重试敏感参数引用快照：%w", err)
+	}
+	if err := appendSystemRunEvent(ctx, tx, string(retryID), "run.queued", Queued, map[string]any{"message": "重试任务已进入排队队列", "retryOf": runID, "secretRefs": secretRefs}, at); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(ctx); err != nil {

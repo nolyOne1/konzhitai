@@ -120,7 +120,7 @@ func (s *PostgresStore) ListActiveLeases(ctx context.Context, now time.Time) ([]
 func (s *PostgresStore) Snapshots(ctx context.Context, run task.Run) ([]server.Snapshot, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT server.id, server.status, server.enabled, server.drain_requested,
-		       server.labels, server.runtimes, server.max_concurrency,
+		       server.labels, server.runtimes, COALESCE(to_jsonb(server)->'agent_capabilities','[]'::jsonb), server.max_concurrency,
 		       server.scheduling_weight,
 		       COALESCE(snapshot.cpu_total_milli,0), COALESCE(snapshot.cpu_used_milli,0),
 		       COALESCE(snapshot.memory_total_bytes,0), COALESCE(snapshot.memory_available_bytes,0),
@@ -155,12 +155,12 @@ func (s *PostgresStore) Snapshots(ctx context.Context, run task.Run) ([]server.S
 	items := []server.Snapshot{}
 	for rows.Next() {
 		var item server.Snapshot
-		var labelsJSON, runtimesJSON []byte
+		var labelsJSON, runtimesJSON, capabilitiesJSON []byte
 		var cpuTotal, cpuUsed int64
 		var syncState string
 		if err := rows.Scan(
 			&item.ID, &item.Status, &item.Enabled, &item.Draining,
-			&labelsJSON, &runtimesJSON, &item.MaxConcurrency, &item.SchedulingWeight,
+			&labelsJSON, &runtimesJSON, &capabilitiesJSON, &item.MaxConcurrency, &item.SchedulingWeight,
 			&cpuTotal, &cpuUsed, &item.MemoryTotalBytes, &item.MemoryAvailableBytes,
 			&item.DiskTotalBytes, &item.DiskAvailableBytes, &item.RunningTasks,
 			&syncState, &item.FairnessScore,
@@ -173,10 +173,13 @@ func (s *PostgresStore) Snapshots(ctx context.Context, run task.Run) ([]server.S
 		if err := json.Unmarshal(runtimesJSON, &item.Runtimes); err != nil {
 			return nil, fmt.Errorf("解析服务器运行环境：%w", err)
 		}
+		if err := json.Unmarshal(capabilitiesJSON, &item.AgentCapabilities); err != nil {
+			return nil, fmt.Errorf("解析代理执行能力：%w", err)
+		}
 		item.CPUTotalMillicores = int(cpuTotal)
 		item.CPUAvailableMillicores = int(max(cpuTotal-cpuUsed, 0))
 		item.ReadyScriptVersions = map[string]bool{run.ScriptVersionID: syncState == "ready"}
-		item.BlockedScriptVersions = map[string]bool{run.ScriptVersionID: syncState == "drifted"}
+		item.BlockedScriptVersions = map[string]bool{run.ScriptVersionID: syncState == "drifted" || syncState == "failed"}
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -231,7 +234,7 @@ func (s *PostgresStore) Assign(ctx context.Context, assignment Assignment) (bool
 	err = tx.QueryRow(ctx, `
 		UPDATE task_runs AS candidate
 		SET state='assigned', assigned_server_id=$2, assigned_at=$3,
-		    execution_token=$4, process_confirmed_gone=false, updated_at=$3
+		    execution_token=$4, process_confirmed_gone=false, result_summary='', updated_at=$3
 		WHERE candidate.id=$1 AND candidate.state='queued'
 		  AND (
 			SELECT count(*) FROM task_runs AS active
@@ -311,9 +314,11 @@ const runSelect = `
 	       run.memory_bytes, run.disk_bytes, run.max_concurrency,
 	       run.timeout_seconds, run.max_wait_seconds, run.max_retries,
 	       run.retry_backoff_seconds, run.idempotent, run.scheduled_for,
-	       run.queued_at, run.created_at
+	       run.queued_at, run.created_at,
+	       COALESCE(version.manifest->'artifacts','null'::jsonb) <> 'null'::jsonb
 	FROM task_runs AS run
 	JOIN task_definitions AS definition ON definition.id=run.task_definition_id
+	JOIN script_versions AS version ON version.id=run.script_version_id
 `
 
 type rowScanner interface{ Scan(...any) error }
@@ -328,7 +333,7 @@ func scanRun(row rowScanner) (task.Run, error) {
 		&run.Resources.DiskBytes, &run.MaxConcurrency, &run.TimeoutSeconds,
 		&run.MaxWaitSeconds, &run.RetryPolicy.MaxRetries,
 		&run.RetryPolicy.BackoffSeconds, &run.Idempotent, &run.ScheduledFor,
-		&run.QueuedAt, &run.CreatedAt,
+		&run.QueuedAt, &run.CreatedAt, &run.RequiresArtifacts,
 	)
 	if err != nil {
 		return task.Run{}, err
@@ -340,4 +345,24 @@ func scanRun(row rowScanner) (task.Run, error) {
 		return task.Run{}, err
 	}
 	return run, nil
+}
+
+func (s *PostgresStore) SetQueueReason(ctx context.Context, runID, reason string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	changed, err := tx.Exec(ctx, `UPDATE task_runs SET result_summary=$2 WHERE id=$1 AND state='queued' AND result_summary IS DISTINCT FROM $2`, runID, reason)
+	if err != nil {
+		return err
+	}
+	if changed.RowsAffected() > 0 {
+		if _, err := tx.Exec(ctx, `INSERT INTO run_events (task_run_id,sequence,event_type,state,payload,occurred_at)
+		    SELECT $1,COALESCE(MAX(sequence),-1)+1,'run.queue_reason','queued',jsonb_build_object('message',$2::text),now()
+		    FROM run_events WHERE task_run_id=$1`, runID, reason); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }

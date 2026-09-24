@@ -120,6 +120,8 @@ type fakeTaskManager struct {
 	trigger               Trigger
 	enabled               bool
 	cancelQueued          bool
+	scheduleInput         ScheduleInput
+	scheduleID            string
 }
 
 func (m *fakeTaskManager) Create(_ context.Context, input CreateInput) (Definition, error) {
@@ -156,6 +158,11 @@ func (m *fakeTaskManager) Trigger(_ context.Context, definitionID string, trigge
 
 func (m *fakeTaskManager) CreateSchedule(context.Context, ScheduleInput) (Schedule, error) {
 	return Schedule{}, nil
+}
+
+func (m *fakeTaskManager) UpdateSchedule(_ context.Context, id string, input ScheduleInput) (Schedule, error) {
+	m.scheduleID, m.scheduleInput = id, input
+	return Schedule{ID: id, DefinitionID: input.DefinitionID, CronExpression: input.CronExpression, Timezone: input.Timezone, Enabled: input.Enabled}, nil
 }
 
 func (m *fakeTaskManager) ListSchedules(context.Context, string) ([]Schedule, error) {

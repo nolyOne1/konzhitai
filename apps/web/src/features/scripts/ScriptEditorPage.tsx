@@ -14,6 +14,7 @@ import {
   type ScriptVersion,
 } from '../../api/client'
 import { SyncStatusPanel } from './SyncStatusPanel'
+import { getServerGroups, type ServerGroup } from '../../api/serverGroups'
 
 type EditorState = {
   content: string
@@ -28,6 +29,10 @@ type EditorState = {
   cpuMillicores: number
   memoryMB: number
   diskMB: number
+  artifactsEnabled: boolean
+  artifactGlobs: string
+  artifactFileMB: number
+  artifactTotalMB: number
 }
 
 const emptyEditor: EditorState = {
@@ -43,6 +48,10 @@ const emptyEditor: EditorState = {
   cpuMillicores: 100,
   memoryMB: 128,
   diskMB: 128,
+  artifactsEnabled: false,
+  artifactGlobs: '*.csv',
+  artifactFileMB: 10,
+  artifactTotalMB: 50,
 }
 
 export function ScriptEditorPage() {
@@ -61,8 +70,12 @@ export function ScriptEditorPage() {
   const [rollbackVersion, setRollbackVersion] = useState<ScriptVersion | null>(null)
   const [rollbackNotes, setRollbackNotes] = useState('')
   const [rollbackError, setRollbackError] = useState('')
+  const [serverGroups, setServerGroups] = useState<ServerGroup[]>([])
+  const [groupsLoading, setGroupsLoading] = useState(false)
+  const [groupsError, setGroupsError] = useState('')
   const publishButtonRef = useRef<HTMLButtonElement>(null)
   const releaseNotesRef = useRef<HTMLTextAreaElement>(null)
+  const errorRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let active = true
@@ -86,7 +99,34 @@ export function ScriptEditorPage() {
     if (showPublish) releaseNotesRef.current?.focus()
   }, [showPublish])
 
+  useEffect(() => {
+    if (editor.distributionMode !== 'server_group') return
+    let active = true
+    setGroupsLoading(true)
+    setGroupsError('')
+    getServerGroups().then((groups) => { if (active) setServerGroups(groups) })
+      .catch((reason: unknown) => { if (active) setGroupsError(reason instanceof Error ? reason.message : '读取服务器组失败') })
+      .finally(() => { if (active) setGroupsLoading(false) })
+    return () => { active = false }
+  }, [editor.distributionMode])
+
+  useEffect(() => { if (error) errorRef.current?.focus() }, [error])
+
+  const labelRules = useMemo(() => parseLabels(editor.labelRules), [editor.labelRules])
+  const parameterError = validateParameters(editor.parameters)
+  const artifactPatterns = useMemo(() => editor.artifactGlobs.split('\n').map((pattern) => pattern.trim()).filter(Boolean), [editor.artifactGlobs])
+  const artifactError = !editor.artifactsEnabled ? '' : artifactPatterns.length === 0 || artifactPatterns.length > 20 || artifactPatterns.some((pattern) => pattern.startsWith('.') || /[/\\\u0000]/u.test(pattern))
+    ? '请填写 1–20 条文件名规则，不含路径，例如 *.csv 或 report.json。'
+    : !Number.isInteger(editor.artifactFileMB) || editor.artifactFileMB < 1 || editor.artifactFileMB > 100 || !Number.isInteger(editor.artifactTotalMB) || editor.artifactTotalMB < editor.artifactFileMB || editor.artifactTotalMB > 500
+      ? '单文件上限为 1–100 MB；总大小须不少于单文件上限，且不超过 500 MB。' : ''
+  const configurationError = editor.distributionMode === 'labels' && labelRules.error
+    ? labelRules.error
+    : editor.distributionMode === 'server_group' && (!editor.serverGroupId || (!groupsLoading && !groupsError && !serverGroups.some((group) => group.id === editor.serverGroupId)))
+      ? '请选择有效的服务器组；可在服务器页面管理服务器组。'
+      : parameterError || artifactError
+
   const editorInput = useMemo((): ScriptEditorInput => ({
+    artifacts: editor.artifactsEnabled ? { allowedGlobs: artifactPatterns, maxFileBytes: editor.artifactFileMB * 1048576, maxTotalBytes: editor.artifactTotalMB * 1048576 } : undefined,
     content: editor.content,
     runtime: editor.runtime,
     entrypoint: editor.entrypoint.trim(),
@@ -95,17 +135,18 @@ export function ScriptEditorPage() {
     distribution: {
       mode: editor.distributionMode,
       serverGroupId: editor.distributionMode === 'server_group' ? editor.serverGroupId.trim() : undefined,
-      labels: editor.distributionMode === 'labels' ? parseLabels(editor.labelRules) : {},
+      labels: editor.distributionMode === 'labels' ? labelRules.labels : {},
     },
-    parameterDefinitions: editor.parameters,
+    parameterDefinitions: editor.parameters.map((parameter) => ({ ...parameter, name: parameter.name.trim(), description: parameter.description?.trim() })),
     resources: {
       cpuMillicores: Math.max(1, editor.cpuMillicores),
       memoryBytes: Math.max(1, editor.memoryMB) * 1048576,
       diskBytes: Math.max(1, editor.diskMB) * 1048576,
     },
-  }), [editor])
+  }), [editor, labelRules, artifactPatterns])
 
   async function saveDraft() {
+    if (configurationError) { setError(configurationError); return }
     setSaving(true)
     setError('')
     setStatus('')
@@ -120,6 +161,7 @@ export function ScriptEditorPage() {
   }
 
   async function confirmPublish() {
+    if (configurationError) { setPublishError(configurationError); return }
     if (!containsChinese(releaseNotes)) {
       setPublishError('发布说明必须包含中文，便于团队理解本次变更。')
       releaseNotesRef.current?.focus()
@@ -203,7 +245,7 @@ export function ScriptEditorPage() {
         </div>
       </div>
 
-      {error && <div className="notice notice-error" role="alert">{error}</div>}
+      {error && <div ref={errorRef} className="notice notice-error" role="alert" tabIndex={-1}>{error}</div>}
 
       <div className="script-editor-layout">
         <section className="code-workspace" aria-label="脚本代码编辑区">
@@ -240,8 +282,8 @@ export function ScriptEditorPage() {
                 <option value="all_compatible">全部兼容服务器</option><option value="server_group">指定服务器组</option><option value="labels">指定标签集合</option><option value="on_demand">按需分发</option>
               </select>
             </label>
-            {editor.distributionMode === 'server_group' && <label className="form-field">服务器组标识<input value={editor.serverGroupId} onChange={(event) => setEditor({ ...editor, serverGroupId: event.target.value })} /></label>}
-            {editor.distributionMode === 'labels' && <label className="form-field">标签规则<textarea className="compact-textarea" value={editor.labelRules} placeholder={'用途=批处理\n环境=生产'} onChange={(event) => setEditor({ ...editor, labelRules: event.target.value })} /><small>每行一个“键=值”条件。</small></label>}
+            {editor.distributionMode === 'server_group' && <label className="form-field">服务器组<select aria-label="服务器组" value={editor.serverGroupId} disabled={groupsLoading} onChange={(event) => setEditor({ ...editor, serverGroupId: event.target.value })}><option value="">{groupsLoading ? '正在读取服务器组…' : '请选择服务器组'}</option>{editor.serverGroupId && !serverGroups.some((group) => group.id === editor.serverGroupId) && <option value={editor.serverGroupId}>原服务器组（尚未加载或已移除）</option>}{serverGroups.map((group) => <option key={group.id} value={group.id}>{group.name}（{group.serverCount} 台）</option>)}</select><small>发布到所选组内运行环境兼容的服务器。</small>{groupsError && <small className="field-error" role="alert">{groupsError}</small>}{!groupsLoading && !groupsError && serverGroups.length === 0 && <small>暂无服务器组，请先到服务器页面创建并分配节点。</small>}</label>}
+            {editor.distributionMode === 'labels' && <label className="form-field">标签规则<textarea aria-label="标签规则" className="compact-textarea" aria-invalid={Boolean(labelRules.error)} aria-describedby={labelRules.error ? 'label-rules-error' : undefined} value={editor.labelRules} placeholder={'用途=批处理\n环境=生产'} onChange={(event) => setEditor({ ...editor, labelRules: event.target.value })} /><small>每行一个“键=值”条件；所有条件须同时匹配。</small>{labelRules.error && <small id="label-rules-error" className="field-error">{labelRules.error}</small>}</label>}
             <p className="settings-hint">发布后由代理校验脚本包；同步失败不会替换服务器上的旧版本。</p>
           </SettingsSection>
 
@@ -255,17 +297,33 @@ export function ScriptEditorPage() {
 
           <SettingsSection title="参数定义" action={<button type="button" className="text-action" onClick={() => setEditor({ ...editor, parameters: [...editor.parameters, { name: '', type: 'string', required: false }] })}>添加参数</button>}>
             {editor.parameters.length === 0 ? <p className="settings-hint">暂无参数。任务创建时会按这里的类型定义传值。</p> : editor.parameters.map((parameter, index) => (
-              <div className="parameter-row" key={index}>
+              <div key={index}>
+              <div className="parameter-row">
                 <input aria-label={`参数 ${index + 1} 名称`} value={parameter.name} placeholder="参数名" onChange={(event) => updateParameter(index, { ...parameter, name: event.target.value }, editor, setEditor)} />
                 <select aria-label={`参数 ${index + 1} 类型`} value={parameter.type} onChange={(event) => updateParameter(index, { ...parameter, type: event.target.value }, editor, setEditor)}><option value="string">文本</option><option value="number">数字</option><option value="boolean">布尔值</option></select>
                 <button type="button" aria-label={`删除参数 ${index + 1}`} onClick={() => setEditor({ ...editor, parameters: editor.parameters.filter((_, itemIndex) => itemIndex !== index) })}>×</button>
               </div>
+              <label className="form-field">参数 {index + 1} 是否必填<select aria-label={`参数 ${index + 1} 是否必填`} value={String(parameter.required)} onChange={(event) => updateParameter(index, { ...parameter, required: event.target.value === 'true' }, editor, setEditor)}><option value="false">可选</option><option value="true">必填</option></select></label>
+              <label className="form-field">参数 {index + 1} 说明<input value={parameter.description || ''} placeholder="例如：待归档日期，格式 YYYY-MM-DD" onChange={(event) => updateParameter(index, { ...parameter, description: event.target.value }, editor, setEditor)} /></label>
+              </div>
             ))}
+            {parameterError && <p className="field-error">{parameterError}</p>}
+          </SettingsSection>
+
+          <SettingsSection title="运行产物">
+            <label className="form-field">产物采集<select aria-label="产物采集" value={editor.artifactsEnabled ? 'enabled' : 'disabled'} onChange={(event) => setEditor({ ...editor, artifactsEnabled: event.target.value === 'enabled' })}><option value="disabled">关闭</option><option value="enabled">执行结束后采集文件</option></select></label>
+            {editor.artifactsEnabled && <>
+              <label className="form-field">产物文件规则<textarea aria-label="产物文件规则" className="compact-textarea" value={editor.artifactGlobs} placeholder={'*.csv\nreport.json'} onChange={(event) => setEditor({ ...editor, artifactGlobs: event.target.value })} /><small>每行一个文件名规则，仅采集本次工作目录顶层的普通文件。</small></label>
+              <NumberField label="产物单文件上限（MB）" value={editor.artifactFileMB} onChange={(value) => setEditor({ ...editor, artifactFileMB: value })} />
+              <NumberField label="产物总大小上限（MB）" value={editor.artifactTotalMB} onChange={(value) => setEditor({ ...editor, artifactTotalMB: value })} />
+              <p className="settings-hint">最多 100 个文件；隐藏文件、代理配置与原始运行日志不纳入产物。上传完成后可在执行详情下载。</p>
+              {artifactError && <p className="field-error">{artifactError}</p>}
+            </>}
           </SettingsSection>
         </aside>
       </div>
 
-      <SyncStatusPanel scriptId={id} refreshKey={detail.script.currentVersionId} />
+      <SyncStatusPanel scriptId={id} currentVersionId={detail.script.currentVersionId} refreshKey={detail.script.currentVersionId} />
 
       <section className="panel version-panel" aria-labelledby="version-title">
         <header className="panel-header"><div><h2 id="version-title">版本历史</h2><p>版本只追加，不覆盖；回滚也会生成一个新的发布版本。</p></div><span>{detail.versions.length} 个版本</span></header>
@@ -322,6 +380,7 @@ function RollbackDialog({ version, notes, error, saving, onNotes, onClose, onCon
 function editorFromDetail(detail: ScriptDetail): EditorState {
   const manifest = detail.draft.manifest
   return {
+    ...artifactEditorFields(manifest.artifacts),
     content: detail.draft.content,
     runtime: manifest.runtime,
     entrypoint: manifest.entrypoint,
@@ -340,6 +399,7 @@ function editorFromDetail(detail: ScriptDetail): EditorState {
 function editorFromVersion(version: ScriptVersion, content: string): EditorState {
   const manifest = version.manifest
   return {
+    ...artifactEditorFields(manifest.artifacts),
     content,
     runtime: manifest.runtime,
     entrypoint: manifest.entrypoint,
@@ -364,7 +424,38 @@ function parseTags(value: string) {
 }
 
 function parseLabels(value: string) {
-  return Object.fromEntries(value.split('\n').map((line) => line.split('=', 2).map((part) => part.trim())).filter(([key, itemValue]) => key && itemValue))
+  const labels: Record<string, string> = Object.create(null)
+  for (const [index, raw] of value.split('\n').entries()) {
+    const line = raw.trim()
+    if (!line) continue
+    const separator = line.indexOf('=')
+    const key = line.slice(0, separator).trim()
+    const itemValue = line.slice(separator + 1).trim()
+    if (separator < 1 || !key || !itemValue) return { labels, error: `标签规则第 ${index + 1} 行必须填写完整的“键=值”。` }
+    if (Object.hasOwn(labels, key)) return { labels, error: `标签“${key}”重复，请保留一个条件。` }
+    labels[key] = itemValue
+  }
+  return { labels, error: Object.keys(labels).length ? '' : '至少填写一条标签规则。' }
+}
+
+function artifactEditorFields(policy?: ScriptVersion['manifest']['artifacts']) {
+  return {
+    artifactsEnabled: Boolean(policy),
+    artifactGlobs: policy?.allowedGlobs.join('\n') || '*.csv',
+    artifactFileMB: policy ? Math.max(1, Math.ceil(policy.maxFileBytes / 1048576)) : 10,
+    artifactTotalMB: policy ? Math.max(1, Math.ceil(policy.maxTotalBytes / 1048576)) : 50,
+  }
+}
+
+function validateParameters(parameters: ParameterDefinition[]) {
+  const names = new Set<string>()
+  for (const [index, parameter] of parameters.entries()) {
+    const name = parameter.name.trim()
+    if (!name) return `请填写参数 ${index + 1} 的名称。`
+    if (names.has(name)) return `参数“${name}”重复，请使用不同的名称。`
+    names.add(name)
+  }
+  return ''
 }
 
 function containsChinese(value: string) {

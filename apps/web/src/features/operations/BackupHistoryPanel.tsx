@@ -38,13 +38,34 @@ export function BackupHistoryPanel({ pollIntervalMs = 5000 }: BackupHistoryPanel
     {error ? <div ref={errorRef} className="form-error error-summary backup-history-error" role="alert" tabIndex={-1}>{error}</div> : null}
     <section className="panel backup-history-panel" aria-labelledby="backup-history-title">
       <header className="panel-header"><div><h2 id="backup-history-title">备份历史</h2><p>本机保留 7 天，COS 保留 30 天；降级记录会从本机快照续传。</p></div></header>
-      {loading ? <Loading text="正在读取备份历史…" /> : backups.length === 0 ? <Empty text="尚无备份记录" /> : <div className="table-scroll"><table className="data-table"><thead><tr><th>时间</th><th>触发方式</th><th>状态</th><th>范围</th><th>尝试</th></tr></thead><tbody>{backups.map((run) => <tr key={run.id}><td data-label="时间"><span>{formatTime(run.triggerType === 'scheduled' && run.scheduledFor ? run.scheduledFor : run.createdAt)}</span><small className="cell-note">{run.triggerType === 'scheduled' ? '计划时间' : '创建时间'}</small></td><td data-label="触发方式">{run.triggerType === 'manual' ? '手动' : '定时'}</td><td data-label="状态"><Status value={backupStatusLabel(run.status)} failed={run.status === 'failed'} degraded={run.status === 'degraded'} /></td><td data-label="范围">{formatBytes(run.byteSize)} · {run.objectCount} 个对象</td><td data-label="尝试">{run.attempts}</td></tr>)}</tbody></table></div>}
+      {loading ? <Loading text="正在读取备份历史…" /> : backups.length === 0 ? <Empty text="尚无备份记录" /> : <div className="table-scroll"><table className="data-table"><thead><tr><th>时间</th><th>触发方式</th><th>状态</th><th>范围</th><th>尝试</th><th>详细结果</th></tr></thead><tbody>{backups.map((run) => <tr key={run.id}><td data-label="时间"><span>{formatTime(run.triggerType === 'scheduled' && run.scheduledFor ? run.scheduledFor : run.createdAt)}</span><small className="cell-note">{run.triggerType === 'scheduled' ? '计划时间' : '创建时间'}</small></td><td data-label="触发方式">{run.triggerType === 'manual' ? '手动' : '定时'}</td><td data-label="状态"><Status value={backupStatusLabel(run.status)} failed={run.status === 'failed'} degraded={run.status === 'degraded'} /></td><td data-label="范围">{formatBytes(run.byteSize)} · {run.objectCount} 个对象</td><td data-label="尝试">{run.attempts}</td><td data-label="详细结果"><HistoryDetails item={run} checksum={run.manifestSha256} snapshot={run.cosSnapshotId || run.localSnapshotId} /></td></tr>)}</tbody></table></div>}
     </section>
     <section className="panel backup-history-panel" aria-labelledby="verification-history-title">
       <header className="panel-header"><div><h2 id="verification-history-title">恢复校验历史</h2><p>只恢复到随机临时数据库和隔离目录，不覆盖生产数据。</p></div></header>
-      {loading ? <Loading text="正在读取恢复校验历史…" /> : verifications.length === 0 ? <Empty text="尚无恢复校验记录" /> : <div className="table-scroll"><table className="data-table"><thead><tr><th>创建时间</th><th>触发方式</th><th>状态</th><th>校验结果</th></tr></thead><tbody>{verifications.map((item) => <tr key={item.id}><td data-label="创建时间">{formatTime(item.createdAt)}</td><td data-label="触发方式">{item.triggerType === 'manual' ? '手动' : '定时'}</td><td data-label="状态"><Status value={verificationStatusLabel(item.status)} failed={item.status === 'failed'} /></td><td data-label="校验结果"><span>{item.migrationVersion ? `迁移版本 ${item.migrationVersion}` : '等待结果'}</span><small className="cell-note">{item.checkedObjects} 个对象</small></td></tr>)}</tbody></table></div>}
+      {loading ? <Loading text="正在读取恢复校验历史…" /> : verifications.length === 0 ? <Empty text="尚无恢复校验记录" /> : <div className="table-scroll"><table className="data-table"><thead><tr><th>创建时间</th><th>触发方式</th><th>状态</th><th>校验结果</th><th>详细结果</th></tr></thead><tbody>{verifications.map((item) => <tr key={item.id}><td data-label="创建时间">{formatTime(item.createdAt)}</td><td data-label="触发方式">{item.triggerType === 'manual' ? '手动' : '定时'}</td><td data-label="状态"><Status value={verificationStatusLabel(item.status)} failed={item.status === 'failed'} /></td><td data-label="校验结果"><span>{item.migrationVersion ? `迁移版本 ${item.migrationVersion}` : '等待结果'}</span><small className="cell-note">{item.checkedObjects} 个对象</small></td><td data-label="详细结果"><HistoryDetails item={item} backupId={item.backupRunId} /></td></tr>)}</tbody></table></div>}
     </section>
   </div>
+}
+
+function HistoryDetails({ item, checksum, snapshot, backupId }: { item: BackupRun | RestoreVerification; checksum?: string; snapshot?: string; backupId?: string }) {
+  return <details><summary>查看详情</summary><dl className="backup-detail-list">
+    <div><dt>记录编号</dt><dd>{item.id}</dd></div>
+    {backupId ? <div><dt>对应备份</dt><dd>{backupId}</dd></div> : null}
+    <div><dt>开始时间</dt><dd>{item.startedAt ? formatTime(item.startedAt) : '尚未开始'}</dd></div>
+    <div><dt>结束时间</dt><dd>{item.finishedAt ? formatTime(item.finishedAt) : '尚未结束'}</dd></div>
+    <div><dt>耗时</dt><dd>{duration(item.startedAt, item.finishedAt)}</dd></div>
+    {snapshot ? <div><dt>快照编号</dt><dd>{snapshot}</dd></div> : null}
+    {'attempts' in item ? <div><dt>清单 SHA-256</dt><dd style={{ overflowWrap: 'anywhere' }}>{checksum || '尚未生成'}</dd></div> : null}
+    <div><dt>失败原因</dt><dd>{item.errorMessage || '无'}</dd></div>
+  </dl></details>
+}
+
+function duration(start?: string, finish?: string) {
+  if (!start) return '尚未开始'
+  if (!finish) return '进行中'
+  const seconds = Math.max(0, Math.round((Date.parse(finish) - Date.parse(start)) / 1000))
+  if (!Number.isFinite(seconds)) return '时间未知'
+  return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`
 }
 
 function Status({ value, failed = false, degraded = false }: { value: string; failed?: boolean; degraded?: boolean }) { return <span className={`backup-status-chip${failed ? ' is-failed' : degraded ? ' is-degraded' : ''}`}>{value}</span> }

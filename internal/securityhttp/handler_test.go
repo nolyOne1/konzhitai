@@ -278,15 +278,31 @@ func (f *fakeSecrets) List(context.Context) ([]secret.Metadata, error) {
 	return []secret.Metadata{}, nil
 }
 
-type fakeAudits struct{ events []audit.Event }
+type fakeAudits struct {
+	events []audit.Event
+	filter audit.Filter
+}
 
 func (f *fakeAudits) Record(_ context.Context, event audit.Event) error {
 	f.events = append(f.events, event)
 	return nil
 }
 
-func (f *fakeAudits) List(context.Context, audit.Filter) ([]audit.Event, error) {
+func (f *fakeAudits) List(_ context.Context, filter audit.Filter) ([]audit.Event, error) {
+	f.filter = filter
 	return append([]audit.Event(nil), f.events...), nil
+}
+
+func TestAuditListFiltersSpecificRun(t *testing.T) {
+	audits := &fakeAudits{}
+	handler := securityhttp.NewHandler(securityhttp.Services{Audits: audits})
+	request := httptest.NewRequest(http.MethodGet, "/api/audit?targetType=run&targetId=run-42", nil)
+	request = request.WithContext(auth.WithPrincipal(request.Context(), auth.Principal{UserID: handlerActorID, Roles: []auth.RoleName{auth.RoleViewer}}))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || audits.filter.TargetType != "run" || audits.filter.TargetID != "run-42" {
+		t.Fatalf("审计必须按运行目标过滤：%d %+v", recorder.Code, audits.filter)
+	}
 }
 
 type fakeTeam struct {

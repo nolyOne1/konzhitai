@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"yunling.local/platform/internal/agentprotocol"
 )
 
 const (
@@ -77,6 +79,8 @@ type systemdProcess struct {
 	controlOutput          *boundedBuffer
 	stopMu                 sync.Mutex
 	stopRequested          bool
+	usageMu                sync.RWMutex
+	usage                  *agentprotocol.ResourceUsage
 }
 
 func (p *systemdProcess) Wait() (int, error) {
@@ -89,10 +93,13 @@ func (p *systemdProcess) Wait() (int, error) {
 	stderrTail := systemdLogTail{path: p.stderrPath, destination: p.stderr}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	usageTicker := time.NewTicker(5 * time.Second)
+	defer usageTicker.Stop()
 	var streamErr error
 	for {
 		select {
 		case result := <-finished:
+			p.sampleUsage()
 			streamErr = errors.Join(streamErr, stdoutTail.copyAvailable(), stderrTail.copyAvailable())
 			if result.err != nil && p.controlOutput != nil {
 				diagnostic := strings.Join(strings.Fields(strings.ToValidUTF8(p.controlOutput.String(), "�")), " ")
@@ -128,6 +135,8 @@ func (p *systemdProcess) Wait() (int, error) {
 			return result.exitCode, errors.Join(result.err, streamErr, removeErr)
 		case <-ticker.C:
 			streamErr = errors.Join(streamErr, stdoutTail.copyAvailable(), stderrTail.copyAvailable())
+		case <-usageTicker.C:
+			p.sampleUsage()
 		}
 	}
 }

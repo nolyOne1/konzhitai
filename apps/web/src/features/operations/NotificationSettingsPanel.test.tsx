@@ -79,4 +79,33 @@ describe('飞书通知设置面板', () => {
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('飞书消息发送失败'))
   })
+
+  it('入队响应丢失时复用同一请求编号重试', async () => {
+    vi.mocked(getFeishuNotificationConfig).mockResolvedValue({ configured: true, enabled: true, maskedDestination: '飞书机器人 …cdef' })
+    vi.mocked(testFeishuNotification).mockRejectedValueOnce(new Error('网络断开')).mockResolvedValueOnce({ id: 'delivery-replay', status: 'sent', attempts: 1 })
+    const user = userEvent.setup()
+    render(<NotificationSettingsPanel pollIntervalMs={1} />)
+    await user.click(await screen.findByRole('button', { name: '发送测试消息' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('网络断开')
+    const firstKey = vi.mocked(testFeishuNotification).mock.calls.at(-1)?.[0]
+    await user.click(screen.getByRole('button', { name: '发送测试消息' }))
+    expect(await screen.findByText('飞书测试消息已发送')).toBeVisible()
+    expect(firstKey).toMatch(/^[0-9a-f-]{36}$/)
+    expect(vi.mocked(testFeishuNotification).mock.calls.at(-1)?.[0]).toBe(firstKey)
+  })
+
+  it('查询响应丢失后继续查询原消息，不重新入队', async () => {
+    vi.mocked(getFeishuNotificationConfig).mockResolvedValue({ configured: true, enabled: true, maskedDestination: '飞书机器人 …cdef' })
+    vi.mocked(testFeishuNotification).mockResolvedValue({ id: 'delivery-resume', status: 'pending', attempts: 0 })
+    vi.mocked(getNotificationDelivery).mockRejectedValueOnce(new Error('查询中断')).mockResolvedValueOnce({ id: 'delivery-resume', status: 'sent', attempts: 1 })
+    const user = userEvent.setup()
+    render(<NotificationSettingsPanel pollIntervalMs={1} />)
+    const count = vi.mocked(testFeishuNotification).mock.calls.length
+    await user.click(await screen.findByRole('button', { name: '发送测试消息' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('查询中断')
+    await user.click(screen.getByRole('button', { name: '继续查询测试消息' }))
+    expect(await screen.findByText('飞书测试消息已发送')).toBeVisible()
+    expect(vi.mocked(testFeishuNotification).mock.calls).toHaveLength(count + 1)
+    expect(getNotificationDelivery).toHaveBeenLastCalledWith('delivery-resume')
+  })
 })

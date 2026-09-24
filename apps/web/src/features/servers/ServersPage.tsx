@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { getAgentReleases, getServers, getSession, revokeServerCredentials, rotateServerCredential, updateServer, type ServerView, type UpdateServerInput } from '../../api/client'
+import { getServerGroups, type ServerGroup } from '../../api/serverGroups'
+import { ServerGroupsPanel } from './ServerGroupsPanel'
 import { ServerDrawer } from './ServerDrawer'
 import { ServerEnrollmentDialog } from './ServerEnrollmentDialog'
 import { ServerSectionTabs } from './ServerSectionTabs'
@@ -14,12 +16,26 @@ export function ServersPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [isAdmin, setIsAdmin] = useState(false)
+  const [canExecute, setCanExecute] = useState(false)
+  const [groups, setGroups] = useState<ServerGroup[]>([])
+  const [groupsLoading, setGroupsLoading] = useState(true)
+  const [groupsError, setGroupsError] = useState('')
   const [sessionReady, setSessionReady] = useState(false)
   const [sessionError, setSessionError] = useState('')
   const [securityBusy, setSecurityBusy] = useState(false)
   const [showEnrollment, setShowEnrollment] = useState(false)
   const enrollmentButtonRef = useRef<HTMLButtonElement>(null)
   const sessionRequestRef = useRef(0)
+  const groupsRequestRef = useRef(0)
+
+  async function loadGroups() {
+    const requestID = ++groupsRequestRef.current
+    setGroupsLoading(true); setGroupsError('')
+    try { const next = await getServerGroups(); if (groupsRequestRef.current === requestID) setGroups(next) }
+    catch (reason) { if (groupsRequestRef.current === requestID) setGroupsError(reason instanceof Error ? reason.message : '服务器分组加载失败') }
+    finally { if (groupsRequestRef.current === requestID) setGroupsLoading(false) }
+  }
+  useEffect(() => { void loadGroups(); return () => { groupsRequestRef.current += 1 } }, [])
 
   useEffect(() => {
     let active = true
@@ -52,6 +68,7 @@ export function ServersPage() {
     try {
       const updated = await updateServer(server.id, input)
       setServers((items) => items.map((item) => item.id === updated.id ? updated : item))
+      if (input.serverGroupId !== undefined) void loadGroups()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '更新服务器失败')
     } finally {
@@ -79,9 +96,13 @@ export function ServersPage() {
     setSessionReady(false)
     setSessionError('')
     setIsAdmin(false)
+    setCanExecute(false)
     try {
       const session = await getSession()
-      if (sessionRequestRef.current === requestID) setIsAdmin(session.roles.includes('admin'))
+      if (sessionRequestRef.current === requestID) {
+        setIsAdmin(session.roles.includes('admin'))
+        setCanExecute(session.roles.includes('admin') || session.roles.includes('operator'))
+      }
     } catch {
       if (sessionRequestRef.current === requestID) setSessionError('权限信息加载失败，请重试。')
     } finally {
@@ -111,6 +132,7 @@ export function ServersPage() {
       <ServerSectionTabs current="nodes" />
 
       {error && <div className="notice notice-error" role="alert">{error}</div>}
+      <ServerGroupsPanel groups={groups} editable={canExecute} loading={groupsLoading} loadError={groupsError} onReload={() => void loadGroups()} onChanged={(group) => setGroups((items) => [...items.filter((item) => item.id !== group.id), group].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')))} />
 
       <section className="server-summary" aria-label="服务器概况">
         <div><span>服务器总数</span><strong>{loading ? '—' : servers.length}</strong></div>
@@ -139,8 +161,8 @@ export function ServersPage() {
                     <td data-label="CPU"><ResourceValue value={`${formatNumber(server.cpuUsagePercent)}%`} percent={server.cpuUsagePercent} /></td>
                     <td data-label="可用内存"><ResourceValue value={formatBytes(server.memoryAvailableBytes)} percent={percentage(server.memoryTotalBytes - server.memoryAvailableBytes, server.memoryTotalBytes)} /></td>
                     <td data-label="运行任务"><strong>{server.runningTasks}</strong><span className="cell-muted"> 个</span></td>
-                    <td data-label="标签"><div className="tag-list">{Object.entries(server.labels).map(([key, value]) => <span key={key}>{key}：{value}</span>)}</div></td>
-                    <td data-label="操作"><div className="row-actions"><button type="button" disabled={pendingID === server.id || !server.enabled} onClick={() => void saveServer(server, { draining: !server.draining })}>{server.draining ? '取消排空' : '排空'}</button><button type="button" className={server.enabled ? 'danger-text' : ''} disabled={pendingID === server.id} onClick={() => void saveServer(server, { enabled: !server.enabled })}>{server.enabled ? '停用' : '启用'}</button></div></td>
+                    <td data-label="标签"><span className="cell-note">分组：{groups.find((group) => group.id === server.serverGroupId)?.name || (server.serverGroupId ? '分组加载中' : '未分组')}</span><div className="tag-list">{Object.entries(server.labels).map(([key, value]) => <span key={key}>{key}：{value}</span>)}</div></td>
+                    <td data-label="操作">{canExecute ? <div className="row-actions"><button type="button" disabled={pendingID === server.id || !server.enabled} onClick={() => void saveServer(server, { draining: !server.draining })}>{server.draining ? '取消排空' : '排空'}</button><button type="button" className={server.enabled ? 'danger-text' : ''} disabled={pendingID === server.id} onClick={() => void saveServer(server, { enabled: !server.enabled })}>{server.enabled ? '停用' : '启用'}</button></div> : <span className="cell-muted">仅查看</span>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -149,7 +171,7 @@ export function ServersPage() {
         )}
       </section>
 
-      {selected && <ServerDrawer server={selected} saving={pendingID === selected.id} securityBusy={securityBusy} isAdmin={isAdmin} onClose={() => setSelectedID(null)} onSave={(input) => saveServer(selected, input)} onRotate={() => rotateCredential(selected)} onRevoke={() => revokeCredentials(selected)} />}
+      {selected && <ServerDrawer server={selected} groups={groups} groupsReady={!groupsLoading && !groupsError} canExecute={canExecute} saving={pendingID === selected.id} securityBusy={securityBusy} isAdmin={isAdmin} onClose={() => setSelectedID(null)} onSave={(input) => saveServer(selected, input)} onRotate={() => rotateCredential(selected)} onRevoke={() => revokeCredentials(selected)} />}
       {showEnrollment && <ServerEnrollmentDialog controlUrl={window.location.origin} onClose={closeEnrollment} />}
     </>
   )

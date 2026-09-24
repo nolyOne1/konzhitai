@@ -184,6 +184,10 @@ func updateServerHandler(query ManagementQuery) http.Handler {
 			return
 		}
 		updated, err := query.UpdateServer(r.Context(), r.PathValue("id"), input)
+		if errors.Is(err, ErrGroupNotFound) {
+			writeServerError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if errors.Is(err, ErrInvalidServerUpdate) {
 			writeServerError(w, http.StatusBadRequest, err.Error())
 			return

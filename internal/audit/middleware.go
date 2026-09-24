@@ -57,11 +57,17 @@ func classifyRequest(method, path string) (string, string, string, bool) {
 	}
 	if len(parts) >= 4 && parts[0] == "api" {
 		switch parts[1] {
-		case "scripts":
-			if method == http.MethodPost && len(parts) == 6 && parts[3] == "syncs" && parts[5] == "retry" {
-				return "script.sync.retry", "script_sync", parts[4], true
-			}
 		case "tasks":
+			if len(parts) == 4 && parts[3] == "schedules" && method == http.MethodPost {
+				return "task.schedule.create", "task", parts[2], true
+			}
+			if len(parts) == 5 && parts[3] == "schedules" && (method == http.MethodPut || method == http.MethodDelete) {
+				action := "task.schedule.update"
+				if method == http.MethodDelete {
+					action = "task.schedule.delete"
+				}
+				return action, "task_schedule", parts[4], true
+			}
 			if method == http.MethodPost && len(parts) == 4 && parts[3] == "run" {
 				return "task.run", "task", parts[2], true
 			}
@@ -87,6 +93,22 @@ func classifyRequest(method, path string) (string, string, string, bool) {
 	}
 	if len(parts) == 2 && parts[0] == "api" && parts[1] == "tasks" && method == http.MethodPost {
 		return "task.create", "task", "new", true
+	}
+	if len(parts) == 3 && parts[0] == "api" && parts[1] == "tasks" && (method == http.MethodPut || method == http.MethodDelete) {
+		action := "task.update"
+		if method == http.MethodDelete {
+			action = "task.delete"
+		}
+		return action, "task", parts[2], true
+	}
+	if len(parts) == 2 && parts[0] == "api" && parts[1] == "server-groups" && method == http.MethodPost {
+		return "server_group.create", "server_group", "new", true
+	}
+	if len(parts) == 3 && parts[0] == "api" && parts[1] == "server-groups" && method == http.MethodPatch {
+		return "server_group.rename", "server_group", parts[2], true
+	}
+	if len(parts) == 3 && parts[0] == "api" && parts[1] == "servers" && method == http.MethodPatch {
+		return "server.update", "server", parts[2], true
 	}
 	if len(parts) == 2 && parts[0] == "api" && parts[1] == "agent-upgrades" && method == http.MethodPost {
 		return "agent_upgrade.create", "agent_upgrade", "new", true

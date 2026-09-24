@@ -35,6 +35,10 @@ type TickerFactory func(interval time.Duration) Ticker
 
 type ClientOption func(*Client)
 
+func WithRunningProcesses(source func() []agentprotocol.RunningProcess) ClientOption {
+	return func(client *Client) { client.runningProcesses = source }
+}
+
 func WithTickerFactory(factory TickerFactory) ClientOption {
 	return func(client *Client) {
 		client.newTicker = factory
@@ -56,15 +60,16 @@ func WithPlatform(agentOS, agentArch string, capabilities []string) ClientOption
 }
 
 type Client struct {
-	serverID     string
-	version      string
-	agentOS      string
-	agentArch    string
-	capabilities []string
-	collector    Snapshotter
-	sender       HeartbeatSender
-	newTicker    TickerFactory
-	sequence     uint64
+	serverID         string
+	version          string
+	agentOS          string
+	agentArch        string
+	capabilities     []string
+	collector        Snapshotter
+	sender           HeartbeatSender
+	newTicker        TickerFactory
+	sequence         uint64
+	runningProcesses func() []agentprotocol.RunningProcess
 }
 
 func NewClient(
@@ -109,6 +114,17 @@ func (c *Client) Run(ctx context.Context) error {
 			heartbeat.Capabilities = append([]string(nil), c.capabilities...)
 			if err := c.sender.SendHeartbeat(ctx, heartbeat); err != nil {
 				return fmt.Errorf("发送代理心跳：%w", err)
+			}
+			if c.runningProcesses != nil {
+				if sender, ok := c.sender.(interface {
+					SendRunningReport(context.Context, agentprotocol.RunningReport) error
+				}); ok {
+					// A periodic in-memory report proves presence only. It must never
+					// authorize retries of processes omitted during startup/teardown.
+					if err := sender.SendRunningReport(ctx, agentprotocol.RunningReport{ServerID: c.serverID, ReportedAt: sentAt.UTC(), Authoritative: false, Processes: c.runningProcesses()}); err != nil {
+						return fmt.Errorf("发送任务资源采样：%w", err)
+					}
+				}
 			}
 		}
 	}

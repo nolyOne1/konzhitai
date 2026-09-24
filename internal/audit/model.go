@@ -17,5 +17,6 @@ type Filter struct {
 	ActorID    string
 	Action     string
 	TargetType string
+	TargetID   string
 	Limit      int
 }

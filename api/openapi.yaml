@@ -4,6 +4,98 @@ info:
   version: 0.1.0
   description: 多服务器脚本调度平台的中央控制接口。
 paths:
+  /api/releases/agent/latest:
+    get:
+      operationId: getRecommendedAgentManifest
+      summary: 获取推荐代理版本的公开安装清单
+      description: 能力来自经过摘要绑定的发布清单；调度仍以节点心跳实际报告的能力为准，版本号不代表功能支持。
+      security: []
+      responses:
+        "200":
+          description: 当前推荐版本与双架构安装包
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version, artifacts]
+                properties:
+                  version: {type: string}
+                  capabilities:
+                    type: array
+                    uniqueItems: true
+                    items: {type: string, enum: [self_upgrade_v1, run_artifacts_v1]}
+                    description: 可选；兼容未声明能力的旧清单。
+                  artifacts:
+                    type: array
+                    items:
+                      type: object
+                      required: [os, arch, file_name, byte_size, sha256, download_url]
+                      properties:
+                        id: {type: string}
+                        os: {type: string, enum: [linux]}
+                        arch: {type: string, enum: [amd64, arm64]}
+                        file_name: {type: string}
+                        byte_size: {type: integer, format: int64, minimum: 1}
+                        sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+                        download_url: {type: string}
+        "429": {description: 请求过于频繁}
+        "503": {description: 暂无可用的推荐版本}
+  /api/agent/runs/{id}/artifacts/{name}:
+    post:
+      operationId: uploadRunArtifact
+      summary: 代理上传本次运行策略允许的文件产物
+      description: 校验代理所属节点、执行令牌、固定脚本版本的产物策略及总配额。同名同内容重放幂等，不覆盖不同内容。
+      security:
+        - agentBearer: []
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - {name: name, in: path, required: true, schema: {type: string}}
+        - {name: X-Execution-Token, in: header, required: true, schema: {type: string}}
+        - {name: X-Content-SHA256, in: header, required: true, schema: {type: string, pattern: '^[0-9a-f]{64}$'}}
+        - {name: Content-Length, in: header, required: true, schema: {type: integer, minimum: 0, maximum: 104857600}}
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        "201":
+          description: 新产物已保存
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RunArtifact"}
+        "200":
+          description: 相同产物已经保存
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RunArtifact"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {description: 同名文件内容冲突}
+        "413": {description: 超出文件大小、数量或运行总配额}
+  /api/operations/notifications/feishu/test:
+    post:
+      operationId: enqueueFeishuTest
+      summary: 管理员提交幂等测试通知请求
+      security:
+        - sessionCookie: []
+      parameters:
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, format: uuid}, description: 同一操作者重放同一 UUID 返回原通知，不重复发送。}
+        - {name: Origin, in: header, required: true, schema: {type: string, format: uri}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false}
+      responses:
+        "202":
+          description: 已入队或返回原通知记录
+          content:
+            application/json:
+              schema: {type: object, properties: {id: {type: string}, status: {type: string}, attempts: {type: integer}}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "403": {$ref: "#/components/responses/Forbidden"}
   /api/health:
     get:
       operationId: getHealth
@@ -130,6 +222,62 @@ paths:
                 $ref: "#/components/schemas/Dashboard"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/server-groups:
+    get:
+      operationId: listServerGroups
+      summary: 获取服务器组及成员数量
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: 服务器组列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups:
+                    type: array
+                    items: {$ref: "#/components/schemas/ServerGroup"}
+    post:
+      operationId: createServerGroup
+      summary: 创建服务器组
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ServerGroupRequest"}
+      responses:
+        "201":
+          description: 服务器组已创建
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ServerGroup"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "409": {description: 服务器组名称重复}
+  /api/server-groups/{id}:
+    patch:
+      operationId: renameServerGroup
+      summary: 修改服务器组名称
+      security:
+        - sessionCookie: []
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ServerGroupRequest"}
+      responses:
+        "200":
+          description: 服务器组名称已修改
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ServerGroup"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {description: 服务器组名称重复}
   /api/servers:
     get:
       operationId: listServers
@@ -657,6 +805,11 @@ paths:
                   type: object
                   additionalProperties: true
       responses:
+        "400":
+          description: 合并默认参数与本次覆盖值后，不满足所选脚本版本的必填项或类型要求。
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
         "201":
           description: 运行实例已进入排队队列
           content:
@@ -713,6 +866,34 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
   /api/tasks/{id}/schedules/{scheduleID}:
+    put:
+      operationId: updateTaskSchedule
+      summary: 修改定时计划并重新计算下一次执行时间
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/TaskID"
+        - name: scheduleID
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskScheduleRequest"
+      responses:
+        "200":
+          description: 定时计划已修改
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskSchedule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
     delete:
       operationId: deleteTaskSchedule
       summary: 删除任务定时计划
@@ -735,9 +916,19 @@ paths:
     get:
       operationId: listRuns
       summary: 获取执行记录
-      description: 返回最近 200 条运行实例；排队是运行状态之一，不是独立管理模块。
+      description: 按创建时间倒序查询持久化执行记录，可筛选并分页访问历史数据。排队是运行状态之一。
       security:
         - sessionCookie: []
+      parameters:
+        - {name: query, in: query, schema: {type: string}, description: 任务名、脚本名或运行标识的字面子串}
+        - {name: state, in: query, schema: {$ref: "#/components/schemas/RunState"}}
+        - {name: taskId, in: query, schema: {type: string, format: uuid}}
+        - {name: scriptId, in: query, schema: {type: string, format: uuid}}
+        - {name: serverId, in: query, schema: {type: string, format: uuid}}
+        - {name: from, in: query, schema: {type: string, format: date-time}}
+        - {name: until, in: query, schema: {type: string, format: date-time}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+        - {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}}
       responses:
         "200":
           description: 执行记录列表
@@ -745,8 +936,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [runs]
+                required: [runs, hasMore, limit, offset]
                 properties:
+                  hasMore: {type: boolean}
+                  limit: {type: integer}
+                  offset: {type: integer}
                   runs:
                     type: array
                     items:
@@ -768,6 +962,91 @@ paths:
                 $ref: "#/components/schemas/RunView"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/runs/{id}/logs:
+    get:
+      operationId: downloadRunLogs
+      summary: 下载当前已持久化的全部运行日志
+      description: 下载内容不受浏览器接收的实时事件数量限制；正在运行的任务下载到请求时刻已保存的日志。
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: UTF-8 日志附件
+          content:
+            text/plain:
+              schema: {type: string}
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/runs/{id}/logs/archive/info:
+    get:
+      operationId: getRunLogArchive
+      summary: 查询压缩日志归档状态
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: available 表示存在归档，current 表示包含当前所有持久化日志块。
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RunLogArchive"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/runs/{id}/logs/archive:
+    get:
+      operationId: downloadRunLogArchive
+      summary: 下载包含全部已保存日志的压缩归档
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: Gzip 压缩的 NDJSON 日志附件
+          content:
+            application/gzip:
+              schema: {type: string, format: binary}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {description: 归档正在补齐迟到日志，可使用完整日志下载接口。}
+        "503": {description: 归档对象暂时不可用}
+  /api/runs/{id}/artifacts:
+    get:
+      operationId: listRunArtifacts
+      summary: 列出本次运行已上传的文件产物
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: 产物可能在脚本结束后继续上传，列表不暴露对象存储位置。
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifacts:
+                    type: array
+                    items: {$ref: "#/components/schemas/RunArtifact"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /api/runs/{id}/artifacts/{artifactID}:
+    get:
+      operationId: downloadRunArtifact
+      summary: 下载属于指定运行的文件产物
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - {name: artifactID, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        "200":
+          description: 文件附件
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        "404": {$ref: "#/components/responses/NotFound"}
   /api/runs/{id}/events:
     get:
       operationId: streamRunEvents
@@ -945,6 +1224,12 @@ paths:
       summary: 获取只追加审计日志
       security:
         - sessionCookie: []
+      parameters:
+        - {name: actorId, in: query, schema: {type: string}}
+        - {name: action, in: query, schema: {type: string}}
+        - {name: targetType, in: query, schema: {type: string}}
+        - {name: targetId, in: query, schema: {type: string}, description: 按任务或运行等资源标识筛选审计}
+        - {name: limit, in: query, schema: {type: integer}}
       responses:
         "200":
           description: 最近的关键操作审计记录
@@ -1274,8 +1559,15 @@ components:
           type: string
     Dashboard:
       type: object
-      required: [onlineServers, totalServers, runningRuns, queuedRuns, todaySuccessRate, servers, recentEvents]
+      required: [onlineServers, totalServers, runningRuns, queuedRuns, todaySuccessRate, servers, recentEvents, activeRuns, scriptSync]
       properties:
+        activeRuns:
+          type: array
+          maxItems: 6
+          items:
+            $ref: "#/components/schemas/DashboardRun"
+        scriptSync:
+          $ref: "#/components/schemas/DashboardScriptSync"
         onlineServers:
           type: integer
           minimum: 0
@@ -1300,6 +1592,27 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RecentEvent"
+    DashboardRun:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        taskName: {type: string}
+        scriptName: {type: string}
+        serverName: {type: string}
+        state: {$ref: "#/components/schemas/RunState"}
+        resultSummary: {type: string}
+        queuedAt: {type: string, format: date-time}
+    DashboardScriptSync:
+      type: object
+      description: 仅聚合各脚本当前已发布版本的节点副本，不包含历史版本。
+      properties:
+        publishedScripts: {type: integer, minimum: 0}
+        total: {type: integer, minimum: 0}
+        ready: {type: integer, minimum: 0}
+        pending: {type: integer, minimum: 0}
+        downloading: {type: integer, minimum: 0}
+        failed: {type: integer, minimum: 0}
+        drifted: {type: integer, minimum: 0}
     RecentEvent:
       type: object
       required: [id, type, message, occurredAt]
@@ -1335,6 +1648,9 @@ components:
         - diskAvailableBytes
         - runningTasks
       properties:
+        serverGroupId:
+          type: string
+          description: 服务器组标识，未分组时为空字符串。
         id:
           type: string
           format: uuid
@@ -1470,6 +1786,8 @@ components:
       type: object
       required: [runtime, entrypoint, category, tags, distribution, parameterDefinitions, resources]
       properties:
+        artifacts:
+          $ref: "#/components/schemas/ArtifactPolicy"
         runtime:
           $ref: "#/components/schemas/ScriptRuntime"
         entrypoint:
@@ -1569,6 +1887,15 @@ components:
           type: string
         blocked:
           type: boolean
+        failureCount:
+          type: integer
+          minimum: 0
+        nextRetryAt:
+          type: [string, "null"]
+          format: date-time
+        retryLimit:
+          type: integer
+          description: 连续失败达到 3 次后需人工重试；人工重试重置计数。
         syncedAt:
           type: [string, "null"]
           format: date-time
@@ -1615,6 +1942,8 @@ components:
       additionalProperties: false
       required: [content, runtime, entrypoint, category, tags, distribution, parameterDefinitions, resources]
       properties:
+        artifacts:
+          $ref: "#/components/schemas/ArtifactPolicy"
         content:
           type: string
           minLength: 1
@@ -1642,6 +1971,8 @@ components:
       additionalProperties: false
       required: [content, runtime, entrypoint, category, tags, distribution, parameterDefinitions, resources, releaseNotes]
       properties:
+        artifacts:
+          $ref: "#/components/schemas/ArtifactPolicy"
         content:
           type: string
           minLength: 1
@@ -1764,7 +2095,8 @@ components:
           minimum: 1
         maxWaitSeconds:
           type: integer
-          minimum: 1
+          minimum: 0
+          description: 0 表示无限等待；大于 0 表示最大排队秒数。
         retryPolicy:
           $ref: "#/components/schemas/TaskRetryPolicy"
         idempotent:
@@ -1849,7 +2181,8 @@ components:
           minimum: 1
         maxWaitSeconds:
           type: integer
-          minimum: 1
+          minimum: 0
+          description: 0 表示无限等待；大于 0 表示最大排队秒数。
         retryPolicy:
           $ref: "#/components/schemas/TaskRetryPolicy"
         idempotent:
@@ -1863,10 +2196,71 @@ components:
         createdAt:
           type: string
           format: date-time
+    ArtifactPolicy:
+      type: object
+      description: 可选产物采集策略。仅采集当前运行工作目录顶层的普通文件，排除隐藏文件、符号链接与代理保留文件；不配置时不采集。
+      required: [allowedGlobs, maxFileBytes, maxTotalBytes]
+      properties:
+        allowedGlobs:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: {type: string, maxLength: 128}
+        maxFileBytes: {type: integer, minimum: 1, maximum: 104857600}
+        maxTotalBytes: {type: integer, minimum: 1, maximum: 524288000, description: 必须不小于单文件上限；每次运行最多 100 个文件。}
+    RunArtifact:
+      type: object
+      required: [id, runId, name, byteSize, sha256, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        runId: {type: string, format: uuid}
+        name: {type: string}
+        byteSize: {type: integer, minimum: 0}
+        sha256: {type: string}
+        createdAt: {type: string, format: date-time}
+    RunState:
+      type: string
+      enum: [queued, scheduling, assigned, syncing, running, succeeded, failed, timed_out, cancelled, expired, unknown]
+    ResourceUsage:
+      type: object
+      required: [sampledAt]
+      description: 代理实测资源用量；不支持的计量省略，内存峰值为系统或采样观测峰值。
+      properties:
+        cpuTimeMillis: {type: integer, minimum: 0, description: 累计 CPU 时间毫秒}
+        memoryBytes: {type: integer, minimum: 0}
+        peakMemoryBytes: {type: integer, minimum: 0}
+        processes: {type: integer, minimum: 0}
+        sampledAt: {type: string, format: date-time}
+    ServerGroup:
+      type: object
+      required: [id, name, serverCount, createdAt]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        serverCount: {type: integer, minimum: 0}
+        createdAt: {type: string, format: date-time}
+    ServerGroupRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 80}
+    RunLogArchive:
+      type: object
+      required: [available, current]
+      properties:
+        available: {type: boolean}
+        current: {type: boolean}
+        byteSize: {type: integer, minimum: 0}
+        sha256: {type: string}
+        chunkCount: {type: integer, minimum: 0}
+        archivedAt: {type: string, format: date-time}
     RunView:
       type: object
       required: [id, definitionId, taskName, scriptId, scriptName, scriptVersionId, versionNumber, triggerType, state, parameters, resources, requiredRuntime, priority, attempt, maxRetries, idempotent, processConfirmedGone, queuedAt, resultSummary, createdAt]
       properties:
+        usage:
+          $ref: "#/components/schemas/ResourceUsage"
         id:
           type: string
           format: uuid
@@ -1941,6 +2335,8 @@ components:
       type: object
       required: [id, kind, sequence, occurredAt]
       properties:
+        usage:
+          $ref: "#/components/schemas/ResourceUsage"
         id:
           type: string
         kind:
@@ -2113,6 +2509,9 @@ components:
       additionalProperties: false
       minProperties: 1
       properties:
+        serverGroupId:
+          type: string
+          description: 已存在的服务器组标识；空字符串表示移出分组。
         name:
           type: string
           minLength: 1

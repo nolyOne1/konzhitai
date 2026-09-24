@@ -363,10 +363,14 @@ func (r *PostgresRepository) Dashboard(ctx context.Context) (Dashboard, error) {
 		return Dashboard{}, err
 	}
 	dashboard.Servers = servers
+	if err := r.dashboardActivity(ctx, &dashboard); err != nil {
+		return Dashboard{}, err
+	}
 
 	rows, err := r.db.Query(ctx, `
 		SELECT id, event_type, COALESCE(NULLIF(payload->>'message', ''), '任务状态已更新'), occurred_at
 		FROM run_events
+		WHERE event_type <> 'run.usage'
 		ORDER BY occurred_at DESC
 		LIMIT 8
 	`)
@@ -439,6 +443,13 @@ func (r *PostgresRepository) UpdateServer(
 	if input.Draining != nil {
 		draining = *input.Draining
 	}
+	var groupID any
+	if input.ServerGroupID != nil {
+		if err := r.validateGroup(ctx, *input.ServerGroupID); err != nil {
+			return ServerView{}, err
+		}
+		groupID = *input.ServerGroupID
+	}
 
 	var updatedID string
 	err := r.db.QueryRow(ctx, `
@@ -446,6 +457,7 @@ func (r *PostgresRepository) UpdateServer(
 		SET
 			name = COALESCE($2::text, name),
 			labels = COALESCE($3::jsonb, labels),
+			server_group_id = COALESCE($7::text, server_group_id),
 			scheduling_weight = COALESCE($4::integer, scheduling_weight),
 			enabled = COALESCE($5::boolean, enabled),
 			drain_requested = CASE
@@ -465,7 +477,7 @@ func (r *PostgresRepository) UpdateServer(
 			updated_at = now()
 		WHERE id = $1
 		RETURNING id
-	`, id, name, labels, weight, enabled, draining).Scan(&updatedID)
+	`, id, name, labels, weight, enabled, draining, groupID).Scan(&updatedID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ServerView{}, ErrServerNotFound
 	}
@@ -493,6 +505,7 @@ const serverViewSelect = `
 		server.enabled,
 		server.drain_requested,
 		server.labels,
+		server.server_group_id,
 		server.runtimes,
 		server.agent_version,
 		server.agent_os,
@@ -548,6 +561,7 @@ func scanServerView(row rowScanner) (ServerView, error) {
 		&view.Enabled,
 		&view.Draining,
 		&labels,
+		&view.ServerGroupID,
 		&runtimes,
 		&view.AgentVersion,
 		&view.AgentOS,

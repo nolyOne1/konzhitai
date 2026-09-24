@@ -151,6 +151,50 @@ func notificationDatabase(t *testing.T) *pgxpool.Pool {
 	return db
 }
 
+func TestPostgresTestNotificationIdempotency(t *testing.T) {
+	db := notificationDatabase(t)
+	ctx := context.Background()
+	actor := insertNotificationUser(t, db)
+	repository := notification.NewPostgresRepository(db)
+	secrets := secret.NewService(secret.NewPostgresRepository(db), notificationKeyProvider())
+	if _, err := notification.NewConfigService(repository, secrets).Update(ctx, actor, "127.0.0.1", notification.FeishuConfigInput{Enabled: true, Webhook: validWebhook, SigningSecret: "test-only-signing-value"}); err != nil {
+		t.Fatal(err)
+	}
+	service := notification.NewOutboxService(repository, nil, nil, time.Now)
+	requestID := "11111111-1111-4111-8111-111111111111"
+	type result struct {
+		delivery notification.Delivery
+		err      error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() { delivery, err := service.EnqueueTest(ctx, actor, requestID); results <- result{delivery, err} }()
+	}
+	first, second := <-results, <-results
+	if first.err != nil || second.err != nil || first.delivery.ID == "" || first.delivery.ID != second.delivery.ID {
+		t.Fatalf("duplicate request created multiple records: %+v %+v", first, second)
+	}
+	var count int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action='operations.feishu.test'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("duplicate audit: %d %v", count, err)
+	}
+	otherActor := insertNotificationUser(t, db)
+	other, err := service.EnqueueTest(ctx, otherActor, requestID)
+	if err != nil || other.ID == first.delivery.ID {
+		t.Fatalf("different actors must not collide: %+v %v", other, err)
+	}
+	if _, err := db.Exec(ctx, `UPDATE notification_configs SET enabled=false WHERE channel='feishu'`); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := service.EnqueueTest(ctx, actor, requestID)
+	if err != nil || replay.ID != first.delivery.ID {
+		t.Fatalf("existing delivery remains replayable after config changes: %+v %v", replay, err)
+	}
+	if _, err := service.EnqueueTest(ctx, actor, "not-a-request-id"); err == nil {
+		t.Fatal("invalid request key accepted")
+	}
+}
+
 func insertNotificationUser(t *testing.T, db *pgxpool.Pool) string {
 	t.Helper()
 	var id string
