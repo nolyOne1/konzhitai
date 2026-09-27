@@ -13,7 +13,26 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/yunling
 
 FROM restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510 AS restic
 
-FROM quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727 AS minio-client
+# Rebuild the same upstream release when its public registry image is unavailable.
+# Fixed source and release metadata: deploy/MINIO_CLIENT_SOURCE.md.
+FROM golang:1.27.0-alpine3.24@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS minio-client
+
+ARG GOPROXY=https://mirrors.cloud.tencent.com/go,direct
+ARG GOSUMDB=sum.golang.google.cn
+ENV GOPROXY=${GOPROXY} GOSUMDB=${GOSUMDB} GOTOOLCHAIN=local CGO_ENABLED=0
+
+WORKDIR /src/mc
+RUN apk add --no-cache ca-certificates
+RUN wget -T 60 -O /tmp/mc-source.tar.gz https://codeload.github.com/minio/mc/tar.gz/7394ce0dd2a80935aded936b09fa12cbb3cb8096 && \
+    printf '%s  %s\n' '95cd293c7119f16921a6dc515a1fb74a2227f19fd994b9c8b770a154e802ac44' '/tmp/mc-source.tar.gz' | sha256sum -c - && \
+    tar -xzf /tmp/mc-source.tar.gz --strip-components=1 -C /src/mc
+RUN sha256sum go.mod go.sum > /tmp/mc-module.sha256 && \
+    go mod download && go mod verify && \
+    sha256sum -c /tmp/mc-module.sha256
+RUN GOOS=linux go build -mod=readonly -trimpath -buildvcs=false -tags kqueue \
+    -ldflags='-s -w -X github.com/minio/mc/cmd.Version=2025-08-13T08:35:41Z -X github.com/minio/mc/cmd.CopyrightYear=2025 -X github.com/minio/mc/cmd.ReleaseTag=RELEASE.2025-08-13T08-35-41Z -X github.com/minio/mc/cmd.CommitID=7394ce0dd2a80935aded936b09fa12cbb3cb8096 -X github.com/minio/mc/cmd.ShortCommitID=7394ce0dd2a8' \
+    -o /usr/bin/mc . && \
+    sha256sum -c /tmp/mc-module.sha256
 
 FROM postgres:18.6-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
 
@@ -25,6 +44,7 @@ RUN apk add --no-cache ca-certificates tzdata && \
     ln -s /usr/local/bin/psql /usr/bin/psql
 COPY --from=restic /usr/bin/restic /usr/bin/restic
 COPY --from=minio-client /usr/bin/mc /usr/bin/mc
+COPY --from=minio-client /src/mc/LICENSE /src/mc/CREDITS /src/mc/NOTICE /usr/share/licenses/minio-mc/
 COPY --from=builder /out/yunling-ops /usr/local/bin/yunling-ops
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/yunling-ops"]

@@ -343,7 +343,16 @@ func TestBackupToolchainAndSecretGeneratorArePinnedAndFailClosed(t *testing.T) {
 	dockerfile := mustReadDeploymentFile(t, root, "deploy", "Dockerfile.ops")
 	script := mustReadDeploymentFile(t, root, "deploy", "initialize-ops-secrets.sh")
 	environment := mustReadDeploymentFile(t, root, "deploy", ".env.example")
-	for _, required := range []string{"postgres:18.6-alpine", "restic/restic:0.19.1", "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z", "USER 10001:10001"} {
+	for _, required := range []string{
+		"postgres:18.6-alpine", "restic/restic:0.19.1", "USER 10001:10001",
+		"https://codeload.github.com/minio/mc/tar.gz/7394ce0dd2a80935aded936b09fa12cbb3cb8096",
+		"95cd293c7119f16921a6dc515a1fb74a2227f19fd994b9c8b770a154e802ac44",
+		"sha256sum -c -", "GOTOOLCHAIN=local", "CGO_ENABLED=0", "go mod verify", "-mod=readonly",
+		"-X github.com/minio/mc/cmd.ReleaseTag=RELEASE.2025-08-13T08-35-41Z",
+		"-X github.com/minio/mc/cmd.CommitID=7394ce0dd2a80935aded936b09fa12cbb3cb8096",
+		"COPY --from=minio-client /usr/bin/mc /usr/bin/mc",
+		"/src/mc/LICENSE /src/mc/CREDITS /src/mc/NOTICE /usr/share/licenses/minio-mc/",
+	} {
 		if !strings.Contains(dockerfile, required) {
 			t.Fatalf("Ops 工具链缺少固定版本 %q", required)
 		}

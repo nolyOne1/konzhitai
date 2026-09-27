@@ -202,6 +202,10 @@ func TestCIDeploymentJobNeverStartsProductionCompose(t *testing.T) {
 		"文件必须使用 LF 换行",
 		"docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet",
 		"docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml build web api scheduler ops bootstrap",
+		"COMPOSE_PROJECT_NAME: yunling-ci",
+		"bash deploy/ops_mc_smoke_test.sh yunling-ci-ops",
+		"docker build -f deploy/Dockerfile.minio -t yunling-minio-smoke:ci .",
+		"bash deploy/ops_mc_s3_smoke_test.sh yunling-ci-ops yunling-minio-smoke:ci",
 	)
 	for _, forbidden := range []string{
 		"docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml up",
