@@ -45,6 +45,13 @@ func Start(t testing.TB) *pgxpool.Pool {
 		Encoding("UTF8").
 		StartTimeout(45 * time.Second).
 		Logger(io.Discard)
+	binariesPath, err := preparedBinaries(config, filepath.Join(basePath, "binaries"))
+	if err != nil {
+		t.Fatalf("准备嵌入式 PostgreSQL 二进制：%v", err)
+	}
+	if binariesPath != "" {
+		config = config.BinariesPath(binariesPath)
+	}
 	database := embeddedpostgres.NewDatabase(config)
 	if err := database.Start(); err != nil {
 		t.Fatalf("启动嵌入式 PostgreSQL（版本 %s，下载源 https://repo.maven.apache.org/maven2；下载失败也可能由 HTTP 限流或仓库暂时不可用引起）：%v", embeddedpostgres.V18, err)
