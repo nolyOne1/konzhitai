@@ -204,6 +204,17 @@ jobs:
       - name: 解析 Compose 配置
         run: docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet
       - name: 构建云令应用镜像
+        env:
+          COMPOSE_PROJECT_NAME: yunling-ci
         run: docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml build web api scheduler ops bootstrap
+      - name: 验证非 root 备份工具与文件镜像
+        run: |
+          bash -n deploy/ops_mc_smoke_test.sh
+          bash deploy/ops_mc_smoke_test.sh yunling-ci-ops
+      - name: 验证隔离 S3 备份镜像导出
+        run: |
+          docker build -f deploy/Dockerfile.minio -t yunling-minio-smoke:ci .
+          bash -n deploy/ops_mc_s3_smoke_test.sh
+          bash deploy/ops_mc_s3_smoke_test.sh yunling-ci-ops yunling-minio-smoke:ci
       - name: 演练应用发布与自动回滚
         run: go test -tags=releaseintegration ./tests/releaseintegration -count=1

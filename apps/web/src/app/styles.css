@@ -44,6 +44,13 @@
 .run-artifacts-panel .panel-header p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
 .run-artifacts-panel .panel-header > span { flex-shrink: 0; }
 .run-artifacts-panel .secondary-action { max-width: 100%; padding: 10px 14px; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.run-artifacts-panel .artifact-actions { justify-content: flex-start; flex-wrap: wrap; gap: 8px; }
+.run-artifacts-panel .artifact-actions button, .artifact-preview button { min-height: 44px; }
+.artifact-preview { min-width: 0; margin: 16px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; }
+.artifact-preview header { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.artifact-preview h3 { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.artifact-preview .artifact-verified { color: var(--muted); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.artifact-preview pre { max-height: 420px; max-width: 100%; margin-bottom: 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; font-size: 14px; line-height: 1.6; }
 .row-actions.run-audit-links { justify-content: flex-start; flex-wrap: wrap; margin-top: 16px; }
 .run-audit-links a { min-width: 44px; padding: 8px 12px; font-size: 13px; line-height: 1.45; text-align: center; }
 

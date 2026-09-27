@@ -1,11 +1,17 @@
 import { withSession } from '../../test/session'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { RunDetailPage } from './RunDetailPage'
 import { RunsPage } from './RunsPage'
+
+const { Blob: NodeBlob } = await vi.importActual<{ Blob: typeof Blob }>('node:buffer')
+const { createHash, webcrypto } = await vi.importActual<{
+  createHash: (algorithm: string) => { update: (text: string) => { digest: (format: 'hex') => string } }
+  webcrypto: Crypto
+}>('node:crypto')
 
 const run = {
   id: 'run-1', definitionId: 'task-1', taskName: '每日归档任务', scriptId: 'script-1', scriptName: '归档脚本',
@@ -17,6 +23,7 @@ const run = {
 }
 
 describe('执行记录与实时日志', () => {
+  beforeEach(() => { vi.stubGlobal('Blob', NodeBlob); vi.stubGlobal('crypto', webcrypto) })
   it.each(['timed_out', 'cancelled'])('终止状态 %s 不将历史退出码 0 展示为成功', async (state) => {
     installEventSource()
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ ...run, state, exitCode: 0, finishedAt: '2026-08-28T08:00:09Z' })))
@@ -54,6 +61,7 @@ describe('执行记录与实时日志', () => {
 
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
@@ -146,9 +154,9 @@ describe('执行记录与实时日志', () => {
 
   it('从服务端下载完整日志、最新压缩归档和运行产物', async () => {
     installEventSource()
-    const stored = new Blob(['server complete log'])
-    const compressed = new Blob(['archive bytes'])
-    const artifact = new Blob(['report bytes'])
+    const stored = new Blob(['server complete log'], { type: 'text/plain; charset=utf-8' })
+    const compressed = new Blob(['archive bytes'], { type: 'application/gzip' })
+    const artifact = new Blob(['report bytes'], { type: 'application/octet-stream' })
     const createObjectURL = vi.fn().mockReturnValue('blob:download')
     class DownloadURL extends URL {
       static createObjectURL = createObjectURL
@@ -158,10 +166,10 @@ describe('执行记录与实时日志', () => {
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
     const fetchMock = vi.fn(async (path: string) => {
       if (path === '/api/runs/run-1') return response({ ...run, state: 'succeeded' })
-      if (path.endsWith('/logs/archive/info')) return response({ available: true, current: true, byteSize: 1024 })
+      if (path.endsWith('/logs/archive/info')) return response({ available: true, current: true, ...digest('archive bytes') })
       if (path.endsWith('/logs/archive')) return { ...response(null), blob: async () => compressed }
       if (path.endsWith('/logs')) return { ...response(null), blob: async () => stored }
-      if (path.endsWith('/artifacts')) return response({ artifacts: [{ id: 'artifact-1', name: 'report.csv', byteSize: 12, sha256: 'a'.repeat(64), createdAt: '2026-08-28T08:00:07Z' }] })
+      if (path.endsWith('/artifacts')) return response({ artifacts: [fileFixture('report bytes')] })
       if (path.endsWith('/artifacts/artifact-1')) return { ...response(null), blob: async () => artifact }
       throw new Error(path)
     })
@@ -172,12 +180,146 @@ describe('执行记录与实时日志', () => {
     await user.click(screen.getByRole('button', { name: '下载日志' }))
     expect(createObjectURL).toHaveBeenCalledWith(stored)
     await user.click(screen.getByRole('button', { name: '下载压缩归档' }))
-    expect(createObjectURL).toHaveBeenCalledWith(compressed)
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledWith(compressed))
     await user.click(screen.getByRole('button', { name: '下载 report.csv' }))
-    expect(createObjectURL).toHaveBeenCalledWith(artifact)
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledWith(artifact))
     expect(click).toHaveBeenCalledTimes(3)
+    expect(screen.getByText(/已校验并发起下载：report.csv/)).toBeVisible()
+  })
+
+  it('文本预览按纯文本展示脚本标记，关闭后回到预览按钮', async () => {
+    const contents = '中文\n<script>window.bad = true</script><img src=x onerror=alert(1)>'
+    installArtifactFetch(contents)
+    const user = userEvent.setup()
+    renderDetail()
+    const button = await screen.findByRole('button', { name: '预览 report.csv' })
+    await user.click(button)
+    const content = await screen.findByLabelText('文件文本内容')
+    expect(content.textContent).toBe(contents)
+    expect(content.querySelector('script, img')).toBeNull()
+    expect(screen.getByText(/已验证大小/)).toHaveTextContent(digest(contents).sha256)
+    await user.click(screen.getByRole('button', { name: '关闭预览' }))
+    expect(screen.queryByLabelText('文件文本内容')).not.toBeInTheDocument()
+    expect(button).toHaveFocus()
+  })
+
+  it('超过预览上限仅禁用预览并保留下载入口', async () => {
+    const fetchMock = installArtifactFetch('x'.repeat(256 * 1024 + 1))
+    renderDetail()
+    expect(await screen.findByRole('button', { name: '预览 report.csv' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '下载 report.csv' })).toBeEnabled()
+    expect(screen.getByText('超过 256 KiB，仅支持下载。')).toBeVisible()
+    expect(fetchMock.mock.calls.some(([path]) => path.endsWith('/artifacts/artifact-1'))).toBe(false)
+  })
+
+  it.each([
+    ['大小', { byteSize: 999 }, 'application/octet-stream'],
+    ['SHA-256', { sha256: 'b'.repeat(64) }, 'application/octet-stream'],
+    ['响应类型', {}, 'text/html'],
+  ])('产物%s校验失败不发起下载，成功轮询不清除操作错误', async (message, override, type) => {
+    let poll: (() => void) | undefined
+    const interval = window.setInterval.bind(window)
+    vi.spyOn(window, 'setInterval').mockImplementation((handler, timeout, ...args) => {
+      if (timeout === 15000) poll = handler as () => void
+      return interval(handler, timeout, ...args)
+    })
+    installArtifactFetch('report bytes', override, () => Promise.resolve(blobResponse('report bytes', type)))
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const user = userEvent.setup()
+    renderDetail()
+    await user.click(await screen.findByRole('button', { name: '下载 report.csv' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(message)
+    expect(click).not.toHaveBeenCalled()
+    await act(async () => { poll?.() })
+    expect(screen.getByRole('alert')).toHaveTextContent(message)
+    expect(screen.queryByText(/已校验并发起下载/)).not.toBeInTheDocument()
+  })
+
+  it.each(['切换运行', '卸载'])('%s后迟到产物响应不会下载或显示旧预览', async (navigation) => {
+    const pending = deferred<ReturnType<typeof blobResponse>>()
+    installArtifactFetch('report bytes', {}, () => pending.promise)
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const user = userEvent.setup()
+    const view = renderDetail()
+    await user.click(await screen.findByRole('button', { name: '下载 report.csv' }))
+    if (navigation === '卸载') view.unmount()
+    else await user.click(screen.getByRole('link', { name: '另一条运行' }))
+    await act(async () => { pending.resolve(blobResponse('report bytes')); await pending.promise })
+    expect(click).not.toHaveBeenCalled()
+    expect(screen.queryByText(/已校验并发起下载/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('文件文本内容')).not.toBeInTheDocument()
+  })
+
+  it('关闭加载中的预览后迟到响应不再打开预览', async () => {
+    const pending = deferred<ReturnType<typeof blobResponse>>()
+    installArtifactFetch('report bytes', {}, () => pending.promise)
+    const user = userEvent.setup()
+    renderDetail()
+    await user.click(await screen.findByRole('button', { name: '预览 report.csv' }))
+    expect(screen.getByRole('button', { name: '下载 report.csv' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: '关闭预览' }))
+    await act(async () => { pending.resolve(blobResponse('report bytes')); await pending.promise })
+    expect(screen.queryByLabelText('文件文本内容')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '关闭预览' })).not.toBeInTheDocument()
+  })
+
+  it('关闭已有预览不会取消进行中的下载', async () => {
+    const pending = deferred<ReturnType<typeof blobResponse>>()
+    let count = 0
+    installArtifactFetch('report bytes', {}, () => ++count === 1 ? Promise.resolve(blobResponse('report bytes')) : pending.promise)
+    const createObjectURL = vi.fn(() => 'blob:verified')
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL: vi.fn() })
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const user = userEvent.setup()
+    renderDetail()
+    await user.click(await screen.findByRole('button', { name: '预览 report.csv' }))
+    await screen.findByLabelText('文件文本内容')
+    await user.click(screen.getByRole('button', { name: '下载 report.csv' }))
+    await user.click(screen.getByRole('button', { name: '关闭预览' }))
+    await act(async () => { pending.resolve(blobResponse('report bytes')); await pending.promise })
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledOnce())
+    expect(screen.queryByLabelText('文件文本内容')).not.toBeInTheDocument()
+  })
+
+  it('下载遇到归档刚更新时以新元数据复核原始字节', async () => {
+    installEventSource()
+    let metadataReads = 0
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => {
+      if (path === '/api/runs/run-1') return response({ ...run, state: 'succeeded' })
+      if (path.endsWith('/artifacts')) return response({ artifacts: [] })
+      if (path.endsWith('/logs/archive/info')) return response({ available: true, current: true, ...digest(++metadataReads <= 2 ? 'old' : 'new gzip bytes') })
+      if (path.endsWith('/logs/archive')) return blobResponse('new gzip bytes', 'application/gzip')
+      throw new Error(path)
+    }))
+    const createObjectURL = vi.fn(() => 'blob:archive')
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL: vi.fn() })
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const user = userEvent.setup()
+    renderDetail()
+    await user.click(await screen.findByRole('button', { name: '下载压缩归档' }))
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledOnce())
+    expect(metadataReads).toBe(3)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })
+
+function digest(text: string) { return { byteSize: new TextEncoder().encode(text).byteLength, sha256: createHash('sha256').update(text).digest('hex') } }
+function fileFixture(contents: string) { return { id: 'artifact-1', name: 'report.csv', ...digest(contents), createdAt: '2026-08-28T08:00:07Z' } }
+function blobResponse(contents: string, type = 'application/octet-stream') { return { ...response(null), blob: async () => new Blob([contents], { type }) } }
+function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done }); return { promise, resolve } }
+function renderDetail() { return render(withSession(<MemoryRouter initialEntries={['/runs/run-1']}><Link to="/runs/run-2">另一条运行</Link><Routes><Route path="/runs/:id" element={<RunDetailPage />} /></Routes></MemoryRouter>)) }
+function installArtifactFetch(contents: string, override = {}, body = () => Promise.resolve(blobResponse(contents))) {
+  installEventSource()
+  const fetchMock = vi.fn(async (path: string) => {
+    if (path === '/api/runs/run-1' || path === '/api/runs/run-2') return response({ ...run, id: path.split('/').pop(), state: 'succeeded' })
+    if (path.endsWith('/logs/archive/info')) return response({ available: false, current: false })
+    if (path.endsWith('/artifacts')) return response({ artifacts: [{ ...fileFixture(contents), ...override }] })
+    if (path.endsWith('/artifacts/artifact-1')) return body()
+    throw new Error(path)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
 
 function response(value: unknown, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => value }
