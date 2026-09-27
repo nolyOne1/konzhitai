@@ -846,7 +846,7 @@ export async function validateTaskCron(input: Pick<TaskScheduleInput, 'cronExpre
   await request<{ valid: boolean }>('/api/tasks/cron/validate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    body: JSON.stringify({ cronExpression: input.cronExpression, timezone: input.timezone }),
   })
 }
 
