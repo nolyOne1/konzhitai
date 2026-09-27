@@ -6,11 +6,16 @@ import { subscribeRunEvents, type RunStreamEvent } from '../../api/events'
 import { RunStateBadge } from './RunsPage'
 import { useCanExecute } from '../auth/SessionContext'
 import { ManualRunDialog } from '../tasks/ManualRunDialog'
+import { decodeTextPreview, FileIntegrityError, previewUnavailableReason, saveBlob, validateDownloadType, verifyFile } from './downloads'
 
 const terminalStates: RunState[] = ['succeeded', 'failed', 'timed_out', 'cancelled', 'expired']
 
 export function RunDetailPage() {
   const { id = '' } = useParams()
+  return <RunDetail key={id} id={id} />
+}
+
+function RunDetail({ id }: { id: string }) {
   const navigate = useNavigate()
   const canExecute = useCanExecute()
   const [manualTask, setManualTask] = useState<TaskDefinition | null>(null)
@@ -30,8 +35,18 @@ export function RunDetailPage() {
   const [archiveError, setArchiveError] = useState('')
   const [artifacts, setArtifacts] = useState<RunArtifact[]>([])
   const [artifactError, setArtifactError] = useState('')
-  const [downloadingArtifact, setDownloadingArtifact] = useState('')
+  const [logDownloadError, setLogDownloadError] = useState('')
+  const [artifactActionError, setArtifactActionError] = useState('')
+  const [artifactAction, setArtifactAction] = useState<{ artifact: RunArtifact; kind: 'download' | 'preview' } | null>(null)
+  const [preview, setPreview] = useState<{ artifact: RunArtifact; text: string } | null>(null)
+  const artifactRequest = useRef(0)
+  const logRequest = useRef(0)
+  const previewRef = useRef<HTMLElement>(null)
+  const previewTrigger = useRef<HTMLButtonElement | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => () => { artifactRequest.current++; logRequest.current++ }, [])
+  useEffect(() => { if (preview) previewRef.current?.focus() }, [preview])
 
   useEffect(() => {
     let active = true
@@ -80,9 +95,11 @@ export function RunDetailPage() {
     setArtifactError('')
     if (!runState || !terminalStates.includes(runState)) return
     let active = true
+    let request = 0
     async function refreshArchive() {
+      const currentRequest = ++request
       const [archiveResult, artifactResult] = await Promise.allSettled([getRunLogArchiveInfo(id), getRunArtifacts(id)])
-      if (!active) return
+      if (!active || currentRequest !== request) return
       if (archiveResult.status === 'fulfilled') { setArchive(archiveResult.value); setArchiveError('') }
       else setArchiveError('暂时无法读取归档状态，仍可下载完整日志。')
       if (artifactResult.status === 'fulfilled') { setArtifacts(artifactResult.value ?? []); setArtifactError('') }
@@ -135,31 +152,60 @@ export function RunDetailPage() {
   }
 
   async function downloadLogs(compressed = false) {
-    setDownloading(true); setError('')
+    const request = ++logRequest.current
+    setDownloading(true); setLogDownloadError(''); setStatus('')
     try {
+      const expectedArchive = compressed ? archiveDigest(await getRunLogArchiveInfo(id)) : null
+      if (request !== logRequest.current) return
       const content = await downloadRunLogs(id, compressed)
-      const url = URL.createObjectURL(content)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = compressed ? `${id}.logs.ndjson.gz` : `${id}.log`
-      anchor.click()
-      URL.revokeObjectURL(url)
-      setStatus(compressed ? '日志压缩归档已下载。' : '已下载服务端截至当前保留的完整日志。')
-    } catch (reason) { setError(reason instanceof Error ? reason.message : '下载日志失败') }
-    finally { setDownloading(false) }
+      if (request !== logRequest.current) return
+      if (expectedArchive) {
+        try { await verifyFile(content, expectedArchive, 'archive') }
+        catch (reason) {
+          if (!(reason instanceof FileIntegrityError) || request !== logRequest.current) throw reason
+          // Late log chunks can replace an archive between its metadata and
+          // body requests. Reconcile once against fresh metadata, then fail.
+          const latest = archiveDigest(await getRunLogArchiveInfo(id))
+          if (request !== logRequest.current) return
+          await verifyFile(content, latest, 'archive')
+        }
+      } else validateDownloadType(content, 'logs')
+      if (request !== logRequest.current) return
+      saveBlob(content, compressed ? `${id}.logs.ndjson.gz` : `${id}.log`)
+      setStatus(compressed ? '压缩归档已校验并发起下载，请查看浏览器下载列表。' : '完整日志已发起下载，请查看浏览器下载列表。')
+    } catch (reason) {
+      if (request === logRequest.current) setLogDownloadError(reason instanceof Error ? reason.message : '下载日志失败')
+    } finally { if (request === logRequest.current) setDownloading(false) }
   }
 
-  async function downloadArtifact(artifact: RunArtifact) {
-    setDownloadingArtifact(artifact.id); setArtifactError('')
+  async function openArtifact(artifact: RunArtifact, kind: 'download' | 'preview') {
+    const request = ++artifactRequest.current
+    setArtifactAction({ artifact, kind }); setArtifactActionError(''); setStatus('')
+    if (kind === 'preview') setPreview(null)
     try {
+      const unavailable = previewUnavailableReason(artifact)
+      if (kind === 'preview' && unavailable) throw new Error(unavailable)
       const body = await downloadRunArtifact(id, artifact.id)
-      const url = URL.createObjectURL(body)
-      const anchor = document.createElement('a')
-      anchor.href = url; anchor.download = artifact.name; anchor.click()
-      URL.revokeObjectURL(url)
-      setStatus(`已下载运行产物：${artifact.name}`)
-    } catch (reason) { setArtifactError(reason instanceof Error ? reason.message : '下载运行产物失败') }
-    finally { setDownloadingArtifact('') }
+      if (request !== artifactRequest.current) return
+      const bytes = await verifyFile(body, artifact, 'artifact')
+      if (request !== artifactRequest.current) return
+      if (kind === 'preview') setPreview({ artifact, text: decodeTextPreview(bytes) })
+      else {
+        saveBlob(body, artifact.name)
+        setStatus(`已校验并发起下载：${artifact.name}，请查看浏览器下载列表。`)
+      }
+    } catch (reason) {
+      if (request === artifactRequest.current) setArtifactActionError(reason instanceof Error ? reason.message : '读取运行产物失败')
+    } finally { if (request === artifactRequest.current) setArtifactAction(null) }
+  }
+
+  function closePreview() {
+    if (artifactAction?.kind === 'preview') {
+      artifactRequest.current++
+      setArtifactAction(null)
+    }
+    setPreview(null)
+    previewTrigger.current?.focus()
   }
 
   if (error && !run) return <div className="notice notice-error" role="alert">{error}</div>
@@ -187,6 +233,7 @@ export function RunDetailPage() {
         <section className="panel run-parameters" aria-labelledby="parameters-title"><header className="panel-header"><h2 id="parameters-title">参数摘要</h2><span>敏感值不在此显示</span></header><dl>{Object.entries(run.parameters).length ? Object.entries(run.parameters).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{formatParameter(value)}</dd></div>) : <div><dt>参数</dt><dd>本次执行没有公开参数</dd></div>}</dl></section>
       </div>
       <section className="panel log-panel" aria-labelledby="log-title">
+        {logDownloadError && <div className="notice notice-error" role="alert">{logDownloadError}</div>}
         <header className="log-toolbar"><div><h2 id="log-title">实时日志</h2><span className={streamError ? 'log-connection is-warning' : 'log-connection'}><i aria-hidden="true" />{streamError || (terminalStates.includes(run.state) ? '任务已结束' : '实时连接中')}</span></div><div className="log-actions"><label><span className="sr-only">筛选日志关键词</span><input aria-label="筛选日志关键词" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="筛选关键词" /></label><button type="button" aria-label={paused ? '继续自动滚动' : '暂停自动滚动'} aria-pressed={paused} onClick={() => setPaused((value) => !value)}>{paused ? '继续滚动' : '暂停滚动'}</button><button type="button" disabled={downloading} onClick={() => void downloadLogs()}>{downloading ? '正在下载…' : '下载日志'}</button><button type="button" aria-label="清空浏览器显示" onClick={clearDisplay}>清屏显示</button></div></header>
         {cleared && <div className="browser-clear-note" role="status">浏览器显示已清空，服务端日志仍然保留。</div>}
         <div className="log-viewer" ref={logRef} tabIndex={0} aria-label="任务实时日志" aria-live={paused ? 'off' : 'polite'}>{logs.length ? logs.map((event) => <div className={`log-line log-${event.stream}`} key={event.id}><time dateTime={event.occurredAt}>{formatLogTime(event.occurredAt)}</time><span>{event.stream}</span><code>{event.content}</code></div>) : <div className="log-empty">{filter ? '没有匹配当前关键词的日志。' : '等待任务输出日志…'}</div>}</div>
@@ -194,13 +241,32 @@ export function RunDetailPage() {
         {(archive?.available || archiveError) && <div className="log-status log-archive-status"><span>{archiveError || (archive?.current ? `压缩归档已就绪${archive.byteSize ? ` · ${formatBytes(archive.byteSize)}` : ''}` : '归档正在更新，请使用完整日志下载。')}</span>{archive?.available && archive.current && <button type="button" className="secondary-action" disabled={downloading} onClick={() => void downloadLogs(true)}>下载压缩归档</button>}</div>}
       </section>
       {action && <div className="drawer-backdrop centered-dialog"><section className="console-dialog" role="dialog" aria-modal="true" aria-labelledby="run-action-title"><header className="drawer-header"><div><p className="eyebrow">{action === 'cancel' ? '停止当前执行' : '创建新的运行实例'}</p><h2 id="run-action-title">{action === 'cancel' ? `确认取消${run.taskName}？` : `确认重新执行${run.taskName}？`}</h2><p>{action === 'cancel' ? '运行中的任务会收到终止命令；排队任务会直接取消。' : '只有原进程已确认结束且任务允许幂等重试时才会进入队列。'}</p></div></header><footer className="dialog-actions"><button type="button" className="secondary-action" onClick={() => setAction(null)}>返回</button><button type="button" className={action === 'cancel' ? 'danger-action' : 'primary-action'} disabled={busy} onClick={() => void confirmAction()}>{busy ? '处理中…' : action === 'cancel' ? '确认取消' : '确认重试'}</button></footer></section></div>}
-      <section className="panel run-artifacts-panel" aria-labelledby="artifacts-title"><header className="panel-header"><div><h2 id="artifacts-title">运行产物</h2><p>脚本启用产物采集后，执行结束时上传的文件会显示在这里。</p></div><span>{artifacts.length} 个文件</span></header>{artifactError && <div className="notice notice-error" role="alert">{artifactError}</div>}{artifacts.length === 0 ? <p className="compact-empty">暂无可下载产物。</p> : <div className="table-scroll"><table className="data-table"><thead><tr><th>文件</th><th>大小</th><th>上传时间</th><th>操作</th></tr></thead><tbody>{artifacts.map((artifact) => <tr key={artifact.id}><td><strong>{artifact.name}</strong><small className="cell-note">SHA-256：{artifact.sha256}</small></td><td>{formatFileSize(artifact.byteSize)}</td><td>{formatDateTime(artifact.createdAt)}</td><td><button type="button" className="secondary-action" disabled={Boolean(downloadingArtifact)} onClick={() => void downloadArtifact(artifact)}>{downloadingArtifact === artifact.id ? '正在下载…' : `下载 ${artifact.name}`}</button></td></tr>)}</tbody></table></div>}</section>
+      <section className="panel run-artifacts-panel" aria-labelledby="artifacts-title">
+        <header className="panel-header"><div><h2 id="artifacts-title">运行产物</h2><p>下载前校验文件。UTF-8 文本支持预览，最大 256 KiB。</p></div><span>{artifacts.length} 个文件</span></header>
+        {artifactError && <div className="notice notice-error" role="alert">{artifactError}</div>}
+        {artifactActionError && <div className="notice notice-error" role="alert">{artifactActionError}</div>}
+        {artifacts.length === 0 ? <p className="compact-empty">暂无可下载产物。</p> : <div className="table-scroll"><table className="data-table"><thead><tr><th>文件</th><th>大小</th><th>上传时间</th><th>操作</th></tr></thead><tbody>{artifacts.map((artifact) => <tr key={artifact.id}>
+          <td><strong>{artifact.name}</strong><small className="cell-note">SHA-256：{artifact.sha256}</small></td><td>{formatFileSize(artifact.byteSize)}</td><td>{formatDateTime(artifact.createdAt)}</td>
+          <td><div className="row-actions artifact-actions">
+            <button type="button" className="secondary-action" disabled={Boolean(artifactAction)} onClick={() => void openArtifact(artifact, 'download')}>{artifactAction?.artifact.id === artifact.id && artifactAction.kind === 'download' ? '正在校验…' : `下载 ${artifact.name}`}</button>
+            <button type="button" className="secondary-action" disabled={Boolean(previewUnavailableReason(artifact)) || Boolean(artifactAction)} aria-describedby={previewUnavailableReason(artifact) ? `preview-unavailable-${artifact.id}` : undefined} onClick={(event) => { previewTrigger.current = event.currentTarget; void openArtifact(artifact, 'preview') }}>{artifactAction?.artifact.id === artifact.id && artifactAction.kind === 'preview' ? '正在读取…' : `预览 ${artifact.name}`}</button>
+          </div>{previewUnavailableReason(artifact) && <small className="cell-note" id={`preview-unavailable-${artifact.id}`}>{previewUnavailableReason(artifact)}</small>}</td>
+        </tr>)}</tbody></table></div>}
+        {(preview || artifactAction?.kind === 'preview') && <section className="artifact-preview" ref={previewRef} tabIndex={-1} aria-labelledby="artifact-preview-title" aria-busy={artifactAction?.kind === 'preview'}>
+          <header><h3 id="artifact-preview-title">文件预览：{preview?.artifact.name ?? artifactAction?.artifact.name}</h3><button type="button" className="secondary-action" onClick={closePreview}>关闭预览</button></header>
+          {preview ? <><p className="artifact-verified">已验证大小：{preview.artifact.byteSize} 字节 · SHA-256：{preview.artifact.sha256}</p><pre tabIndex={0} aria-label="文件文本内容">{preview.text || '（空文件）'}</pre></> : <p role="status">正在读取并校验文件…</p>}
+        </section>}
+      </section>
       {manualTask && <ManualRunDialog task={manualTask} rerun onClose={() => setManualTask(null)} onStarted={(next) => { setManualTask(null); navigate(`/runs/${encodeURIComponent(next.id)}`) }} />}
     </>
   )
 }
 
 function baseTimeline(run: RunView): RunStreamEvent[] { return [{ id: 'base-queued', kind: 'state', state: 'queued', sequence: 0, message: '任务已进入排队队列', occurredAt: run.queuedAt }] }
+function archiveDigest(info: RunLogArchiveInfo) {
+  if (!info.available || !info.current || info.byteSize === undefined || !info.sha256) throw new Error('归档校验信息不可用或正在更新，请稍后重试。')
+  return { byteSize: info.byteSize, sha256: info.sha256 }
+}
 function triggerLabel(trigger: RunView['triggerType']) { return trigger === 'manual' ? '手动执行' : trigger === 'schedule' ? '定时计划' : '失败重试' }
 function formatBytes(value: number) { return value >= 1073741824 ? `${(value / 1073741824).toFixed(1)} GB` : `${Math.round(value / 1048576)} MB` }
 function formatFileSize(value: number) { return value < 1024 ? `${value} B` : value < 1048576 ? `${(value / 1024).toFixed(1)} KB` : formatBytes(value) }
