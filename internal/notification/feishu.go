@@ -99,18 +99,18 @@ func (c *FeishuClient) Send(
 		return "", fmt.Errorf("飞书返回 HTTP %d", response.StatusCode)
 	}
 	var result struct {
-		Code      int    `json:"code"`
+		Code      *int   `json:"code"`
 		MessageID string `json:"message_id"`
 		RequestID string `json:"request_id"`
 		Data      struct {
 			MessageID string `json:"message_id"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil || result.Code == nil {
 		return "", errors.New("飞书响应格式无效")
 	}
-	if result.Code != 0 {
-		return "", fmt.Errorf("飞书返回业务错误 %d", result.Code)
+	if *result.Code != 0 {
+		return "", fmt.Errorf("飞书返回业务错误 %d", *result.Code)
 	}
 	for _, id := range []string{result.Data.MessageID, result.MessageID, result.RequestID} {
 		if strings.TrimSpace(id) != "" {

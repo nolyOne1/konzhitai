@@ -82,13 +82,13 @@ func (notifier *Notifier) Send(ctx context.Context, webhook, signingSecret strin
 		return fmt.Errorf("飞书发布通知返回 HTTP %d", response.StatusCode)
 	}
 	var decoded struct {
-		Code int `json:"code"`
+		Code *int `json:"code"`
 	}
-	if err := json.Unmarshal(responseBody, &decoded); err != nil {
+	if err := json.Unmarshal(responseBody, &decoded); err != nil || decoded.Code == nil {
 		return errors.New("飞书发布通知响应格式无效")
 	}
-	if decoded.Code != 0 {
-		return fmt.Errorf("飞书发布通知返回业务错误 %d", decoded.Code)
+	if *decoded.Code != 0 {
+		return fmt.Errorf("飞书发布通知返回业务错误 %d", *decoded.Code)
 	}
 	return nil
 }
