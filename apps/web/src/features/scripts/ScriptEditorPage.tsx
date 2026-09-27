@@ -74,6 +74,8 @@ export function ScriptEditorPage() {
   const [groupsLoading, setGroupsLoading] = useState(false)
   const [groupsError, setGroupsError] = useState('')
   const publishButtonRef = useRef<HTMLButtonElement>(null)
+  const compareButtonRef = useRef<HTMLButtonElement | null>(null)
+  const rollbackButtonRef = useRef<HTMLButtonElement | null>(null)
   const releaseNotesRef = useRef<HTMLTextAreaElement>(null)
   const errorRef = useRef<HTMLDivElement>(null)
 
@@ -187,11 +189,12 @@ export function ScriptEditorPage() {
     }
   }
 
-  async function openCompare(version: ScriptVersion) {
+  async function openCompare(version: ScriptVersion, trigger: HTMLButtonElement) {
     setCompareLoading(version.id)
     setError('')
     try {
       const content = await getScriptVersionContent(id, version.id)
+      compareButtonRef.current = trigger
       setCompare({ version, content })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '读取版本内容失败')
@@ -219,6 +222,7 @@ export function ScriptEditorPage() {
       setRollbackVersion(null)
       setRollbackNotes('')
       setStatus(`已回滚并发布为版本 ${version.number}`)
+      queueMicrotask(() => rollbackButtonRef.current?.focus())
     } catch (reason) {
       setRollbackError(reason instanceof Error ? reason.message : '回滚脚本失败')
     } finally {
@@ -334,8 +338,8 @@ export function ScriptEditorPage() {
                 <div className="version-number"><strong>版本 {version.number}</strong><span>{formatDate(version.createdAt)}</span></div>
                 <div className="version-notes"><strong>{version.releaseNotes}</strong><span>{version.entrypoint} · {shortHash(version.artifactSha256)}</span></div>
                 <div className="row-actions">
-                  <button type="button" disabled={compareLoading === version.id} aria-label={`与草稿比较版本 ${version.number}`} onClick={() => void openCompare(version)}>{compareLoading === version.id ? '读取中' : '与草稿比较'}</button>
-                  <button type="button" onClick={() => { setRollbackVersion(version); setRollbackError(''); setRollbackNotes('') }}>回滚到此版本</button>
+                  <button type="button" disabled={compareLoading === version.id} aria-label={`与草稿比较版本 ${version.number}`} onClick={(event) => void openCompare(version, event.currentTarget)}>{compareLoading === version.id ? '读取中' : '与草稿比较'}</button>
+                  <button type="button" onClick={(event) => { rollbackButtonRef.current = event.currentTarget; setRollbackVersion(version); setRollbackError(''); setRollbackNotes('') }}>回滚到此版本</button>
                 </div>
               </li>
             ))}
@@ -344,8 +348,8 @@ export function ScriptEditorPage() {
       </section>
 
       {showPublish && <PublishDialog saving={saving} notes={releaseNotes} error={publishError} notesRef={releaseNotesRef} target={distributionLabel(editor.distributionMode)} onNotes={setReleaseNotes} onClose={() => { setShowPublish(false); queueMicrotask(() => publishButtonRef.current?.focus()) }} onConfirm={() => void confirmPublish()} />}
-      {compare && <CompareDialog version={compare.version} historical={compare.content} draft={editor.content} onClose={() => setCompare(null)} />}
-      {rollbackVersion && <RollbackDialog version={rollbackVersion} notes={rollbackNotes} error={rollbackError} saving={saving} onNotes={setRollbackNotes} onClose={() => setRollbackVersion(null)} onConfirm={() => void confirmRollback()} />}
+      {compare && <CompareDialog version={compare.version} historical={compare.content} draft={editor.content} onClose={() => { setCompare(null); queueMicrotask(() => compareButtonRef.current?.focus()) }} />}
+      {rollbackVersion && <RollbackDialog version={rollbackVersion} notes={rollbackNotes} error={rollbackError} saving={saving} onNotes={setRollbackNotes} onClose={() => { setRollbackVersion(null); queueMicrotask(() => rollbackButtonRef.current?.focus()) }} onConfirm={() => void confirmRollback()} />}
     </>
   )
 }
