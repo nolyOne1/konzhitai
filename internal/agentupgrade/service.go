@@ -177,12 +177,26 @@ func (s *Service) Resume(ctx context.Context, id string) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
+	serversByID := make(map[string]ServerInfo, len(servers))
 	for _, server := range servers {
+		serversByID[server.ID] = server
+	}
+	for _, target := range plan.Targets {
+		if target.Status != TargetWaiting && target.Status != TargetDraining {
+			continue
+		}
+		server, exists := serversByID[target.ServerID]
+		if !exists {
+			return Plan{}, ErrServerIneligible
+		}
 		if !server.Enabled || (server.Status != "online" && server.Status != "draining") {
 			return Plan{}, ErrServerIneligible
 		}
 		if !slices.Contains(server.Capabilities, selfUpgradeCapability) {
 			return Plan{}, ErrUpgradeUnsupported
+		}
+		if server.AgentVersion != target.SourceVersion {
+			return Plan{}, ErrUpgradeSourceChanged
 		}
 		if !hasArtifact(release, server.AgentOS, server.AgentArch) {
 			return Plan{}, ErrArtifactUnavailable
@@ -239,6 +253,16 @@ func (s *Service) RetryTarget(ctx context.Context, planID, targetID string) (Pla
 		}
 		if target.Status != TargetRolledBack && target.Status != TargetManualIntervention {
 			return Plan{}, ErrInvalidTransition
+		}
+		servers, err := s.repository.Servers(ctx, []string{target.ServerID})
+		if err != nil {
+			return Plan{}, err
+		}
+		if len(servers) != 1 || servers[0].ID != target.ServerID {
+			return Plan{}, ErrServerIneligible
+		}
+		if servers[0].AgentVersion != target.SourceVersion {
+			return Plan{}, ErrUpgradeSourceChanged
 		}
 		target.Status, target.CommandID = TargetDraining, s.newID()
 		target.InstallCommandID = target.CommandID

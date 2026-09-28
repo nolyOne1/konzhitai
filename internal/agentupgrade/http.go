@@ -85,7 +85,7 @@ func writeUpgradeResult(w http.ResponseWriter, plan Plan, err error, success int
 		writeUpgradeError(w, http.StatusNotFound, "代理升级计划或目标不存在")
 	case errors.Is(err, ErrInvalidPlan), errors.Is(err, ErrServerIneligible), errors.Is(err, ErrUpgradeUnsupported), errors.Is(err, ErrArtifactUnavailable), errors.Is(err, ErrNoUpgradeNeeded), errors.Is(err, ErrVersionNotComparable), errors.Is(err, ErrDowngradeNotAllowed):
 		writeUpgradeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, ErrActivePlanExists), errors.Is(err, ErrInvalidTransition), errors.Is(err, ErrRollbackSourceChanged):
+	case errors.Is(err, ErrActivePlanExists), errors.Is(err, ErrInvalidTransition), errors.Is(err, ErrRollbackSourceChanged), errors.Is(err, ErrUpgradeSourceChanged):
 		writeUpgradeError(w, http.StatusConflict, err.Error())
 	case err != nil:
 		writeUpgradeError(w, http.StatusInternalServerError, "处理代理升级计划失败")

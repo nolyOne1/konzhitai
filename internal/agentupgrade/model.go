@@ -39,6 +39,7 @@ var (
 	ErrVersionNotComparable  = errors.New("当前或目标代理版本不是可比较的稳定版本，请使用 x.y.z 或 vx.y.z 格式")
 	ErrDowngradeNotAllowed   = errors.New("普通升级只能选择高于当前版本的稳定版；降级请使用历史回滚")
 	ErrRollbackSourceChanged = errors.New("服务器当前版本已偏离该历史升级结果，不能执行此回滚")
+	ErrUpgradeSourceChanged  = errors.New("服务器当前版本已偏离该升级计划的原始版本，不能继续执行")
 	ErrReleaseNotFound       = errors.New("代理版本不存在")
 	ErrPlanNotFound          = errors.New("代理升级计划不存在")
 	ErrTargetNotFound        = errors.New("代理升级目标不存在")
