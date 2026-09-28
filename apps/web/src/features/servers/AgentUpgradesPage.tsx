@@ -4,6 +4,7 @@ import { getAgentReleases, getAgentUpgradePlan, getAgentUpgradePlans, getServers
 import { AgentUpgradeDialog } from './AgentUpgradeDialog'
 import { AgentUpgradePlanPanel } from './AgentUpgradePlanPanel'
 import { ServerSectionTabs } from './ServerSectionTabs'
+import { compareAgentVersions } from './agentVersion'
 
 export function AgentUpgradesPage() {
   const [releases, setReleases] = useState<AgentRelease[]>([])
@@ -35,11 +36,16 @@ export function AgentUpgradesPage() {
   }, [activePlan?.id, activePlan?.status])
 
   const names = useMemo(() => Object.fromEntries(servers.map((server) => [server.id, server.name])), [servers])
-  const recommended = releases.find((release) => release.recommended)
+  const recommended = releases.find((release) => release.recommended && release.status === 'available')
   const upgradingStatuses = ['waiting', 'draining', 'downloading', 'verifying', 'installing', 'reconnecting', 'health_checking', 'rolling_back']
   const upgrading = servers.filter((server) => upgradingStatuses.includes(server.upgradeStatus ?? '')).length
   const exceptions = servers.filter((server) => server.upgradeStatus === 'manual_intervention').length
-  const pending = servers.filter((server) => recommended && server.agentVersion && server.agentVersion !== recommended.version && !upgradingStatuses.includes(server.upgradeStatus ?? '') && server.upgradeStatus !== 'manual_intervention').length
+  const pending = servers.filter((server) => recommended &&
+    compareAgentVersions(server.agentVersion, recommended.version) === -1 &&
+    server.enabled && ['online', 'draining'].includes(server.status) &&
+    (server.agentCapabilities ?? []).includes('self_upgrade_v1') &&
+    recommended.artifacts.some((artifact) => artifact.os === server.agentOS && artifact.arch === server.agentArch) &&
+    !upgradingStatuses.includes(server.upgradeStatus ?? '') && server.upgradeStatus !== 'manual_intervention').length
   const updatePlan = (plan: AgentUpgradePlan) => setPlans((items) => items.some((item) => item.id === plan.id) ? items.map((item) => item.id === plan.id ? plan : item) : [plan, ...items])
   async function mutateRelease(id: string, operation: () => Promise<void>) { setBusyRelease(id); setError(''); try { await operation(); setReleases(await getAgentReleases()) } catch (reason) { setError(reason instanceof Error ? reason.message : '更新代理版本失败') } finally { setBusyRelease('') } }
   function closeDialog() { setShowDialog(false); window.setTimeout(() => createButtonRef.current?.focus(), 0) }

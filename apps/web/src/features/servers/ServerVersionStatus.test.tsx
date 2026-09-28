@@ -23,13 +23,23 @@ describe('服务器代理版本状态', () => {
   })
 
   it.each([
-    ['0.2.0', ['self_upgrade_v1'], undefined, '已是最新版'],
+    ['0.2.0', ['self_upgrade_v1'], undefined, '已是推荐版本'],
+    ['v0.2.0', ['self_upgrade_v1'], undefined, '已是推荐版本'],
+    ['0.2.6', ['self_upgrade_v1'], undefined, '高于推荐版本'],
+    ['0.2.10', ['self_upgrade_v1'], undefined, '高于推荐版本'],
     ['0.1.0', ['self_upgrade_v1'], undefined, '可升级'],
     ['0.1.0', ['self_upgrade_v1'], 'installing', '升级中'],
-    ['', ['self_upgrade_v1'], undefined, '版本未知'],
+    ['', ['self_upgrade_v1'], undefined, '版本无法比较'],
+    ['custom', ['self_upgrade_v1'], undefined, '版本无法比较'],
+    ['0.2.0-rc.1', ['self_upgrade_v1'], undefined, '版本无法比较'],
     ['0.1.0', ['self_upgrade_v1'], 'manual_intervention', '升级失败'],
   ])('版本 %s、升级阶段 %s 时显示 %s', (version, capabilities, upgradeStatus, expected) => {
     render(<ServerVersionStatus server={server({ agentVersion: version, agentCapabilities: capabilities, upgradeStatus })} recommendedVersion="0.2.0" />)
     expect(screen.getByText(expected)).toBeVisible()
+  })
+
+  it('没有推荐版本时不推断版本方向', () => {
+    render(<ServerVersionStatus server={server()} />)
+    expect(screen.getByText('版本无法比较')).toBeVisible()
   })
 })

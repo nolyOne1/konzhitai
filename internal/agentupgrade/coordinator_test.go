@@ -11,7 +11,7 @@ import (
 
 func TestCoordinatorWaitsForTasksThenDispatchesCanary(t *testing.T) {
 	store := coordinatorFixture()
-	store.runtime["s1"] = ServerRuntime{Status: "online", Enabled: true, RunningTasks: 1}
+	store.runtime["s1"] = ServerRuntime{Status: "online", Enabled: true, RunningTasks: 1, AgentVersion: "0.1.0"}
 	sender := &fakeUpgradeSender{}
 	coordinator := NewCoordinator(store, sender, fixedCoordinatorNow)
 	if err := coordinator.Scan(context.Background()); err != nil {
@@ -329,6 +329,9 @@ func TestCoordinatorFinalizesCancelledPlanAfterStartedTargetsFinish(t *testing.T
 
 func TestCoordinatorFinishesDrainingTargetDuringCancelClosure(t *testing.T) {
 	store := coordinatorFixture()
+	runtime := store.runtime["s1"]
+	runtime.AgentVersion = store.plan.Targets[0].SourceVersion
+	store.runtime["s1"] = runtime
 	store.plan.Status = PlanPaused
 	store.plan.CancelRequested = true
 	store.plan.Targets[0].Status = TargetDraining

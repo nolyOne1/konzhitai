@@ -10,7 +10,7 @@ vi.mock('../../api/client', async (importOriginal) => {
   return { ...actual, getAgentReleases: vi.fn(), getAgentUpgradePlans: vi.fn(), getServers: vi.fn(), getSession: vi.fn(), withdrawAgentRelease: vi.fn(), recommendAgentRelease: vi.fn() }
 })
 
-const release = (version: string, recommended = false) => ({ id: `release-${version}`, version, status: 'available' as const, recommended, releaseNotes: '稳定版', capabilities: ['self_upgrade_v1'], createdAt: '2026-09-07T00:00:00Z', artifacts: [] })
+const release = (version: string, recommended = false) => ({ id: `release-${version}`, version, status: 'available' as const, recommended, releaseNotes: '稳定版', capabilities: ['self_upgrade_v1'], createdAt: '2026-09-07T00:00:00Z', artifacts: [{ os: 'linux', arch: 'amd64', fileName: 'agent.tar.gz', byteSize: 42, sha256: 'a'.repeat(64), downloadUrl: '/download' }] })
 const server = (id: string, version: string, upgradeStatus = ''): ServerView => ({
   id, name: id, cloudProvider: '京东云', region: '华东 1', status: 'online', enabled: true,
   draining: false, labels: {}, runtimes: ['bash'], agentVersion: version, agentOS: 'linux',
@@ -58,6 +58,33 @@ describe('代理升级工作台', () => {
     expect(withdrawAgentRelease).toHaveBeenCalledWith('release-0.1.0')
     const currentRow = screen.getByRole('row', { name: /0.2.0/ })
     expect(within(currentRow).queryByRole('button', { name: '撤回版本' })).not.toBeInTheDocument()
+  })
+
+  it('当前 0.2.6 高于推荐 0.2.0 时不计入待升级', async () => {
+    vi.mocked(getServers).mockResolvedValue([server('生产节点', '0.2.6')])
+    render(<AgentUpgradesPage />)
+    await screen.findByRole('heading', { level: 1, name: '代理升级' })
+    expect(within(screen.getByLabelText('升级概况')).getByText('待升级').nextElementSibling).toHaveTextContent('0')
+  })
+
+  it('仅统计低于可用推荐版本且能升级的节点，保留升级中和异常分类', async () => {
+    vi.mocked(getAgentReleases).mockResolvedValue([{ ...release('0.2.0', true), status: 'withdrawn' }, release('0.2.10', true)])
+    vi.mocked(getServers).mockResolvedValue([
+      server('可升级', '0.2.9'), server('相同', 'v0.2.10'), server('更高', '0.3.0'),
+      server('未知', ''), server('自定义', 'custom'), server('预发布', '0.1.0-rc.1'),
+      { ...server('无升级能力', '0.1.0'), agentCapabilities: [] },
+      { ...server('不匹配平台', '0.1.0'), agentArch: 'arm64' },
+      { ...server('禁用', '0.1.0'), enabled: false },
+      { ...server('离线', '0.1.0'), status: 'offline' },
+      server('升级中', '0.1.0', 'installing'), server('异常', '0.1.0', 'manual_intervention'),
+    ])
+    render(<AgentUpgradesPage />)
+    await screen.findByRole('heading', { level: 1, name: '代理升级' })
+    const summary = within(screen.getByLabelText('升级概况'))
+    expect(summary.getByText('推荐版本').nextElementSibling).toHaveTextContent('0.2.10')
+    expect(summary.getByText('待升级').nextElementSibling).toHaveTextContent('1')
+    expect(summary.getByText('升级中').nextElementSibling).toHaveTextContent('1')
+    expect(summary.getByText('异常').nextElementSibling).toHaveTextContent('1')
   })
 
   it('加载失败时显示可重试的中文反馈', async () => {

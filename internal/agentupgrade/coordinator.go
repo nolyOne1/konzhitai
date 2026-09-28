@@ -80,6 +80,11 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 			if !runtime.Enabled || (runtime.Status != "online" && runtime.Status != "draining") || runtime.RunningTasks > 0 {
 				continue
 			}
+			if runtime.AgentVersion != target.SourceVersion {
+				markSourceVersionChanged(plan, target, now)
+				changed, mayStartTarget = true, false
+				continue
+			}
 			release, err := c.store.Release(ctx, plan.TargetReleaseID)
 			if err != nil {
 				return err
@@ -95,6 +100,13 @@ func (c *Coordinator) Scan(ctx context.Context) error {
 			runtime, err := c.store.ServerRuntime(ctx, target.ServerID)
 			if err != nil {
 				return err
+			}
+			// An installed agent can reconnect before its final stage reaches us.
+			// Replaying that same command is safe only at its source or target.
+			if runtime.AgentVersion != target.SourceVersion && runtime.AgentVersion != target.TargetVersion {
+				markSourceVersionChanged(plan, target, now)
+				changed, mayStartTarget = true, false
+				continue
 			}
 			release, err := c.store.Release(ctx, plan.TargetReleaseID)
 			if err != nil {
@@ -275,6 +287,12 @@ func (c *Coordinator) ObserveHeartbeat(ctx context.Context, heartbeat agentproto
 type sentCommand struct {
 	serverID string
 	command  agentprotocol.UpgradeCommand
+}
+
+func markSourceVersionChanged(plan *Plan, target *Target, now time.Time) {
+	plan.Status, plan.PauseReason = PlanPaused, ErrUpgradeSourceChanged.Error()
+	target.Status, target.ErrorCode, target.ErrorMessage = TargetManualIntervention, "source_version_changed", ErrUpgradeSourceChanged.Error()
+	target.UpdatedAt, target.FinishedAt = now, &now
 }
 
 func (c *Coordinator) rollbackBatch(plan *Plan, batch int, failedTargetID, errorCode string, now time.Time) []sentCommand {

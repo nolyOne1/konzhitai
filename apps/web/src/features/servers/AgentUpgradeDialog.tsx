@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 
 import { createAgentUpgradePlan, type AgentRelease, type AgentUpgradePlan, type ServerView } from '../../api/client'
+import { compareAgentVersions } from './agentVersion'
 
 interface AgentUpgradeDialogProps {
   releases: AgentRelease[]
@@ -25,7 +26,7 @@ export function AgentUpgradeDialog({ releases, servers, onClose, onCreated }: Ag
   const [submitting, setSubmitting] = useState(false)
   const firstReleaseRef = useRef<HTMLInputElement>(null)
   const dialogRef = useRef<HTMLElement>(null)
-  const targetRelease = releases.find((release) => release.id === releaseID)
+  const targetRelease = releases.find((release) => release.id === releaseID && release.status === 'available')
   useEffect(() => firstReleaseRef.current?.focus(), [])
 
   const filteredServers = useMemo(() => servers.filter((server) => {
@@ -37,9 +38,7 @@ export function AgentUpgradeDialog({ releases, servers, onClose, onCreated }: Ag
   }), [servers, provider, region, label, version])
 
   function eligible(server: ServerView) {
-    if (!targetRelease || !server.enabled || !['online', 'draining'].includes(server.status)) return false
-    if (!(server.agentCapabilities ?? []).includes('self_upgrade_v1') || server.agentVersion === targetRelease.version) return false
-    return targetRelease.artifacts.some((artifact) => artifact.os === server.agentOS && artifact.arch === server.agentArch)
+    return eligibilityReason(server, targetRelease) === ''
   }
 
   function next() {
@@ -80,7 +79,17 @@ function NumberField({ label, value, min, max, error, onChange }: { label: strin
 function matchesLabel(labels: Record<string, string>, query: string) { const [key, ...rest] = query.split('='); return Boolean(key?.trim() && labels[key.trim()]?.includes(rest.join('=').trim())) }
 function validateSettings(batch: string, drain: string, reconnect: string, verify: string) { const errors: Record<string, string> = {}; if (!between(batch, 1, 100)) errors.batchSize = '请输入 1 到 100。'; if (!between(drain, 60, 86400)) errors.drainTimeout = '请输入 60 到 86400。'; if (!between(reconnect, 30, 3600)) errors.reconnectTimeout = '请输入 30 到 3600。'; if (!between(verify, 10, 600)) errors.verificationSeconds = '请输入 10 到 600。'; return errors }
 function between(value: string, min: number, max: number) { const number = Number(value); return Number.isInteger(number) && number >= min && number <= max }
-function eligibilityReason(server: ServerView, release?: AgentRelease) { if (!(server.agentCapabilities ?? []).includes('self_upgrade_v1')) return '需人工升级基线'; if (!server.enabled || !['online', 'draining'].includes(server.status)) return '节点不可用'; if (release && server.agentVersion === release.version) return '已是目标版本'; return '无匹配安装包' }
+function eligibilityReason(server: ServerView, release?: AgentRelease) {
+  if (!release || release.status !== 'available') return '目标版本不可用'
+  if (!(server.agentCapabilities ?? []).includes('self_upgrade_v1')) return '需人工升级基线'
+  if (!server.enabled || !['online', 'draining'].includes(server.status)) return '节点不可用'
+  const direction = compareAgentVersions(server.agentVersion, release.version)
+  if (direction === null) return '版本无法比较'
+  if (direction === 0) return '已是目标版本'
+  if (direction === 1) return '高于目标版本'
+  if (!release.artifacts.some((artifact) => artifact.os === server.agentOS && artifact.arch === server.agentArch)) return '无匹配安装包'
+  return ''
+}
 
 function handleDialogKeys(event: KeyboardEvent<HTMLElement>, onClose: () => void, scope: HTMLElement | null) {
   if (event.key === 'Escape') { event.preventDefault(); onClose(); return }
