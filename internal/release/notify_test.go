@@ -79,6 +79,65 @@ func TestReleaseNotifierRejectsUntrustedWorkflowLinkBeforeHTTP(t *testing.T) {
 	}
 }
 
+func TestReleaseNotifierRequiresExplicitSuccessCode(t *testing.T) {
+	const webhook = "https://open.feishu.cn/open-apis/bot/v2/hook/00000000-0000-4000-8000-000000000000"
+	const secretValue = "never-print-signing-secret"
+	result := Result{
+		Operation: OperationDeploy, TargetID: "101", SourceSHA: strings.Repeat("d", 40),
+		Actor: "nolyOne1", WorkflowRunID: 123,
+		WorkflowURL: "https://github.com/nolyOne1/konzhitai/actions/runs/123",
+		Status:      "succeeded", RollbackStatus: "not-required",
+		StartedAt:  time.Date(2026, 9, 3, 11, 59, 0, 0, time.UTC),
+		FinishedAt: time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC),
+	}
+	for _, test := range []struct {
+		name, body, wantError string
+		status                int
+	}{
+		{name: "explicit zero", body: `{"code":0}`, status: http.StatusOK},
+		{name: "empty object", body: `{}`, status: http.StatusOK, wantError: "响应格式无效"},
+		{name: "null", body: `null`, status: http.StatusOK, wantError: "响应格式无效"},
+		{name: "null code", body: `{"code":null}`, status: http.StatusOK, wantError: "响应格式无效"},
+		{name: "missing code with message", body: `{"msg":"` + secretValue + `"}`, status: http.StatusOK, wantError: "响应格式无效"},
+		{name: "string code", body: `{"code":"0"}`, status: http.StatusOK, wantError: "响应格式无效"},
+		{name: "boolean code", body: `{"code":false}`, status: http.StatusOK, wantError: "响应格式无效"},
+		{name: "array code", body: `{"code":[]}`, status: http.StatusOK, wantError: "响应格式无效"},
+		{name: "object code", body: `{"code":{}}`, status: http.StatusOK, wantError: "响应格式无效"},
+		{name: "fractional code", body: `{"code":0.5}`, status: http.StatusOK, wantError: "响应格式无效"},
+		{name: "array response", body: `[]`, status: http.StatusOK, wantError: "响应格式无效"},
+		{name: "trailing response", body: `{"code":0}{}`, status: http.StatusOK, wantError: "响应格式无效"},
+		{name: "empty 204", body: ``, status: http.StatusNoContent, wantError: "响应格式无效"},
+		{name: "business failure", body: `{"code":19001,"msg":"` + secretValue + `"}`, status: http.StatusOK, wantError: "业务错误 19001"},
+		{name: "HTTP failure with zero", body: `{"code":0,"msg":"` + secretValue + `"}`, status: http.StatusBadGateway, wantError: "HTTP 502"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			notifier := NewNotifier(&http.Client{Transport: notifyRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{StatusCode: test.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(test.body))}, nil
+			})}, time.Now)
+			err := notifier.Send(context.Background(), webhook, secretValue, result)
+			if calls != 1 {
+				t.Fatalf("通知只能尝试发送一次，实际 %d 次", calls)
+			}
+			if test.wantError == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("期望错误 %q，实际 %v", test.wantError, err)
+			}
+			for _, forbidden := range []string{webhook, secretValue, test.body} {
+				if forbidden != "" && strings.Contains(err.Error(), forbidden) {
+					t.Fatal("通知错误泄露了敏感值或响应正文")
+				}
+			}
+		})
+	}
+}
+
 type rewriteFeishuTransport struct {
 	target *url.URL
 	base   http.RoundTripper

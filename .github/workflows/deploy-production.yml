@@ -244,9 +244,12 @@ jobs:
           PRODUCTION_FEISHU_SIGNING_SECRET: ${{ secrets.PRODUCTION_FEISHU_SIGNING_SECRET }}
         run: |
           if ! ./yunling-release notify < result.json; then
+            echo '::warning::飞书发布通知未确认送达。请查看通知步骤日志并核对 production 环境中的两项飞书配置；生产操作结果以部署退出码和服务器发布记录为准，勿为补发通知重复部署。'
             echo 'notification_failed' >> "$GITHUB_STEP_SUMMARY"
+            echo '飞书发布通知未确认送达：请查看“发送飞书结果”步骤日志，核对 PRODUCTION_FEISHU_WEBHOOK 和 PRODUCTION_FEISHU_SIGNING_SECRET。此项失败不改变生产操作的退出码；补发通知前须核对原始发布结果，勿重复部署。' >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
+          echo '飞书已确认接收发布通知（code=0）。生产操作结果以部署退出码和服务器发布记录为准。' >> "$GITHUB_STEP_SUMMARY"
 
       - name: 恢复部署退出码
         if: always()

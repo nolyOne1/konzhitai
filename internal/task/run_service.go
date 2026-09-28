@@ -225,6 +225,9 @@ func (s *RunService) ListRunEvents(ctx context.Context, id string) ([]RunStreamE
 		event.ID = fmt.Sprintf("state:%020d", event.Sequence)
 		event.Kind = "state"
 		event.Message = detail.Message
+		if event.EventType == "run.assigned" && strings.TrimSpace(event.Message) == "" {
+			event.Message = "已分配执行服务器"
+		}
 		event.ExitCode = detail.ExitCode
 		event.Usage = detail.Usage
 		events = append(events, event)

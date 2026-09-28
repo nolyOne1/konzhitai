@@ -93,6 +93,54 @@ func TestFeishuClientBoundsResponsesRejectsRedirectsAndRedactsErrors(t *testing.
 	}
 }
 
+func TestFeishuClientRequiresExplicitSuccessCode(t *testing.T) {
+	const secretValue = "never-print-signing-secret"
+	for _, test := range []struct {
+		name, body, wantError string
+	}{
+		{name: "explicit zero", body: `{"code":0,"request_id":"request-1"}`},
+		{name: "empty object", body: `{}`, wantError: "响应格式无效"},
+		{name: "null", body: `null`, wantError: "响应格式无效"},
+		{name: "null code", body: `{"code":null}`, wantError: "响应格式无效"},
+		{name: "message without code", body: `{"message_id":"message-1","msg":"` + secretValue + `"}`, wantError: "响应格式无效"},
+		{name: "string code", body: `{"code":"0"}`, wantError: "响应格式无效"},
+		{name: "boolean code", body: `{"code":false}`, wantError: "响应格式无效"},
+		{name: "array code", body: `{"code":[]}`, wantError: "响应格式无效"},
+		{name: "object code", body: `{"code":{}}`, wantError: "响应格式无效"},
+		{name: "fractional code", body: `{"code":0.5}`, wantError: "响应格式无效"},
+		{name: "array response", body: `[]`, wantError: "响应格式无效"},
+		{name: "trailing response", body: `{"code":0}{}`, wantError: "响应格式无效"},
+		{name: "empty response", body: ``, wantError: "响应格式无效"},
+		{name: "business failure", body: `{"code":19001,"msg":"` + secretValue + `"}`, wantError: "业务错误 19001"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			client := notification.NewFeishuClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls++
+				return response(http.StatusOK, test.body), nil
+			})}, time.Now)
+			id, err := client.Send(context.Background(), validWebhook, secretValue, notification.FrozenMessage{Title: "测试消息"})
+			if calls != 1 {
+				t.Fatalf("通知只能尝试发送一次，实际 %d 次", calls)
+			}
+			if test.wantError == "" {
+				if err != nil || id != "request-1" {
+					t.Fatalf("有效成功响应未保留回执：id=%q err=%v", id, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantError) || id != "" {
+				t.Fatalf("无效响应不得返回成功回执：id=%q err=%v", id, err)
+			}
+			for _, forbidden := range []string{validWebhook, secretValue, test.body} {
+				if forbidden != "" && strings.Contains(err.Error(), forbidden) {
+					t.Fatal("通知错误泄露了敏感值或响应正文")
+				}
+			}
+		})
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
