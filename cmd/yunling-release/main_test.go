@@ -261,6 +261,111 @@ func TestResultValidateRequiresOneBoundedStrictResult(t *testing.T) {
 	}
 }
 
+func TestNotifyReportsMissingConfigurationKeysWithoutSending(t *testing.T) {
+	const webhook = "https://open.feishu.cn/open-apis/bot/v2/hook/00000000-0000-4000-8000-000000000000"
+	const signingSecret = "never-print-signing-secret"
+	for _, test := range []struct {
+		name, webhook, signingSecret string
+		missing                      []string
+	}{
+		{name: "both absent", missing: []string{"PRODUCTION_FEISHU_WEBHOOK", "PRODUCTION_FEISHU_SIGNING_SECRET"}},
+		{name: "webhook absent", signingSecret: signingSecret, missing: []string{"PRODUCTION_FEISHU_WEBHOOK"}},
+		{name: "signing secret absent", webhook: webhook, missing: []string{"PRODUCTION_FEISHU_SIGNING_SECRET"}},
+		{name: "whitespace webhook", webhook: " \t\n", signingSecret: signingSecret, missing: []string{"PRODUCTION_FEISHU_WEBHOOK"}},
+		{name: "whitespace signing secret", webhook: webhook, signingSecret: " \t\n", missing: []string{"PRODUCTION_FEISHU_SIGNING_SECRET"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("PRODUCTION_FEISHU_WEBHOOK", test.webhook)
+			t.Setenv("PRODUCTION_FEISHU_SIGNING_SECRET", test.signingSecret)
+			stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+			called := false
+			code := run([]string{"notify"}, bytes.NewReader(mustJSON(t, validNotifyResult())), stdout, stderr, dependencies{
+				notify: func(context.Context, string, string, release.Result) error {
+					called = true
+					return nil
+				},
+			})
+			want := "飞书发布通知配置缺失：" + strings.Join(test.missing, "、") + "\n"
+			if code != 1 || called || stdout.Len() != 0 || stderr.String() != want {
+				t.Fatalf("缺失配置诊断不准确：code=%d called=%v stdout=%q stderr=%q", code, called, stdout, stderr)
+			}
+			if strings.Contains(stderr.String(), webhook) || strings.Contains(stderr.String(), signingSecret) {
+				t.Fatal("缺失配置诊断不得输出已配置的敏感值")
+			}
+		})
+	}
+}
+
+func TestNotifyKeepsResultAndSeparatesSendFailureFromConfiguration(t *testing.T) {
+	const webhook = "https://open.feishu.cn/open-apis/bot/v2/hook/00000000-0000-4000-8000-000000000000"
+	const signingSecret = "never-print-signing-secret"
+	for _, fail := range []bool{false, true} {
+		t.Run(strconv.FormatBool(fail), func(t *testing.T) {
+			t.Setenv("PRODUCTION_FEISHU_WEBHOOK", webhook)
+			t.Setenv("PRODUCTION_FEISHU_SIGNING_SECRET", signingSecret)
+			result := validNotifyResult()
+			stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+			calls := 0
+			code := run([]string{"notify"}, bytes.NewReader(mustJSON(t, result)), stdout, stderr, dependencies{
+				notify: func(_ context.Context, receivedWebhook, receivedSecret string, received release.Result) error {
+					calls++
+					if receivedWebhook != webhook || receivedSecret != signingSecret || received != result {
+						t.Fatal("通知命令修改了凭据或已确认的发布结果")
+					}
+					if fail {
+						return errors.New(webhook + " " + signingSecret + " private-response-body")
+					}
+					return nil
+				},
+				execute: func(context.Context, release.Request) (release.Result, error) {
+					t.Fatal("通知命令不得重新执行部署")
+					return release.Result{}, nil
+				},
+			})
+			wantCode, wantMessage := 0, "飞书发布通知已发送\n"
+			if fail {
+				wantCode, wantMessage = 1, "飞书发布通知失败\n"
+			}
+			if code != wantCode || calls != 1 || stdout.Len() != 0 || stderr.String() != wantMessage {
+				t.Fatalf("发送结果诊断不正确：code=%d calls=%d stdout=%q stderr=%q", code, calls, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestNotifyPreservesBoundedStrictJSONValidationBeforeConfiguration(t *testing.T) {
+	t.Setenv("PRODUCTION_FEISHU_WEBHOOK", "")
+	t.Setenv("PRODUCTION_FEISHU_SIGNING_SECRET", "")
+	valid := string(mustJSON(t, validNotifyResult()))
+	for _, test := range []struct{ name, body, want string }{
+		{name: "multiple objects", body: valid + valid, want: "发布结果不是严格 JSON"},
+		{name: "unknown field", body: `{"unexpected":"private-value"}`, want: "发布结果不是严格 JSON"},
+		{name: "oversized", body: strings.Repeat("x", maxCLIInputBytes+1), want: "发布结果超过 256 KiB 安全限制"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+			code := run([]string{"notify"}, strings.NewReader(test.body), stdout, stderr, dependencies{
+				notify: func(context.Context, string, string, release.Result) error {
+					t.Fatal("无效发布结果不得进入通知发送器")
+					return nil
+				},
+			})
+			if code != 1 || stdout.Len() != 0 || stderr.String() != test.want+"\n" {
+				t.Fatalf("原有 JSON 校验语义改变：code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+		})
+	}
+}
+
+func validNotifyResult() release.Result {
+	return release.Result{
+		Operation: release.OperationDeploy, TargetID: "123", Actor: "nolyOne1",
+		WorkflowRunID: 456, WorkflowURL: "https://github.com/nolyOne1/konzhitai/actions/runs/456",
+		SourceSHA: strings.Repeat("d", 40), Status: "succeeded", RollbackStatus: "not-required",
+		StartedAt: time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC), FinishedAt: time.Date(2026, 9, 3, 12, 1, 0, 0, time.UTC),
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -115,12 +115,99 @@ describe('脚本编辑器', () => {
     renderEditor()
 
     await screen.findByRole('heading', { name: '编辑数据归档' })
-    await user.click(screen.getByRole('button', { name: '回滚到此版本' }))
+    const trigger = screen.getByRole('button', { name: '回滚到此版本' })
+    await user.click(trigger)
     await user.type(screen.getByLabelText('中文回滚说明'), '回滚到稳定版本')
     await user.click(screen.getByRole('button', { name: '确认回滚并发布' }))
 
     expect(await screen.findByText('已回滚并发布为版本 2')).toBeVisible()
     expect(screen.getByLabelText('脚本内容')).toHaveValue('echo "历史稳定版本"\n')
+    expect(trigger).toHaveFocus()
+  })
+
+  it('异步比较不同历史版本后，Escape 和关闭按钮都将焦点还给对应触发按钮', async () => {
+    let finishRead: () => void = () => { throw new Error('尚未请求版本内容') }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (path: string) => {
+      if (path === '/api/scripts/script-1') return response(detailWithTwoVersions())
+      if (path === '/api/scripts/script-1/syncs') return response({ syncs: [] })
+      if (path.endsWith('/content')) return new Promise((resolve) => {
+        finishRead = () => resolve(response({ content: 'echo "历史内容"\n' }))
+      })
+      throw new Error(`未处理的请求：${path}`)
+    }))
+    const user = userEvent.setup()
+    renderEditor()
+    await screen.findByRole('heading', { name: '编辑数据归档' })
+
+    for (const [version, closeWithEscape] of [[1, true], [2, false]] as const) {
+      const trigger = screen.getByRole('button', { name: `与草稿比较版本 ${version}` })
+      trigger.focus()
+      await user.keyboard('{Enter}')
+      expect(trigger).toBeDisabled()
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      await act(async () => finishRead())
+      const dialog = await screen.findByRole('dialog', { name: '版本对比' })
+      expect(within(dialog).getByText(`版本 ${version} 与当前草稿`)).toBeVisible()
+      expect(within(dialog).getByRole('button', { name: '关闭版本对比' })).toHaveFocus()
+      await user.keyboard(closeWithEscape ? '{Escape}' : '{Enter}')
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(trigger).toHaveFocus()
+    }
+  })
+
+  it('取消不同版本的回滚窗口后恢复具体触发按钮，不发送回滚请求', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (path: string) => {
+      if (path === '/api/scripts/script-1') return response(detailWithTwoVersions())
+      if (path === '/api/scripts/script-1/syncs') return response({ syncs: [] })
+      throw new Error(`未处理的请求：${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    renderEditor()
+    await screen.findByRole('heading', { name: '编辑数据归档' })
+
+    for (const [version, closeAction] of [[1, 'Escape'], [2, '关闭回滚窗口'], [1, '取消']] as const) {
+      const row = screen.getByRole('button', { name: `与草稿比较版本 ${version}` }).closest('li')!
+      const trigger = within(row).getByRole('button', { name: '回滚到此版本' })
+      trigger.focus()
+      await user.keyboard('{Enter}')
+      const dialog = screen.getByRole('dialog', { name: `回滚到版本 ${version}` })
+      expect(within(dialog).getByLabelText('中文回滚说明')).toHaveFocus()
+      if (closeAction === 'Escape') {
+        await user.keyboard('{Escape}')
+      } else {
+        within(dialog).getByRole('button', { name: closeAction }).focus()
+        await user.keyboard('{Enter}')
+      }
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(trigger).toHaveFocus()
+    }
+    expect(fetchMock.mock.calls.every(([path]) => !path.endsWith('/rollback'))).toBe(true)
+  })
+
+  it('版本读取失败时保留错误提示焦点，不跳回之前的比较按钮', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (path: string) => {
+      if (path === '/api/scripts/script-1') return response(detailWithTwoVersions())
+      if (path === '/api/scripts/script-1/syncs') return response({ syncs: [] })
+      if (path.endsWith('/versions/version-1/content')) return response({ content: 'echo "历史内容"\n' })
+      if (path.endsWith('/versions/version-2/content')) throw new Error('读取版本内容失败')
+      throw new Error(`未处理的请求：${path}`)
+    }))
+    const user = userEvent.setup()
+    renderEditor()
+    await screen.findByRole('heading', { name: '编辑数据归档' })
+    await user.click(screen.getByRole('button', { name: '与草稿比较版本 1' }))
+    await screen.findByRole('dialog', { name: '版本对比' })
+    await user.keyboard('{Escape}')
+
+    const trigger = screen.getByRole('button', { name: '与草稿比较版本 2' })
+    trigger.focus()
+    await user.keyboard('{Enter}')
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('读取版本内容失败')
+    expect(alert).toHaveFocus()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(trigger).toBeEnabled()
   })
 
   it('从真实服务器组选择发布目标，并保存参数的必填和说明', async () => {
@@ -219,4 +306,8 @@ function renderEditor() {
 
 function response(value: unknown) {
   return Promise.resolve({ ok: true, json: async () => value })
+}
+
+function detailWithTwoVersions() {
+  return { ...detail, versions: [{ ...detail.versions[0], id: 'version-2', number: 2 }, ...detail.versions] }
 }

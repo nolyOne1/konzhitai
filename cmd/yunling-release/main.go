@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"yunling.local/platform/internal/release"
@@ -336,6 +337,17 @@ func runNotify(args []string, stdin io.Reader, stderr io.Writer, dependency depe
 	}
 	webhook := os.Getenv("PRODUCTION_FEISHU_WEBHOOK")
 	signingSecret := os.Getenv("PRODUCTION_FEISHU_SIGNING_SECRET")
+	var missing []string
+	if strings.TrimSpace(webhook) == "" {
+		missing = append(missing, "PRODUCTION_FEISHU_WEBHOOK")
+	}
+	if strings.TrimSpace(signingSecret) == "" {
+		missing = append(missing, "PRODUCTION_FEISHU_SIGNING_SECRET")
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(stderr, "飞书发布通知配置缺失：%s\n", strings.Join(missing, "、"))
+		return 1
+	}
 	if err := dependency.notify(context.Background(), webhook, signingSecret, result); err != nil {
 		fmt.Fprintln(stderr, "飞书发布通知失败")
 		return 1
