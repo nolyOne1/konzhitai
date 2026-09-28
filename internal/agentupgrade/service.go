@@ -34,9 +34,18 @@ func NewService(repository Repository) *Service {
 }
 
 func (s *Service) CreatePlan(ctx context.Context, input CreatePlanInput) (Plan, error) {
+	return s.createPlan(ctx, input, nil)
+}
+
+// rollbackSource is supplied only by CreateRollbackPlan after resolving a
+// successful historical target. External plan input cannot enable downgrades.
+func (s *Service) createPlan(ctx context.Context, input CreatePlanInput, rollbackSource *Target) (Plan, error) {
 	applyPlanDefaults(&input)
 	if err := validatePlanInput(input); err != nil {
 		return Plan{}, err
+	}
+	if rollbackSource != nil && (rollbackSource.Status != TargetSucceeded || len(input.ServerIDs) != 1 || input.ServerIDs[0] != rollbackSource.ServerID) {
+		return Plan{}, ErrInvalidTransition
 	}
 	active, err := s.repository.ActivePlan(ctx)
 	if err != nil {
@@ -51,6 +60,9 @@ func (s *Service) CreatePlan(ctx context.Context, input CreatePlanInput) (Plan, 
 	}
 	if release.Status != "available" || !slices.Contains(release.Capabilities, selfUpgradeCapability) {
 		return Plan{}, ErrUpgradeUnsupported
+	}
+	if rollbackSource != nil && release.Version != rollbackSource.SourceVersion {
+		return Plan{}, ErrInvalidTransition
 	}
 	servers, err := s.repository.Servers(ctx, input.ServerIDs)
 	if err != nil {
@@ -74,8 +86,24 @@ func (s *Service) CreatePlan(ctx context.Context, input CreatePlanInput) (Plan, 
 		if !slices.Contains(server.Capabilities, selfUpgradeCapability) {
 			return Plan{}, ErrUpgradeUnsupported
 		}
-		if server.AgentVersion == release.Version {
-			return Plan{}, ErrNoUpgradeNeeded
+		if rollbackSource != nil {
+			if server.ID != rollbackSource.ServerID || server.AgentVersion != rollbackSource.TargetVersion {
+				return Plan{}, ErrRollbackSourceChanged
+			}
+			if server.AgentVersion == release.Version {
+				return Plan{}, ErrNoUpgradeNeeded
+			}
+		} else {
+			comparison, comparable := compareStableVersions(server.AgentVersion, release.Version)
+			if !comparable {
+				return Plan{}, ErrVersionNotComparable
+			}
+			if comparison == 0 {
+				return Plan{}, ErrNoUpgradeNeeded
+			}
+			if comparison > 0 {
+				return Plan{}, ErrDowngradeNotAllowed
+			}
 		}
 		if !hasArtifact(release, server.AgentOS, server.AgentArch) {
 			return Plan{}, ErrArtifactUnavailable
@@ -256,11 +284,11 @@ func (s *Service) CreateRollbackPlan(ctx context.Context, planID, targetID, acto
 		return Plan{}, ErrActivePlanExists
 	}
 	if original.Status == PlanSucceeded || original.Status == PlanCancelled {
-		return s.CreatePlan(ctx, CreatePlanInput{
+		return s.createPlan(ctx, CreatePlanInput{
 			TargetReleaseID: release.ID, ServerIDs: []string{source.ServerID}, BatchSize: 1,
 			DrainTimeoutSeconds: original.DrainTimeoutSeconds, ReconnectTimeoutSeconds: original.ReconnectTimeoutSeconds,
 			VerificationSeconds: original.VerificationSeconds, CreatedBy: actorID,
-		})
+		}, source)
 	}
 	return Plan{}, ErrInvalidTransition
 }

@@ -43,6 +43,68 @@ describe('升级计划向导', () => {
     expect(screen.queryByLabelText(/腾讯云节点/)).not.toBeInTheDocument()
   })
 
+  it('推荐 0.2.0 不允许当前 0.2.6 降级，相等或无法比较的版本显示禁选原因', async () => {
+    const cases = [
+      ['higher', '高版本节点', '0.2.6', '高于目标版本'],
+      ['equal', '相同版本节点', 'v0.2.0', '已是目标版本'],
+      ['unknown', '未知节点', '', '版本无法比较'],
+      ['custom', '自定义节点', 'custom', '版本无法比较'],
+      ['prerelease', '预发布节点', '0.1.0-rc.1', '版本无法比较'],
+    ]
+    render(<AgentUpgradeDialog releases={releases} servers={[baseServer, ...cases.map(([id, name, agentVersion]) => ({ ...baseServer, id, name, agentVersion }))]} onClose={vi.fn()} onCreated={vi.fn()} />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('radio', { name: /0.2.0/ }))
+    await user.click(screen.getByRole('button', { name: '下一步' }))
+    for (const [, name, , reason] of cases) {
+      const checkbox = screen.getByRole('checkbox', { name: new RegExp(name) })
+      expect(checkbox).toBeDisabled()
+      expect(within(checkbox.closest('label')!).getByText(reason)).toBeVisible()
+    }
+    expect(screen.getByRole('checkbox', { name: /京东云执行节点-1/ })).toBeEnabled()
+    expect(createAgentUpgradePlan).not.toHaveBeenCalled()
+  })
+
+  it('按数字段比较 0.2.9 与 0.2.10，并能提交正常高版本升级', async () => {
+    render(<AgentUpgradeDialog releases={[{ ...releases[0], version: '0.2.10' }]} servers={[{ ...baseServer, agentVersion: 'v0.2.9' }]} onClose={vi.fn()} onCreated={vi.fn()} />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('radio', { name: /0.2.10/ }))
+    await user.click(screen.getByRole('button', { name: '下一步' }))
+    await user.click(screen.getByRole('checkbox', { name: /京东云执行节点-1/ }))
+    await user.click(screen.getByRole('button', { name: '下一步' }))
+    await user.click(screen.getByRole('button', { name: '启动升级计划' }))
+    expect(createAgentUpgradePlan).toHaveBeenCalledWith(expect.objectContaining({ targetReleaseId: 'release-2', serverIds: ['server-1'] }))
+  })
+
+  it.each(['0.2.6', 'unknown'])('确认前节点变为 %s 时重新筛选并阻止提交', async (agentVersion) => {
+    const props = { releases, servers: [baseServer], onClose: vi.fn(), onCreated: vi.fn() }
+    const { rerender } = render(<AgentUpgradeDialog {...props} />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('radio', { name: /0.2.0/ }))
+    await user.click(screen.getByRole('button', { name: '下一步' }))
+    await user.click(screen.getByRole('checkbox', { name: /京东云执行节点-1/ }))
+    await user.click(screen.getByRole('button', { name: '下一步' }))
+    rerender(<AgentUpgradeDialog {...props} servers={[{ ...baseServer, agentVersion }]} />)
+    await user.click(screen.getByRole('button', { name: '启动升级计划' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('所选服务器已不再符合升级条件')
+    expect(screen.getByRole('checkbox', { name: /京东云执行节点-1/ })).toBeDisabled()
+    expect(createAgentUpgradePlan).not.toHaveBeenCalled()
+  })
+
+  it('确认前目标版本撤回时阻止提交并返回选择版本', async () => {
+    const props = { releases, servers: [baseServer], onClose: vi.fn(), onCreated: vi.fn() }
+    const { rerender } = render(<AgentUpgradeDialog {...props} />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('radio', { name: /0.2.0/ }))
+    await user.click(screen.getByRole('button', { name: '下一步' }))
+    await user.click(screen.getByRole('checkbox', { name: /京东云执行节点-1/ }))
+    await user.click(screen.getByRole('button', { name: '下一步' }))
+    rerender(<AgentUpgradeDialog {...props} releases={[{ ...releases[0], status: 'withdrawn' }]} />)
+    await user.click(screen.getByRole('button', { name: '启动升级计划' }))
+    expect(screen.getByRole('heading', { name: '选择目标版本' })).toBeVisible()
+    expect(screen.getByRole('alert')).toHaveTextContent('请选择目标版本')
+    expect(createAgentUpgradePlan).not.toHaveBeenCalled()
+  })
+
   it('在超时参数旁显示边界错误', async () => {
     render(<AgentUpgradeDialog releases={releases} servers={[baseServer]} onClose={vi.fn()} onCreated={vi.fn()} />)
     const user = userEvent.setup()
